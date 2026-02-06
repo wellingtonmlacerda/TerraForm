@@ -235,13 +235,35 @@ enum class Block : uint8_t {
     PipeH,         // Horizontal pipe
     PipeV,         // Vertical pipe
     Antenna,       // Communication antenna
+    // === BASE 3D STRUCTURES ===
+    BaseWall,      // Parede da base 3D
+    BaseRoof,      // Teto da base
+    BaseDoor,      // Porta/escotilha da base
+    BaseFloor,     // Piso interno da base
+    BaseLight,     // Luz interna da base
+    BaseWindow,    // Janela da base
+    // === BIODOMO LUNAR ===
+    BiodomeGlass,      // Vidro geodesico da cupula (transparente)
+    BiodomeFrame,      // Estrutura metalica geodesica
+    BiodomeFloor,      // Piso interno do biodomo
+    BiodomeAirlock,    // Camara de descompressao/entrada
+    BiodomeLight,      // Iluminacao interna LED
+    BiodomeVent,       // Ventilacao/filtro de ar
+    FertileSoil,       // Solo fertil para agricultura
+    BiodomeConnector,  // Tubo de conexao entre cupulas
+    BiodomePipe,       // Tubulacao externa (agua/oxigenio)
+    BiodomeGenerator,  // Gerador de energia do anel
+    BiodomeOxygen,     // Gerador de oxigenio do anel
+    BiodomeWater,      // Purificador de agua do anel
 };
 
-static constexpr int kBlockTypeCount = (int)Block::Antenna + 1;
+static constexpr int kBlockTypeCount = (int)Block::BiodomeWater + 1;
 
 static bool is_transparent(Block b) {
     return b == Block::Air || b == Block::Water || b == Block::Leaves || 
-           b == Block::DomeGlass || b == Block::RocketWindow || b == Block::BuildSlot;
+           b == Block::DomeGlass || b == Block::RocketWindow || b == Block::BuildSlot ||
+           b == Block::BaseWindow || b == Block::BaseDoor ||
+           b == Block::BiodomeGlass || b == Block::BiodomeAirlock;
 }
 
 // Top-down: tiles que bloqueiam movimento (inverso de walkable)
@@ -257,7 +279,16 @@ static bool is_solid(Block b) {
         case Block::LandingPad:
         case Block::DomeGlass:
         case Block::RocketWindow:
+        case Block::BaseFloor:    // Pode andar no piso da base
+        case Block::BaseDoor:     // Pode passar pela porta
+        case Block::BiodomeFloor: // Piso do biodomo
+        case Block::BiodomeAirlock: // Entrada do biodomo
+        case Block::FertileSoil:  // Solo fertil
+        case Block::BiodomeGlass: // Vidro (nao bloqueia)
             return false;  // Pode passar por cima
+        case Block::BaseWall:     // Paredes bloqueiam
+        case Block::BaseRoof:     // Teto bloqueia (colisao vertical)
+            return true;
         default:
             return true;   // Bloqueia movimento (pedra, agua, gelo, modulos, etc)
     }
@@ -276,7 +307,13 @@ static bool is_base_structure(Block b) {
            b == Block::RocketFin || b == Block::RocketDoor ||
            b == Block::DomeGlass || b == Block::DomeFrame ||
            b == Block::LandingPad || b == Block::BuildSlot ||
-           b == Block::PipeH || b == Block::PipeV || b == Block::Antenna;
+           b == Block::PipeH || b == Block::PipeV || b == Block::Antenna ||
+           b == Block::BaseWall || b == Block::BaseRoof || b == Block::BaseDoor ||
+           b == Block::BaseFloor || b == Block::BaseLight || b == Block::BaseWindow ||
+           b == Block::BiodomeGlass || b == Block::BiodomeFrame || b == Block::BiodomeFloor ||
+           b == Block::BiodomeAirlock || b == Block::BiodomeLight || b == Block::BiodomeVent ||
+           b == Block::FertileSoil || b == Block::BiodomeConnector || b == Block::BiodomePipe ||
+           b == Block::BiodomeGenerator || b == Block::BiodomeOxygen || b == Block::BiodomeWater;
 }
 
 // Blocos que representam "solo/superficie" (nao sao objetos acima do terreno).
@@ -291,6 +328,13 @@ static bool is_ground_like(Block b) {
         case Block::Water:
         case Block::LandingPad:
         case Block::BuildSlot:
+        case Block::BaseFloor:    // Piso interno da base
+        case Block::BaseDoor:     // Porta da base (atravessavel, sem altura adicional)
+        case Block::BaseLight:    // Luz no teto (nao bloqueia movimento)
+        case Block::BiodomeFloor: // Piso do biodomo
+        case Block::BiodomeAirlock: // Entrada do biodomo
+        case Block::FertileSoil:  // Solo fertil para agricultura
+        case Block::BiodomeLight: // Iluminacao (no chao)
             return true;
         default:
             return false;
@@ -308,6 +352,12 @@ static bool is_walkable(Block b) {
         case Block::Leaves:       // Pode andar sobre folhas
         case Block::BuildSlot:    // Slots de construcao
         case Block::LandingPad:   // Area de pouso
+        case Block::BaseFloor:    // Piso interno da base
+        case Block::BaseDoor:     // Porta da base (atravessavel)
+        case Block::BiodomeFloor: // Piso do biodomo
+        case Block::BiodomeAirlock: // Entrada do biodomo
+        case Block::FertileSoil:  // Solo fertil
+        case Block::BiodomeLight: // Luzes no chao
             return true;
         default:
             return false;  // Pedra, agua, gelo, modulos bloqueiam
@@ -603,6 +653,26 @@ static void block_color(Block b, int y, int world_h, float& r, float& g, float& 
         case Block::PipeH:           r = 0.50f; g = 0.55f; bl = 0.60f; break;  // Metal
         case Block::PipeV:           r = 0.50f; g = 0.55f; bl = 0.60f; break;  // Metal
         case Block::Antenna:         r = 0.75f; g = 0.77f; bl = 0.80f; break;  // Metal claro
+        // === BASE 3D STRUCTURES ===
+        case Block::BaseWall:        r = 0.45f; g = 0.48f; bl = 0.52f; break;  // Metal cinza
+        case Block::BaseRoof:        r = 0.38f; g = 0.40f; bl = 0.45f; break;  // Metal escuro
+        case Block::BaseDoor:        r = 0.55f; g = 0.58f; bl = 0.62f; a = 0.90f; break;  // Metal claro
+        case Block::BaseFloor:       r = 0.32f; g = 0.35f; bl = 0.38f; break;  // Piso escuro
+        case Block::BaseLight:       r = 1.0f; g = 0.95f; bl = 0.80f; break;   // Luz quente
+        case Block::BaseWindow:      r = 0.50f; g = 0.75f; bl = 0.95f; a = 0.50f; break;  // Vidro azul
+        // === BIODOMO LUNAR ===
+        case Block::BiodomeGlass:    r = 0.85f; g = 0.92f; bl = 0.98f; a = 0.35f; break;  // Vidro transparente azulado
+        case Block::BiodomeFrame:    r = 0.70f; g = 0.72f; bl = 0.75f; break;  // Metal geodesico
+        case Block::BiodomeFloor:    r = 0.40f; g = 0.42f; bl = 0.45f; break;  // Piso metalico
+        case Block::BiodomeAirlock:  r = 0.60f; g = 0.62f; bl = 0.65f; a = 0.80f; break;  // Porta airlock
+        case Block::BiodomeLight:    r = 1.0f; g = 0.98f; bl = 0.90f; break;   // LED branco quente
+        case Block::BiodomeVent:     r = 0.50f; g = 0.55f; bl = 0.60f; break;  // Ventilacao cinza
+        case Block::FertileSoil:     r = 0.35f; g = 0.25f; bl = 0.15f; break;  // Solo marrom escuro fertil
+        case Block::BiodomeConnector:r = 0.65f; g = 0.68f; bl = 0.72f; break;  // Tubo de conexao
+        case Block::BiodomePipe:     r = 0.55f; g = 0.60f; bl = 0.65f; break;  // Tubulacao
+        case Block::BiodomeGenerator:r = 0.80f; g = 0.75f; bl = 0.20f; break;  // Gerador amarelo
+        case Block::BiodomeOxygen:   r = 0.30f; g = 0.70f; bl = 0.90f; break;  // Oxigenio azul
+        case Block::BiodomeWater:    r = 0.20f; g = 0.50f; bl = 0.80f; break;  // Agua azul escuro
         default: r = 1.0f; g = 0.0f; bl = 1.0f; break;
     }
 
@@ -689,6 +759,26 @@ enum class Tile : int {
     BuildSlot,
     Pipe,
     Antenna,
+    // === BASE 3D TILES ===
+    BaseWall,
+    BaseRoof,
+    BaseDoor,
+    BaseFloor,
+    BaseLight,
+    BaseWindow,
+    // === BIODOMO LUNAR TILES ===
+    BiodomeGlass,
+    BiodomeFrame,
+    BiodomeFloor,
+    BiodomeAirlock,
+    BiodomeLight,
+    BiodomeVent,
+    FertileSoil,
+    BiodomeConnector,
+    BiodomePipe,
+    BiodomeGenerator,
+    BiodomeOxygen,
+    BiodomeWater,
     // Cracks (mining)
     Crack1,
     Crack2,
@@ -920,6 +1010,28 @@ static void tile_generate_all(std::vector<uint8_t>& atlas) {
     tile_noise(atlas, Tile::Pipe, c8(155, 165, 175), 8, 0x8Au);
     tile_noise(atlas, Tile::Antenna, c8(205, 210, 220), 8, 0x8Bu);
 
+    // === BASE 3D TILES ===
+    tile_noise(atlas, Tile::BaseWall, c8(115, 122, 132), 12, 0x90u);    // Parede metal
+    tile_noise(atlas, Tile::BaseRoof, c8(95, 102, 115), 10, 0x91u);     // Teto escuro
+    tile_noise(atlas, Tile::BaseDoor, c8(140, 148, 158), 8, 0x92u);     // Porta metal
+    tile_noise(atlas, Tile::BaseFloor, c8(82, 90, 98), 15, 0x93u);      // Piso industrial
+    tile_noise(atlas, Tile::BaseLight, c8(255, 242, 205), 5, 0x94u);    // Luz quente
+    tile_noise(atlas, Tile::BaseWindow, c8(130, 190, 240, 140), 6, 0x95u); // Vidro azul
+
+    // === BIODOMO LUNAR TILES ===
+    tile_noise(atlas, Tile::BiodomeGlass, c8(220, 235, 250, 90), 4, 0xA0u);     // Vidro geodesico transparente
+    tile_noise(atlas, Tile::BiodomeFrame, c8(180, 185, 192), 8, 0xA1u);         // Frame metalico
+    tile_noise(atlas, Tile::BiodomeFloor, c8(102, 108, 115), 10, 0xA2u);        // Piso metalico
+    tile_noise(atlas, Tile::BiodomeAirlock, c8(155, 160, 168, 200), 6, 0xA3u);  // Airlock
+    tile_noise(atlas, Tile::BiodomeLight, c8(255, 250, 230), 3, 0xA4u);         // LED branco
+    tile_noise(atlas, Tile::BiodomeVent, c8(130, 140, 155), 12, 0xA5u);         // Ventilacao
+    tile_noise(atlas, Tile::FertileSoil, c8(90, 65, 40), 18, 0xA6u);            // Solo fertil marrom
+    tile_noise(atlas, Tile::BiodomeConnector, c8(165, 172, 182), 7, 0xA7u);     // Tubo conexao
+    tile_noise(atlas, Tile::BiodomePipe, c8(140, 155, 168), 9, 0xA8u);          // Tubulacao
+    tile_noise(atlas, Tile::BiodomeGenerator, c8(205, 190, 50), 10, 0xA9u);     // Gerador amarelo
+    tile_noise(atlas, Tile::BiodomeOxygen, c8(75, 180, 230), 8, 0xAAu);         // Oxigenio azul
+    tile_noise(atlas, Tile::BiodomeWater, c8(50, 130, 205), 8, 0xABu);          // Agua azul
+
     // Cracks: linhas pretas sobre alpha
     for (int i = 0; i < 8; ++i) {
         Tile t = (Tile)((int)Tile::Crack1 + i);
@@ -1008,6 +1120,28 @@ static BlockTex block_tex(Block b) {
         case Block::PipeH:
         case Block::PipeV: t = {Tile::Pipe, Tile::Pipe, Tile::Pipe, false, false, false}; break;
         case Block::Antenna: t = {Tile::Antenna, Tile::Antenna, Tile::Antenna, false, false, false}; break;
+
+        // === BASE 3D STRUCTURES ===
+        case Block::BaseWall: t = {Tile::BaseWall, Tile::BaseWall, Tile::BaseWall, false, false, false}; break;
+        case Block::BaseRoof: t = {Tile::BaseRoof, Tile::BaseRoof, Tile::BaseRoof, false, false, false}; break;
+        case Block::BaseDoor: t = {Tile::BaseDoor, Tile::BaseDoor, Tile::BaseDoor, false, true, false}; break;
+        case Block::BaseFloor: t = {Tile::BaseFloor, Tile::BaseFloor, Tile::BaseFloor, false, false, false}; break;
+        case Block::BaseLight: t = {Tile::BaseLight, Tile::BaseLight, Tile::BaseLight, false, false, false}; break;
+        case Block::BaseWindow: t = {Tile::BaseWindow, Tile::BaseWindow, Tile::BaseWindow, false, true, false}; break;
+
+        // === BIODOMO LUNAR ===
+        case Block::BiodomeGlass: t = {Tile::BiodomeGlass, Tile::BiodomeGlass, Tile::BiodomeGlass, false, true, false}; break;
+        case Block::BiodomeFrame: t = {Tile::BiodomeFrame, Tile::BiodomeFrame, Tile::BiodomeFrame, false, false, false}; break;
+        case Block::BiodomeFloor: t = {Tile::BiodomeFloor, Tile::BiodomeFloor, Tile::BiodomeFloor, false, false, false}; break;
+        case Block::BiodomeAirlock: t = {Tile::BiodomeAirlock, Tile::BiodomeAirlock, Tile::BiodomeAirlock, false, true, false}; break;
+        case Block::BiodomeLight: t = {Tile::BiodomeLight, Tile::BiodomeLight, Tile::BiodomeLight, false, false, false}; break;
+        case Block::BiodomeVent: t = {Tile::BiodomeVent, Tile::BiodomeVent, Tile::BiodomeVent, false, false, false}; break;
+        case Block::FertileSoil: t = {Tile::FertileSoil, Tile::FertileSoil, Tile::FertileSoil, false, false, false}; break;
+        case Block::BiodomeConnector: t = {Tile::BiodomeConnector, Tile::BiodomeConnector, Tile::BiodomeConnector, false, false, false}; break;
+        case Block::BiodomePipe: t = {Tile::BiodomePipe, Tile::BiodomePipe, Tile::BiodomePipe, false, false, false}; break;
+        case Block::BiodomeGenerator: t = {Tile::BiodomeGenerator, Tile::BiodomeGenerator, Tile::BiodomeGenerator, false, false, false}; break;
+        case Block::BiodomeOxygen: t = {Tile::BiodomeOxygen, Tile::BiodomeOxygen, Tile::BiodomeOxygen, false, false, false}; break;
+        case Block::BiodomeWater: t = {Tile::BiodomeWater, Tile::BiodomeWater, Tile::BiodomeWater, false, false, false}; break;
 
         default: t = {Tile::Missing, Tile::Missing, Tile::Missing, false, false, false}; break;
     }
@@ -1618,6 +1752,7 @@ static bool reload_sky_config(bool create_if_missing);
 static bool reload_camera_config(bool create_if_missing);
 static bool reload_mining_config(bool create_if_missing);
 static bool reload_player_visual_config(bool create_if_missing);
+static bool reload_ui_layout_config(bool create_if_missing);
 static void reset_player_physics_runtime(bool clear_timers = true);
 static void step_player_physics(const PlayerPhysicsInput& input, float frame_dt);
 static void build_physics_test_map(World& world);
@@ -2016,6 +2151,19 @@ struct Player {
 };
 
 static Player g_player;
+
+// === MINIMAP CONFIG ===
+struct MinimapConfig {
+    float size = 150.0f;        // Tamanho em pixels
+    float margin = 16.0f;       // Margem da borda
+    int sample_radius = 60;     // Raio de amostragem em tiles
+    float zoom = 1.0f;          // Nivel de zoom
+    bool show_base = true;      // Mostrar icone da base
+    bool show_resources = false; // Mostrar recursos no mapa
+    bool enabled = true;        // Minimapa habilitado
+};
+static MinimapConfig g_minimap_cfg;
+static std::string g_ui_layout_path = "ui_layout.json";
 
 enum class TerrainPhysicsType : uint8_t {
     Normal = 0,
@@ -2474,6 +2622,263 @@ static bool g_debug_lightmap = false;
 static bool g_debug_bloom = false;
 static bool g_debug_lights = false;
 
+// ============= BIODOMO LUNAR CONFIG =============
+struct BiodomeConfig {
+    int dome_radius = 45;           // Raio da cupula principal (GRANDE para fazenda)
+    int dome_height = 25;           // Altura maxima da cupula
+    int ring_radius = 55;           // Raio do anel de modulos
+    int ring_width = 4;             // Largura do anel
+    int airlock_width = 5;          // Largura do airlock
+    int num_modules = 12;           // Numero de modulos no anel
+    float glass_density = 0.90f;    // Densidade do vidro (vs frame)
+    bool fertile_center = true;     // Solo fertil no centro
+    int fertile_radius = 35;        // Raio da area fertil (GRANDE para fazenda)
+};
+static BiodomeConfig g_biodome_cfg;
+
+// ============= ESTRUTURA 3D DA CUPULA (renderizada separadamente) =============
+struct Dome3D {
+    float center_x;     // Posicao X no mundo
+    float center_z;     // Posicao Z no mundo (Y do grid 2D)
+    float base_y;       // Altura da base (floor)
+    float radius;       // Raio horizontal
+    float height;       // Altura do apice
+    bool has_tree;      // Arvore central
+    float tree_height;  // Altura da arvore
+};
+static std::vector<Dome3D> g_domes;
+
+// ============= Generate Geodesic Biodome =============
+static void generate_biodome(World& world, int cx, int cy, int16_t base_h, const BiodomeConfig& cfg) {
+    // === BIODOMO COM CUPULA 3D REAL ===
+    int R = cfg.dome_radius;
+    int H = cfg.dome_height;
+    int16_t floor_h = (int16_t)std::clamp((int)base_h + 2, 0, 256);
+    
+    // === CRIAR PISO INTERNO (circular, plano) ===
+    for (int dz = -R; dz <= R; ++dz) {
+        for (int dx = -R; dx <= R; ++dx) {
+            int tx = cx + dx;
+            int ty = cy + dz;
+            if (!world.in_bounds(tx, ty)) continue;
+            
+            float dist_h = std::sqrt((float)(dx * dx + dz * dz));
+            if (dist_h > (float)R) continue;
+            
+            world.set_height(tx, ty, floor_h);
+            
+            // Solo fertil no centro para agricultura
+            if (cfg.fertile_center && dist_h <= (float)cfg.fertile_radius) {
+                world.set_ground(tx, ty, Block::FertileSoil);
+                world.set(tx, ty, Block::FertileSoil);
+            } else {
+                world.set_ground(tx, ty, Block::BiodomeFloor);
+                world.set(tx, ty, Block::BiodomeFloor);
+            }
+        }
+    }
+    
+    // === BORDA DA CUPULA (anel de fundacao) ===
+    // Criar anel de frame metalico na base da cupula
+    float border_inner = (float)R - 2.0f;
+    for (int dz = -R; dz <= R; ++dz) {
+        for (int dx = -R; dx <= R; ++dx) {
+            int tx = cx + dx;
+            int ty = cy + dz;
+            if (!world.in_bounds(tx, ty)) continue;
+            
+            float dist_h = std::sqrt((float)(dx * dx + dz * dz));
+            if (dist_h < border_inner || dist_h > (float)R) continue;
+            
+            world.set_height(tx, ty, floor_h + 1);
+            world.set(tx, ty, Block::BiodomeFrame);
+        }
+    }
+    
+    // === REGISTRAR CUPULA PARA RENDERIZACAO 3D ===
+    Dome3D dome;
+    dome.center_x = (float)cx;
+    dome.center_z = (float)cy;
+    dome.base_y = (float)floor_h * kHeightScale;
+    dome.radius = (float)R;
+    dome.height = (float)H * kHeightScale;
+    dome.has_tree = true;
+    dome.tree_height = 12.0f;
+    g_domes.push_back(dome);
+    
+    // === ARVORE CENTRAL GRANDE (Arvore da Vida) ===
+    {
+        int tree_x = cx;
+        int tree_y = cy;
+        int trunk_height = 12;  // Arvore alta
+        int canopy_radius = 8;  // Copa grande
+        
+        // Tronco central robusto (3x3)
+        for (int tz = -1; tz <= 1; ++tz) {
+            for (int tx_off = -1; tx_off <= 1; ++tx_off) {
+                int ttx = tree_x + tx_off;
+                int tty = tree_y + tz;
+                if (!world.in_bounds(ttx, tty)) continue;
+                
+                // Centro do tronco mais alto
+                int h_bonus = (tx_off == 0 && tz == 0) ? 3 : 0;
+                int16_t trunk_top = (int16_t)std::clamp((int)floor_h + trunk_height + h_bonus, 0, 256);
+                world.set_height(ttx, tty, trunk_top);
+                world.set(ttx, tty, Block::Wood);
+            }
+        }
+        
+        // Copa da arvore (esferica grande)
+        for (int cz = -canopy_radius; cz <= canopy_radius; ++cz) {
+            for (int cx_off = -canopy_radius; cx_off <= canopy_radius; ++cx_off) {
+                int leaf_x = tree_x + cx_off;
+                int leaf_y = tree_y + cz;
+                if (!world.in_bounds(leaf_x, leaf_y)) continue;
+                
+                float leaf_dist = std::sqrt((float)(cx_off * cx_off + cz * cz));
+                if (leaf_dist > (float)canopy_radius) continue;
+                
+                // Nao sobrescrever o tronco (centro 3x3)
+                if (std::abs(cx_off) <= 1 && std::abs(cz) <= 1) continue;
+                
+                // Altura das folhas (forma esferica)
+                float sphere_factor = std::sqrt(std::max(0.0f, 1.0f - (leaf_dist / (float)canopy_radius) * (leaf_dist / (float)canopy_radius)));
+                int leaf_h_offset = trunk_height + 2 + (int)(sphere_factor * 5.0f);
+                
+                int16_t leaf_h = (int16_t)std::clamp((int)floor_h + leaf_h_offset, 0, 256);
+                world.set_height(leaf_x, leaf_y, leaf_h);
+                world.set(leaf_x, leaf_y, Block::Leaves);
+            }
+        }
+    }
+    
+    // === AIRLOCK DE ENTRADA (frente da cupula) ===
+    int airlock_y = cy - R - 2;  // Na frente da cupula
+    int airlock_len = 4;
+    
+    for (int ay = 0; ay < airlock_len; ++ay) {
+        for (int ax = -cfg.airlock_width / 2; ax <= cfg.airlock_width / 2; ++ax) {
+            int tx = cx + ax;
+            int ty = airlock_y + ay;
+            if (!world.in_bounds(tx, ty)) continue;
+            
+            int16_t floor_h = (int16_t)std::clamp((int)base_h + 2, 0, 256);
+            world.set_height(tx, ty, floor_h);
+            
+            if (ay == 0 || ay == airlock_len - 1) {
+                // Portas do airlock
+                world.set(tx, ty, Block::BiodomeAirlock);
+            } else {
+                // Corredor do airlock
+                world.set_ground(tx, ty, Block::BiodomeFloor);
+                world.set(tx, ty, Block::BiodomeFloor);
+            }
+        }
+    }
+    
+    // === ANEL DE MODULOS EXTERNOS ===
+    int ring_r = cfg.ring_radius;
+    int num_modules = cfg.num_modules;
+    float angle_step = 2.0f * 3.14159f / (float)num_modules;
+    
+    // Primeiro criar o anel de piso
+    for (int angle_idx = 0; angle_idx < 360; angle_idx += 3) {
+        float angle = (float)angle_idx * 3.14159f / 180.0f;
+        
+        for (int r = ring_r - cfg.ring_width; r <= ring_r + cfg.ring_width; ++r) {
+            int tx = cx + (int)(std::cos(angle) * (float)r);
+            int ty = cy + (int)(std::sin(angle) * (float)r);
+            if (!world.in_bounds(tx, ty)) continue;
+            
+            int16_t ring_h = (int16_t)std::clamp((int)base_h + 1, 0, 256);
+            world.set_height(tx, ty, ring_h);
+            world.set_ground(tx, ty, Block::LandingPad);
+            world.set(tx, ty, Block::LandingPad);
+        }
+    }
+    
+    // Colocar modulos no anel
+    Block module_types[] = {
+        Block::BiodomeGenerator,  // Energia 1
+        Block::BiodomeOxygen,     // Oxigenio 1
+        Block::BiodomeWater,      // Agua 1
+        Block::BiodomeGenerator,  // Energia 2
+        Block::BiodomeOxygen,     // Oxigenio 2
+        Block::BiodomeWater,      // Agua 2
+        Block::BiodomeVent,       // Ventilacao 1
+        Block::BiodomeGenerator,  // Energia 3
+        Block::BiodomeOxygen,     // Oxigenio 3
+        Block::BiodomeWater,      // Agua 3
+        Block::BiodomeVent,       // Ventilacao 2
+        Block::BiodomeVent,       // Ventilacao 3
+    };
+    
+    for (int i = 0; i < num_modules && i < 12; ++i) {
+        float angle = angle_step * (float)i;
+        int mx = cx + (int)(std::cos(angle) * (float)ring_r);
+        int my = cy + (int)(std::sin(angle) * (float)ring_r);
+        
+        if (!world.in_bounds(mx, my)) continue;
+        
+        // Criar modulo 3x3
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                int tx = mx + dx;
+                int ty = my + dy;
+                if (!world.in_bounds(tx, ty)) continue;
+                
+                int16_t mod_h = (int16_t)std::clamp((int)base_h + 3, 0, 256);
+                world.set_height(tx, ty, mod_h);
+                
+                if (dx == 0 && dy == 0) {
+                    // Centro do modulo
+                    world.set(tx, ty, module_types[i]);
+                } else {
+                    // Estrutura do modulo
+                    world.set(tx, ty, Block::BiodomeFrame);
+                }
+            }
+        }
+        
+        // === CONEXAO DO MODULO AO BIODOMO (tubos) ===
+        float to_center_angle = std::atan2((float)(cy - my), (float)(cx - mx));
+        int pipe_len = ring_r - R - 2;
+        
+        for (int p = 1; p < pipe_len; ++p) {
+            int px = mx + (int)(std::cos(to_center_angle) * (float)p);
+            int py = my + (int)(std::sin(to_center_angle) * (float)p);
+            if (!world.in_bounds(px, py)) continue;
+            
+            int16_t pipe_h = (int16_t)std::clamp((int)base_h + 2, 0, 256);
+            world.set_height(px, py, pipe_h);
+            world.set(px, py, Block::BiodomePipe);
+        }
+    }
+    
+    // === ILUMINACAO INTERNA (distribuida para fazenda grande) ===
+    // Luz central
+    world.set(cx, cy, Block::BiodomeLight);
+    
+    // Aneis de luzes em diferentes raios
+    int light_rings[] = {8, 16, 24, 32};
+    int lights_per_ring[] = {4, 6, 8, 12};
+    
+    for (int ring = 0; ring < 4; ++ring) {
+        int r = light_rings[ring];
+        if (r > cfg.fertile_radius) break;
+        
+        int num_lights = lights_per_ring[ring];
+        for (int i = 0; i < num_lights; ++i) {
+            float angle = (float)i * 2.0f * 3.14159f / (float)num_lights;
+            int lx = cx + (int)(std::cos(angle) * (float)r);
+            int ly = cy + (int)(std::sin(angle) * (float)r);
+            if (world.in_bounds(lx, ly)) {
+                world.set(lx, ly, Block::BiodomeLight);
+            }
+        }
+    }
+}
+
 // ============= Generate Base (Landing Site) =============
 static void generate_base(World& world) {
     g_build_slots.clear();
@@ -2558,10 +2963,20 @@ static void generate_base(World& world) {
     // mas em camera 3D isso parecia um desenho no chao. Aqui criamos uma plataforma real.
     static constexpr int kPadHalfW = 22;
     static constexpr int kPadHalfH = 12;
+    
+    // === ESTRUTURA 3D DA BASE ===
+    // Dimensoes do edificio principal (habitacao)
+    static constexpr int kBuildingHalfW = 8;   // Largura do edificio
+    static constexpr int kBuildingHalfH = 6;   // Profundidade do edificio
+    static constexpr int kWallHeight = 3;      // Altura das paredes (em unidades de heightmap)
+    static constexpr int kDoorWidth = 3;       // Largura da porta de entrada
 
-    // Levantar 1 unidade de heightmap (=> 0.25 no mundo) para dar volume nas bordas via paredes.
-    int16_t pad_h = (int16_t)std::clamp((int)base_h + 1, 0, 256);
+    // Levantar 2 unidades de heightmap para criar piso elevado
+    int16_t pad_h = (int16_t)std::clamp((int)base_h + 2, 0, 256);
+    int16_t floor_h = pad_h;  // Altura do piso interno
+    int16_t roof_h = (int16_t)std::clamp((int)pad_h + kWallHeight, 0, 256);  // Altura do teto
 
+    // === CRIAR AREA DE POUSO (plataforma externa) ===
     for (int dy = -kPadHalfH; dy <= kPadHalfH; ++dy) {
         for (int dx = -kPadHalfW; dx <= kPadHalfW; ++dx) {
             int tx = best_x + dx;
@@ -2577,6 +2992,109 @@ static void generate_base(World& world) {
 
             world.set_ground(tx, ty, Block::LandingPad);
             world.set(tx, ty, Block::LandingPad);
+        }
+    }
+    
+    // === CRIAR EDIFICIO PRINCIPAL DA BASE (HABITACAO 3D) ===
+    int bx = best_x;  // Centro do edificio
+    int by = surface + 2;  // Posicao Z do edificio (um pouco atras do centro)
+    
+    // Piso interno elevado
+    for (int dy = -kBuildingHalfH; dy <= kBuildingHalfH; ++dy) {
+        for (int dx = -kBuildingHalfW; dx <= kBuildingHalfW; ++dx) {
+            int tx = bx + dx;
+            int ty = by + dy;
+            if (!world.in_bounds(tx, ty)) continue;
+            
+            world.set_height(tx, ty, floor_h);
+            world.set_ground(tx, ty, Block::BaseFloor);
+            world.set(tx, ty, Block::BaseFloor);
+        }
+    }
+    
+    // Paredes perimetrais (usando o sistema de objetos existente)
+    // As paredes sao blocos 3D que serao renderizados com altura
+    for (int dy = -kBuildingHalfH; dy <= kBuildingHalfH; ++dy) {
+        for (int dx = -kBuildingHalfW; dx <= kBuildingHalfW; ++dx) {
+            int tx = bx + dx;
+            int ty = by + dy;
+            if (!world.in_bounds(tx, ty)) continue;
+            
+            bool is_wall = false;
+            bool is_door = false;
+            
+            // Paredes nas bordas
+            if (dx == -kBuildingHalfW || dx == kBuildingHalfW ||
+                dy == -kBuildingHalfH || dy == kBuildingHalfH) {
+                is_wall = true;
+                
+                // Porta na frente (lado negativo Y)
+                if (dy == -kBuildingHalfH && std::abs(dx) <= kDoorWidth / 2) {
+                    is_door = true;
+                    is_wall = false;
+                }
+            }
+            
+            // Janelas nos lados (exceto cantos)
+            bool is_window = false;
+            if (is_wall) {
+                // Janelas laterais
+                if ((dx == -kBuildingHalfW || dx == kBuildingHalfW) && 
+                    dy > -kBuildingHalfH + 1 && dy < kBuildingHalfH - 1 &&
+                    (dy % 3 == 0)) {
+                    is_window = true;
+                }
+                // Janelas traseiras
+                if (dy == kBuildingHalfH && std::abs(dx) > 2 && (std::abs(dx) % 3 == 0)) {
+                    is_window = true;
+                }
+            }
+            
+            if (is_door) {
+                world.set(tx, ty, Block::BaseDoor);
+                world.set_height(tx, ty, floor_h);  // Piso na porta
+            } else if (is_window) {
+                world.set(tx, ty, Block::BaseWindow);
+                world.set_height(tx, ty, roof_h);  // Janela tem altura ate o teto
+            } else if (is_wall) {
+                world.set(tx, ty, Block::BaseWall);
+                world.set_height(tx, ty, roof_h);  // Parede tem altura ate o teto
+            }
+        }
+    }
+    
+    // Teto (blocos no topo)
+    for (int dy = -kBuildingHalfH + 1; dy <= kBuildingHalfH - 1; ++dy) {
+        for (int dx = -kBuildingHalfW + 1; dx <= kBuildingHalfW - 1; ++dx) {
+            int tx = bx + dx;
+            int ty = by + dy;
+            if (!world.in_bounds(tx, ty)) continue;
+            
+            // O teto e representado elevando o heightmap para a altura do teto
+            // Os blocos de teto ficam nas bordas internas
+            bool is_roof_edge = (dx == -kBuildingHalfW + 1 || dx == kBuildingHalfW - 1 ||
+                                 dy == -kBuildingHalfH + 1 || dy == kBuildingHalfH - 1);
+            
+            if (is_roof_edge) {
+                // Estrutura do teto (bordas)
+                world.set(tx, ty, Block::BaseRoof);
+            }
+        }
+    }
+    
+    // Luzes internas (no centro e cantos do interior)
+    int light_positions[][2] = {
+        {0, 0},   // Centro
+        {-4, -3}, // Canto frontal esquerdo
+        {4, -3},  // Canto frontal direito
+        {-4, 3},  // Canto traseiro esquerdo
+        {4, 3},   // Canto traseiro direito
+    };
+    for (auto& pos : light_positions) {
+        int lx = bx + pos[0];
+        int ly = by + pos[1];
+        if (world.in_bounds(lx, ly)) {
+            world.set(lx, ly, Block::BaseLight);
         }
     }
 
@@ -2658,6 +3176,33 @@ static void generate_base(World& world) {
         g_build_slots[0].assigned_module = Block::SolarPanel;
     }
     
+    // === BIODOMO LUNAR (CUPULA GEODESICA GRANDE) ===
+    // Criar biodomo principal ao lado da base existente
+    {
+        int biodome_cx = best_x + 80;  // Deslocado para a direita (mais longe para caber)
+        int biodome_cy = surface;
+        
+        // Nivelar terreno para o biodomo (area maior)
+        int biodome_radius = g_biodome_cfg.ring_radius + 10;
+        for (int dy = -biodome_radius; dy <= biodome_radius; ++dy) {
+            for (int dx = -biodome_radius; dx <= biodome_radius; ++dx) {
+                int tx = biodome_cx + dx;
+                int ty = biodome_cy + dy;
+                if (!world.in_bounds(tx, ty)) continue;
+                float dist = std::sqrt((float)(dx * dx + dy * dy));
+                if (dist <= (float)biodome_radius) {
+                    world.set_height(tx, ty, base_h);
+                    if (object_block_at(world, tx, ty) != Block::Air) {
+                        world.set(tx, ty, Block::Air);
+                    }
+                }
+            }
+        }
+        
+        // Gerar o biodomo
+        generate_biodome(world, biodome_cx, biodome_cy, base_h, g_biodome_cfg);
+    }
+    
     world.rebuild_surface_cache();
 }
 
@@ -2685,7 +3230,7 @@ enum class GameState {
 static GameState g_state = GameState::Playing;
 
 static float g_day_time = 0.0f;
-static constexpr float kDayLength = 150.0f; // seconds
+static constexpr float kDayLength = 600.0f; // seconds (10 minutos por ciclo dia/noite)
 
 static float g_stats_timer = 0.0f;
 static bool g_surface_dirty = true;
@@ -2809,6 +3354,7 @@ static const char* kSavePath = "save_slot0.tf2d";
 
 static void rebuild_modules_from_world() {
     g_modules.clear();
+    g_domes.clear();
     if (!g_world) return;
     for (int y = 0; y < g_world->h; ++y) {
         for (int x = 0; x < g_world->w; ++x) {
@@ -3501,6 +4047,53 @@ static void get_minimap_color(int x, int y, float& r, float& g, float& b) {
         return;
     }
     
+    // === BIODOMO LUNAR - cores especiais ===
+    if (tile == Block::BiodomeGlass || tile == Block::BiodomeFrame) {
+        // Cupula - azul claro transparente
+        r = 0.6f; g = 0.85f; b = 1.0f;
+        return;
+    }
+    if (tile == Block::FertileSoil) {
+        // Solo fertil - verde escuro
+        r = 0.25f; g = 0.45f; b = 0.2f;
+        return;
+    }
+    if (tile == Block::BiodomeFloor || tile == Block::BiodomeAirlock) {
+        // Piso do biodomo - cinza claro
+        r = 0.5f; g = 0.55f; b = 0.6f;
+        return;
+    }
+    if (tile == Block::BiodomeGenerator) {
+        // Gerador - amarelo brilhante
+        r = 1.0f; g = 0.9f; b = 0.3f;
+        return;
+    }
+    if (tile == Block::BiodomeOxygen) {
+        // Oxigenio - azul
+        r = 0.3f; g = 0.7f; b = 1.0f;
+        return;
+    }
+    if (tile == Block::BiodomeWater) {
+        // Agua - azul escuro
+        r = 0.2f; g = 0.5f; b = 0.9f;
+        return;
+    }
+    if (tile == Block::BiodomePipe || tile == Block::BiodomeConnector) {
+        // Tubos - cinza medio
+        r = 0.45f; g = 0.50f; b = 0.55f;
+        return;
+    }
+    if (tile == Block::BiodomeVent) {
+        // Ventilacao - cinza azulado
+        r = 0.4f; g = 0.5f; b = 0.6f;
+        return;
+    }
+    if (tile == Block::BiodomeLight) {
+        // Luz - branco/amarelo
+        r = 1.0f; g = 0.95f; b = 0.8f;
+        return;
+    }
+    
     if (is_base_structure(tile)) {
         r = 0.4f; g = 0.6f; b = 0.9f;
         return;
@@ -3559,20 +4152,25 @@ static void get_minimap_color(int x, int y, float& r, float& g, float& b) {
     b = std::clamp(b * height_mod, 0.0f, 1.0f);
 }
 
-// Renderizar minimapa no HUD
+// Renderizar minimapa no HUD - CANTO INFERIOR ESQUERDO
 static void render_minimap(int win_w, int win_h) {
     if (!g_world) return;
+    if (!g_minimap_cfg.enabled) return;
     
-    float map_size = g_map_cfg.minimap_size;
-    float map_x = (float)win_w - map_size - 15.0f;
-    float map_y = 200.0f;  // Abaixo do painel de terraformacao
+    // Usar configuracoes do ui_layout.json se carregadas
+    float map_size = g_minimap_cfg.size > 0 ? g_minimap_cfg.size : g_map_cfg.minimap_size;
+    float margin = g_minimap_cfg.margin;
+    
+    // === POSICAO: CANTO INFERIOR ESQUERDO ===
+    float map_x = margin;
+    float map_y = (float)win_h - map_size - margin - 70.0f;  // Offset extra para nao cobrir hotbar
     
     // Fundo do minimapa (borda)
     render_quad(map_x - 3.0f, map_y - 3.0f, map_size + 6.0f, map_size + 6.0f, 0.1f, 0.1f, 0.15f, 0.95f);
     render_quad(map_x - 1.0f, map_y - 1.0f, map_size + 2.0f, map_size + 2.0f, 0.2f, 0.25f, 0.3f, 0.9f);
     
     // Calcular viewport do mapa (tiles visiveis)
-    int view_tiles = (int)(g_map_cfg.minimap_zoom * 64.0f);
+    int view_tiles = g_minimap_cfg.sample_radius > 0 ? g_minimap_cfg.sample_radius * 2 : (int)(g_map_cfg.minimap_zoom * 64.0f);
     if (view_tiles < 16) view_tiles = 16;
     if (view_tiles > 128) view_tiles = 128;
     
@@ -3651,28 +4249,67 @@ static void render_minimap(int win_w, int win_h) {
         glEnd();
     }
     
-    // Icone da base (se visivel no viewport)
-    {
+    // Icone da base PULSANTE (se visivel no viewport)
+    if (g_minimap_cfg.show_base) {
         int base_rel_x = g_base_x - start_x;
         int base_rel_y = g_base_y - start_y;
+        
+        // Efeito pulsante
+        float pulse = 0.7f + 0.3f * std::sin(g_day_time * 4.0f);
         
         if (base_rel_x >= 0 && base_rel_x < view_tiles && base_rel_y >= 0 && base_rel_y < view_tiles) {
             float base_px = map_x + ((float)base_rel_x + 0.5f) * tile_px;
             float base_py = map_y + ((float)base_rel_y + 0.5f) * tile_px;
             
-            // Icone de casa/base
-            float house_size = 5.0f;
+            // Icone de casa/base pulsante
+            float house_size = 5.0f * pulse;
             
-            // Telhado (triangulo)
+            // Contorno preto
+            glColor4f(0.0f, 0.0f, 0.0f, 0.8f);
             glBegin(GL_TRIANGLES);
-            glColor4f(0.3f, 0.7f, 1.0f, 1.0f);
+            glVertex2f(base_px, base_py - house_size - 1.5f);
+            glVertex2f(base_px - house_size - 1.5f, base_py + 1.5f);
+            glVertex2f(base_px + house_size + 1.5f, base_py + 1.5f);
+            glEnd();
+            
+            // Telhado (triangulo) - azul brilhante pulsante
+            glBegin(GL_TRIANGLES);
+            glColor4f(0.3f * pulse, 0.7f * pulse, 1.0f * pulse, 1.0f);
             glVertex2f(base_px, base_py - house_size);
             glVertex2f(base_px - house_size, base_py);
             glVertex2f(base_px + house_size, base_py);
             glEnd();
             
-            // Base (quadrado)
-            render_quad(base_px - house_size * 0.7f, base_py, house_size * 1.4f, house_size, 0.3f, 0.6f, 0.9f, 1.0f);
+            // Base (quadrado) pulsante
+            render_quad(base_px - house_size * 0.7f, base_py, house_size * 1.4f, house_size * 0.8f, 
+                       0.3f * pulse, 0.6f * pulse, 0.9f * pulse, 1.0f);
+        } else {
+            // Base fora do viewport - mostrar seta na borda apontando para ela
+            float center_x = map_x + map_size * 0.5f;
+            float center_y = map_y + map_size * 0.5f;
+            
+            // Calcular angulo para a base
+            float dx = (float)(g_base_x - (int)g_player.pos.x);
+            float dy = (float)(g_base_y - (int)g_player.pos.y);
+            float angle = std::atan2(dy, dx);
+            
+            // Posicao na borda do minimapa
+            float edge_dist = map_size * 0.45f;
+            float edge_x = center_x + std::cos(angle) * edge_dist;
+            float edge_y = center_y + std::sin(angle) * edge_dist;
+            
+            float arrow_size = 6.0f * pulse;
+            
+            // Seta pulsante apontando para a base
+            glColor4f(0.3f * pulse, 0.7f * pulse, 1.0f * pulse, 0.95f);
+            glBegin(GL_TRIANGLES);
+            glVertex2f(edge_x + std::cos(angle) * arrow_size, 
+                       edge_y + std::sin(angle) * arrow_size);
+            glVertex2f(edge_x + std::cos(angle + 2.5f) * arrow_size * 0.6f, 
+                       edge_y + std::sin(angle + 2.5f) * arrow_size * 0.6f);
+            glVertex2f(edge_x + std::cos(angle - 2.5f) * arrow_size * 0.6f, 
+                       edge_y + std::sin(angle - 2.5f) * arrow_size * 0.6f);
+            glEnd();
         }
     }
     
@@ -3697,13 +4334,41 @@ static void render_minimap(int win_w, int win_h) {
         }
     }
     
-    // Titulo do minimapa
-    draw_text(map_x + 4.0f, map_y + map_size + 14.0f, "MAPA [M]", 0.7f, 0.75f, 0.8f, 0.8f);
+    // === MOLDURA PIXEL-ART ===
+    float border = 3.0f;
     
-    // Mostrar zoom atual
-    char zoom_str[32];
-    snprintf(zoom_str, sizeof(zoom_str), "Zoom: %.1fx", g_map_cfg.minimap_zoom);
-    draw_text(map_x + map_size - 60.0f, map_y + map_size + 14.0f, zoom_str, 0.6f, 0.65f, 0.7f, 0.7f);
+    // Borda clara (superior/esquerda)
+    glColor4f(0.50f, 0.52f, 0.55f, 0.95f);
+    glBegin(GL_QUADS);
+    // Topo
+    glVertex2f(map_x - border, map_y - border);
+    glVertex2f(map_x + map_size + border, map_y - border);
+    glVertex2f(map_x + map_size + border, map_y);
+    glVertex2f(map_x - border, map_y);
+    // Esquerda
+    glVertex2f(map_x - border, map_y);
+    glVertex2f(map_x, map_y);
+    glVertex2f(map_x, map_y + map_size);
+    glVertex2f(map_x - border, map_y + map_size);
+    glEnd();
+    
+    // Borda escura (inferior/direita)
+    glColor4f(0.15f, 0.15f, 0.18f, 0.95f);
+    glBegin(GL_QUADS);
+    // Base
+    glVertex2f(map_x - border, map_y + map_size);
+    glVertex2f(map_x + map_size + border, map_y + map_size);
+    glVertex2f(map_x + map_size + border, map_y + map_size + border);
+    glVertex2f(map_x - border, map_y + map_size + border);
+    // Direita
+    glVertex2f(map_x + map_size, map_y);
+    glVertex2f(map_x + map_size + border, map_y);
+    glVertex2f(map_x + map_size + border, map_y + map_size + border);
+    glVertex2f(map_x + map_size, map_y + map_size + border);
+    glEnd();
+    
+    // Titulo do minimapa (posicao ajustada para canto inferior esquerdo)
+    draw_text(map_x + 4.0f, map_y - 16.0f, "MAPA [M]", 0.7f, 0.75f, 0.8f, 0.8f);
 }
 
 // Renderizar mapa grande (tela cheia, tecla M)
@@ -4962,6 +5627,93 @@ static bool reload_player_visual_config(bool create_if_missing) {
 
     g_player_visual_cfg = cfg;
     g_player_visual_config_path = chosen_path;
+    return loaded;
+}
+
+// === UI LAYOUT CONFIG ===
+static void apply_ui_layout_config(const std::string& text, MinimapConfig& cfg) {
+    auto setf = [&](const char* key, float& value) {
+        float parsed = 0.0f;
+        size_t pos = text.find(std::string("\"") + key + "\"");
+        if (pos != std::string::npos) {
+            pos = text.find(':', pos);
+            if (pos != std::string::npos) {
+                if (sscanf(text.c_str() + pos + 1, " %f", &parsed) == 1) {
+                    value = parsed;
+                }
+            }
+        }
+    };
+    auto seti = [&](const char* key, int& value) {
+        int parsed = 0;
+        size_t pos = text.find(std::string("\"") + key + "\"");
+        if (pos != std::string::npos) {
+            pos = text.find(':', pos);
+            if (pos != std::string::npos) {
+                if (sscanf(text.c_str() + pos + 1, " %d", &parsed) == 1) {
+                    value = parsed;
+                }
+            }
+        }
+    };
+    auto setb = [&](const char* key, bool& value) {
+        size_t pos = text.find(std::string("\"") + key + "\"");
+        if (pos != std::string::npos) {
+            pos = text.find(':', pos);
+            if (pos != std::string::npos) {
+                size_t end = text.find_first_of(",}", pos);
+                std::string val = text.substr(pos + 1, end - pos - 1);
+                if (val.find("true") != std::string::npos) value = true;
+                else if (val.find("false") != std::string::npos) value = false;
+            }
+        }
+    };
+    
+    setf("size", cfg.size);
+    setf("offset_x", cfg.margin);
+    seti("sample_radius", cfg.sample_radius);
+    setf("zoom", cfg.zoom);
+    setb("show_base", cfg.show_base);
+    setb("show_resources", cfg.show_resources);
+    setb("enabled", cfg.enabled);
+    
+    cfg.size = std::clamp(cfg.size, 80.0f, 300.0f);
+    cfg.margin = std::clamp(cfg.margin, 4.0f, 50.0f);
+    cfg.sample_radius = std::clamp(cfg.sample_radius, 20, 120);
+    cfg.zoom = std::clamp(cfg.zoom, 0.5f, 3.0f);
+}
+
+static bool reload_ui_layout_config(bool create_if_missing) {
+    const char* candidates[] = {
+        "ui_layout.json",
+        "..\\ui_layout.json",
+        "..\\..\\ui_layout.json",
+        "..\\..\\..\\ui_layout.json"
+    };
+
+    std::string chosen_path;
+    for (const char* c : candidates) {
+        if (file_exists(c)) {
+            chosen_path = c;
+            break;
+        }
+    }
+
+    if (chosen_path.empty()) {
+        return false;
+    }
+
+    MinimapConfig cfg = MinimapConfig{};
+    bool loaded = false;
+    std::ifstream f(chosen_path);
+    if (f) {
+        std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        apply_ui_layout_config(text, cfg);
+        loaded = true;
+    }
+
+    g_minimap_cfg = cfg;
+    g_ui_layout_path = chosen_path;
     return loaded;
 }
 
@@ -8520,6 +9272,161 @@ static void render_physics_debug_3d() {
     glLineWidth(1.0f);
 }
 
+// ============= RENDERIZACAO 3D DE CUPULAS GEODESICAS =============
+static void render_dome_3d(const Dome3D& dome, float daylight) {
+    // Parametros da cupula
+    float cx = dome.center_x;
+    float cz = dome.center_z;
+    float base_y = dome.base_y;
+    float radius = dome.radius;
+    float height = dome.height;
+    
+    // Resolucao da malha (segmentos)
+    int lat_segments = 16;   // Linhas de latitude (horizontal)
+    int lon_segments = 32;   // Linhas de longitude (vertical)
+    
+    // Cores do vidro geodesico (azul transparente)
+    float glass_r = 0.75f + daylight * 0.15f;
+    float glass_g = 0.88f + daylight * 0.10f;
+    float glass_b = 0.98f;
+    float glass_a = 0.28f;  // Transparencia
+    
+    // Cor do frame metalico
+    float frame_r = 0.55f;
+    float frame_g = 0.58f;
+    float frame_b = 0.62f;
+    
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_TEXTURE_2D);
+    
+    // === RENDERIZAR PAINEIS DE VIDRO (quads) ===
+    glBegin(GL_QUADS);
+    
+    for (int lat = 0; lat < lat_segments; ++lat) {
+        float lat0 = (float)lat / (float)lat_segments;
+        float lat1 = (float)(lat + 1) / (float)lat_segments;
+        
+        // Angulos de elevacao (0 = base, PI/2 = topo)
+        float phi0 = lat0 * 3.14159f * 0.5f;
+        float phi1 = lat1 * 3.14159f * 0.5f;
+        
+        for (int lon = 0; lon < lon_segments; ++lon) {
+            float lon0 = (float)lon / (float)lon_segments;
+            float lon1 = (float)(lon + 1) / (float)lon_segments;
+            
+            // Angulos azimutais
+            float theta0 = lon0 * 2.0f * 3.14159f;
+            float theta1 = lon1 * 2.0f * 3.14159f;
+            
+            // Calcular 4 vertices do quad
+            // Vertex 0: (lat0, lon0)
+            float x0 = cx + radius * std::cos(phi0) * std::cos(theta0);
+            float z0 = cz + radius * std::cos(phi0) * std::sin(theta0);
+            float y0 = base_y + height * std::sin(phi0);
+            
+            // Vertex 1: (lat0, lon1)
+            float x1 = cx + radius * std::cos(phi0) * std::cos(theta1);
+            float z1 = cz + radius * std::cos(phi0) * std::sin(theta1);
+            float y1 = base_y + height * std::sin(phi0);
+            
+            // Vertex 2: (lat1, lon1)
+            float x2 = cx + radius * std::cos(phi1) * std::cos(theta1);
+            float z2 = cz + radius * std::cos(phi1) * std::sin(theta1);
+            float y2 = base_y + height * std::sin(phi1);
+            
+            // Vertex 3: (lat1, lon0)
+            float x3 = cx + radius * std::cos(phi1) * std::cos(theta0);
+            float z3 = cz + radius * std::cos(phi1) * std::sin(theta0);
+            float y3 = base_y + height * std::sin(phi1);
+            
+            // Determinar se e frame ou vidro (padrao geodesico)
+            bool is_frame = (lon % 4 == 0) || (lat % 4 == 0);
+            
+            if (is_frame) {
+                // Frame mais escuro e opaco
+                glColor4f(frame_r, frame_g, frame_b, 0.85f);
+            } else {
+                // Vidro transparente
+                // Variar levemente a cor para efeito visual
+                float variation = 0.05f * std::sin((float)(lat * 7 + lon * 13));
+                glColor4f(glass_r + variation, glass_g + variation, glass_b, glass_a);
+            }
+            
+            // Normal aproximada (apontando para fora)
+            float nx = std::cos(phi0 + phi1) * 0.5f * std::cos(theta0 + theta1) * 0.5f;
+            float nz = std::cos(phi0 + phi1) * 0.5f * std::sin(theta0 + theta1) * 0.5f;
+            float ny = std::sin(phi0 + phi1) * 0.5f;
+            glNormal3f(nx, ny, nz);
+            
+            glVertex3f(x0, y0, z0);
+            glVertex3f(x1, y1, z1);
+            glVertex3f(x2, y2, z2);
+            glVertex3f(x3, y3, z3);
+        }
+    }
+    glEnd();
+    
+    // === RENDERIZAR LINHAS ESTRUTURAIS (frame geodesico) ===
+    glLineWidth(2.0f);
+    glColor4f(frame_r * 0.7f, frame_g * 0.7f, frame_b * 0.7f, 0.9f);
+    glBegin(GL_LINES);
+    
+    // Linhas de longitude (meridianos)
+    for (int lon = 0; lon < lon_segments; lon += 2) {
+        float theta = (float)lon / (float)lon_segments * 2.0f * 3.14159f;
+        
+        for (int lat = 0; lat < lat_segments; ++lat) {
+            float phi0 = (float)lat / (float)lat_segments * 3.14159f * 0.5f;
+            float phi1 = (float)(lat + 1) / (float)lat_segments * 3.14159f * 0.5f;
+            
+            float x0 = cx + radius * std::cos(phi0) * std::cos(theta);
+            float z0 = cz + radius * std::cos(phi0) * std::sin(theta);
+            float y0 = base_y + height * std::sin(phi0);
+            
+            float x1 = cx + radius * std::cos(phi1) * std::cos(theta);
+            float z1 = cz + radius * std::cos(phi1) * std::sin(theta);
+            float y1 = base_y + height * std::sin(phi1);
+            
+            glVertex3f(x0, y0, z0);
+            glVertex3f(x1, y1, z1);
+        }
+    }
+    
+    // Linhas de latitude (paralelos)
+    for (int lat = 0; lat <= lat_segments; lat += 2) {
+        float phi = (float)lat / (float)lat_segments * 3.14159f * 0.5f;
+        float r_at_lat = radius * std::cos(phi);
+        float y_at_lat = base_y + height * std::sin(phi);
+        
+        for (int lon = 0; lon < lon_segments; ++lon) {
+            float theta0 = (float)lon / (float)lon_segments * 2.0f * 3.14159f;
+            float theta1 = (float)(lon + 1) / (float)lon_segments * 2.0f * 3.14159f;
+            
+            float x0 = cx + r_at_lat * std::cos(theta0);
+            float z0 = cz + r_at_lat * std::sin(theta0);
+            
+            float x1 = cx + r_at_lat * std::cos(theta1);
+            float z1 = cz + r_at_lat * std::sin(theta1);
+            
+            glVertex3f(x0, y_at_lat, z0);
+            glVertex3f(x1, y_at_lat, z1);
+        }
+    }
+    
+    glEnd();
+    glLineWidth(1.0f);
+    
+    glDisable(GL_BLEND);
+}
+
+// Renderizar todas as cupulas do mundo
+static void render_all_domes(float daylight) {
+    for (const auto& dome : g_domes) {
+        render_dome_3d(dome, daylight);
+    }
+}
+
 // ============= Rendering =============
 static void render_world(HDC hdc, int win_w, int win_h) {
     if (!g_world) return;
@@ -9308,6 +10215,17 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         }
     }
     
+    // === RENDERIZAR CUPULAS GEODESICAS 3D ===
+    if (!g_domes.empty()) {
+        float dome_daylight = compute_daylight(day_phase);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);  // Nao escrever no depth buffer (transparencia)
+        render_all_domes(dome_daylight);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+    }
+    
     // === MUDAR PARA PROJECAO 2D PARA HUD ===
     glDisable(GL_FOG);
     glDisable(GL_DEPTH_TEST);
@@ -9987,6 +10905,9 @@ static void render_world(HDC hdc, int win_w, int win_h) {
                 g_physics_cfg.fixed_timestep, g_physics.alpha, g_camera_hidden_time, g_camera_debug_ray_count);
             draw_text(20.0f, win_h - 82.0f, buf, 0.85f, 0.85f, 0.90f, 0.95f);
         }
+        
+        // === MINIMAPA (CANTO INFERIOR ESQUERDO) ===
+        render_minimap(win_w, win_h);
     }
 
     // Toast notifications
@@ -10733,6 +11654,7 @@ static void update_game(float dt, HWND hwnd) {
                     g_cam_pos = g_player.pos;
                     g_day_time = kDayLength * 0.25f;
                     g_modules.clear();
+                    g_domes.clear();
                     g_particles.clear();
                     g_shooting_stars.clear();
                     g_construction_queue.clear();
@@ -10769,6 +11691,7 @@ static void update_game(float dt, HWND hwnd) {
             g_cam_pos = g_player.pos;
             g_day_time = kDayLength * 0.25f;  // Start at morning
             g_modules.clear();
+            g_domes.clear();
             g_particles.clear();
             g_shooting_stars.clear();
             g_construction_queue.clear();
@@ -10954,6 +11877,7 @@ static void update_game(float dt, HWND hwnd) {
             g_cam_pos = g_player.pos;
             g_day_time = kDayLength * 0.25f;
             g_modules.clear();
+            g_domes.clear();
             g_particles.clear();
             g_drops.clear();
             g_construction_queue.clear();
@@ -11107,6 +12031,7 @@ static void update_game(float dt, HWND hwnd) {
         reload_camera_config(true);
         reload_mining_config(true);
         reload_player_visual_config(true);
+        reload_ui_layout_config(false);
         reset_player_physics_runtime(false);
         set_toast(std::string("Configs recarregadas: ") + g_physics_config_path + " | " + g_terrain_config_path + " | " + g_sky_config_path + " | " + g_camera_config_path + " | " + g_mining_config_path + " | " + g_player_visual_config_path, 3.5f);
     }
@@ -11878,6 +12803,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     reload_camera_config(true);
     reload_mining_config(true);
     reload_player_visual_config(true);
+    reload_ui_layout_config(false);
 
     // Initialize world for menu background
     g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, 1337);

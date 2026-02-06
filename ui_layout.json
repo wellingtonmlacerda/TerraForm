@@ -1,0 +1,45 @@
+{
+    "minimap": {
+        "enabled": true,
+        "anchor": "bottom-left",
+        "offset_x": 16,
+        "offset_y": 16,
+        "size": 150,
+        "sample_radius": 60,
+        "zoom": 1.0,
+        "show_base": true,
+        "show_resources": false
+    },
+    "hud_panels": {
+        "left_panel": {
+            "enabled": true,
+            "margin_x": 20,
+            "margin_y": 50,
+            "bar_width": 170,
+            "bar_height": 14,
+            "bar_gap": 22
+        },
+        "right_panel": {
+            "enabled": true,
+            "margin_x": 30,
+            "margin_y": 18
+        }
+    },
+    "hotbar": {
+        "slot_size": 48,
+        "slot_gap": 4,
+        "position": "bottom-center",
+        "margin_y": 12
+    },
+    "crosshair": {
+        "enabled": true,
+        "size": 12,
+        "thickness": 2
+    },
+    "progress_bar": {
+        "width": 400,
+        "height": 22,
+        "position": "top-center",
+        "margin_y": 12
+    }
+}

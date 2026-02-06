@@ -1,0 +1,41 @@
+{
+  "biodome": {
+    "dome_radius": 45,
+    "dome_height": 25,
+    "ring_radius": 55,
+    "ring_width": 4,
+    "airlock_width": 5,
+    "num_modules": 12,
+    "glass_density": 0.90,
+    "fertile_center": true,
+    "fertile_radius": 35
+  },
+  "day_cycle": {
+    "day_length_seconds": 600,
+    "comment": "10 minutos por ciclo dia/noite completo"
+  },
+  "atmosphere": {
+    "oxygen_level": 100.0,
+    "temperature": 20.0,
+    "humidity": 50.0,
+    "pressure": 101.3
+  },
+  "modules": {
+    "generators": 3,
+    "oxygen_units": 3,
+    "water_units": 3,
+    "vents": 3
+  },
+  "interior": {
+    "fertile_soil_enabled": true,
+    "lighting_enabled": true,
+    "light_rings": [8, 16, 24, 32],
+    "lights_per_ring": [4, 6, 8, 12]
+  },
+  "appearance": {
+    "glass_transparency": 0.35,
+    "frame_color": [0.70, 0.72, 0.75],
+    "floor_color": [0.40, 0.42, 0.45],
+    "fertile_color": [0.35, 0.25, 0.15]
+  }
+}

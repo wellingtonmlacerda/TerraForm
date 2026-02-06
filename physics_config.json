@@ -19,7 +19,7 @@
   "terminal_velocity": 38.0,
   "ground_snap": 0.20,
   "ground_tolerance": 0.06,
-  "step_height": 0.62,
+  "step_height": 0.75,
   "step_probe_distance": 0.54,
   "slope_limit_normal_y": 0.70,
   "slope_slide_accel": 7.5,

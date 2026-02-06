@@ -8,10 +8,14 @@ add_executable(terraformer WIN32
   src/main.cpp
 )
 
-if(MSVC)
-  target_compile_definitions(terraformer PRIVATE _CRT_SECURE_NO_WARNINGS)
+if(WIN32)
+  # Windows (MSVC ou MinGW)
+  if(MSVC)
+    target_compile_definitions(terraformer PRIVATE _CRT_SECURE_NO_WARNINGS)
+  endif()
   target_link_libraries(terraformer PRIVATE opengl32 gdi32 user32 kernel32)
 else()
+  # Linux/Unix
   target_link_libraries(terraformer PRIVATE GL X11)
 endif()
 
