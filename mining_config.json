@@ -1,0 +1,16 @@
+{
+  "hit_interval": 0.20,
+  "hit_interval_min": 0.09,
+  "early_game_speed_mult": 1.12,
+  "late_game_speed_mult": 0.85,
+  "hits_sand": 1,
+  "hits_dirt": 2,
+  "hits_ice": 2,
+  "hits_snow": 2,
+  "hits_stone": 3,
+  "hits_metal": 4,
+  "hits_crystal": 5,
+  "hits_ore": 4,
+  "hits_wood": 2,
+  "hits_modules": 4
+}
