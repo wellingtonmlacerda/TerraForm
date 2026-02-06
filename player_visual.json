@@ -1,0 +1,16 @@
+{
+  "breathing_amp": 0.018,
+  "breathing_speed": 2.2,
+  "walk_bob_amp": 0.060,
+  "walk_bob_speed": 12.5,
+  "walk_weight_amp": 0.10,
+  "mine_impact_amp": 0.19,
+  "idle_sway_amp": 0.016,
+  "idle_sway_speed": 1.6,
+  "visor_reflect_alpha": 0.36,
+  "headlamp_intensity": 0.74,
+  "suit_wear_strength": 0.20,
+  "suit_dirt_strength": 0.24,
+  "suit_frost_strength": 0.32,
+  "suit_damage_strength": 0.45
+}

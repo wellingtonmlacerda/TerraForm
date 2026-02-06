@@ -95,6 +95,14 @@ static float compute_night_alpha(float day_phase) {
 // Escala vertical do heightmap (suaviza o relevo e evita "degraus" grandes por tile).
 // 1 unidade no heightmap = kHeightScale unidades no mundo 3D.
 static constexpr float kHeightScale = 0.25f;
+static constexpr bool DEBUG_DRAW_COLLISIONS = false;
+
+// Conversao consistente entre coordenadas de mundo e indice de tile.
+// Os tiles renderizados sao centrados no indice inteiro (tx, tz), com bounds [tx-0.5, tx+0.5].
+static int world_to_tile(float v) { return (int)std::floor(v + 0.5f); }
+static float tile_center(int t) { return (float)t; }
+static float tile_min(int t) { return (float)t - 0.5f; }
+static float tile_max(int t) { return (float)t + 0.5f; }
 
 // ============= SISTEMA DE CORES CENTRALIZADO (UX) =============
 // Cores funcionais - cada cor tem significado consistente
@@ -1007,87 +1015,242 @@ static BlockTex block_tex(Block b) {
 }
 
 struct TerrainConfig {
-    float macro_scale = 0.00115f;
-    float ridge_scale = 0.0048f;
-    float valley_scale = 0.0020f;
-    float detail_scale = 0.0180f;
-    float warp_scale = 0.0032f;
-    float warp_strength = 26.0f;
+    float macro_scale = 0.00095f;
+    float ridge_scale = 0.0038f;
+    float valley_scale = 0.00145f;
+    float detail_scale = 0.0120f;
+    float warp_scale = 0.0024f;
+    float warp_strength = 19.0f;
 
-    float macro_weight = 0.52f;
-    float ridge_weight = 0.76f;
-    float valley_weight = 0.42f;
-    float detail_weight = 0.10f;
+    float macro_weight = 0.50f;
+    float ridge_weight = 0.52f;
+    float valley_weight = 0.58f;
+    float detail_weight = 0.06f;
 
-    float plateau_level = 0.62f;
-    float plateau_flatten = 0.30f;
+    float plateau_level = 0.57f;
+    float plateau_flatten = 0.38f;
 
     float min_height = 2.0f;
-    float max_height = 116.0f;
-    float sea_height = 12.0f;
-    float snow_height = 88.0f;
+    float max_height = 92.0f;
+    float sea_height = 14.0f;
+    float snow_height = 76.0f;
 
-    int thermal_erosion_passes = 4;
-    int hydraulic_erosion_passes = 3;
-    int smooth_passes = 1;
-    float erosion_strength = 0.34f;
-    float thermal_talus = 0.026f;
+    int thermal_erosion_passes = 5;
+    int hydraulic_erosion_passes = 5;
+    int smooth_passes = 2;
+    float erosion_strength = 0.40f;
+    float thermal_talus = 0.022f;
 
     float temp_scale = 0.0016f;
     float moisture_scale = 0.0019f;
     float biome_blend = 0.18f;
 
-    float fissure_scale = 0.010f;
-    float fissure_depth = 0.09f;
-    float crater_scale = 0.0050f;
-    float crater_depth = 0.075f;
-    float detail_object_density = 0.090f;
+    float fissure_scale = 0.0080f;
+    float fissure_depth = 0.060f;
+    float crater_scale = 0.0040f;
+    float crater_depth = 0.055f;
+    float detail_object_density = 0.060f;
 };
 
 struct SkyConfig {
-    float stars_density = 1250.0f;
-    float stars_parallax = 0.010f;
-    float nebula_alpha = 0.17f;
-    float nebula_parallax = 0.020f;
-    float cloud_alpha = 0.14f;
-    float cloud_parallax = 0.060f;
+    float stars_density = 1650.0f;
+    float stars_parallax = 0.008f;
+    float nebula_alpha = 0.22f;
+    float nebula_parallax = 0.016f;
+    float cloud_alpha = 0.20f;
+    float cloud_parallax = 0.050f;
 
-    float planet_radius = 132.0f;
-    float planet_distance = 1180.0f;
-    float planet_orbit_speed = 0.085f;
-    float planet_parallax = 0.034f;
+    float planet_radius = 160.0f;
+    float planet_distance = 1220.0f;
+    float planet_orbit_speed = 0.060f;
+    float planet_parallax = 0.028f;
 
-    float sun_radius = 44.0f;
-    float sun_distance = 760.0f;
-    float sun_halo_size = 1.90f;
-    float bloom_intensity = 0.30f;
+    float sun_radius = 52.0f;
+    float sun_distance = 820.0f;
+    float sun_halo_size = 2.25f;
+    float bloom_intensity = 0.45f;
 
-    float moon_radius = 31.0f;
-    float moon_distance = 900.0f;
-    float moon_orbit_speed = 0.55f;
-    float moon_parallax = 0.050f;
+    float moon_radius = 36.0f;
+    float moon_distance = 940.0f;
+    float moon_orbit_speed = 0.48f;
+    float moon_parallax = 0.040f;
 
-    float moon2_radius = 18.0f;
-    float moon2_distance = 980.0f;
-    float moon2_orbit_speed = 1.15f;
-    float moon2_parallax = 0.060f;
+    float moon2_radius = 22.0f;
+    float moon2_distance = 1010.0f;
+    float moon2_orbit_speed = 0.98f;
+    float moon2_parallax = 0.050f;
 
-    float atmosphere_horizon_boost = 0.32f;
-    float atmosphere_zenith_boost = 0.17f;
-    float horizon_fade = 0.24f;
+    float atmosphere_horizon_boost = 0.45f;
+    float atmosphere_zenith_boost = 0.24f;
+    float horizon_fade = 0.28f;
 
-    float fog_start_factor = 0.40f;
-    float fog_end_factor = 0.92f;
-    float fog_distance_bonus = 22.0f;
+    float fog_start_factor = 0.34f;
+    float fog_end_factor = 0.88f;
+    float fog_distance_bonus = 36.0f;
 
-    float eclipse_frequency_days = 6.0f;
-    float eclipse_strength = 0.45f;
+    float eclipse_frequency_days = 8.0f;
+    float eclipse_strength = 0.50f;
+};
+
+struct CameraConfig {
+    float spawn_distance = 4.2f;
+    float spawn_pitch = 24.0f;
+    float spawn_yaw = 180.0f;
+
+    float open_pitch = 26.0f;
+    float semi_pitch = 50.0f;
+    float cave_pitch = 72.0f;
+    float emergency_pitch = 87.0f;
+
+    float open_distance_scale = 1.00f;
+    float semi_distance_scale = 0.86f;
+    float cave_distance_scale = 0.74f;
+    float emergency_distance_scale = 0.62f;
+
+    float open_target_lift = 0.06f;
+    float semi_target_lift = 0.46f;
+    float cave_target_lift = 1.16f;
+    float emergency_target_lift = 1.72f;
+
+    float pitch_lerp = 0.14f;
+    float distance_lerp = 0.14f;
+    float lift_lerp = 0.15f;
+
+    float cave_depth_start = 0.45f;
+    float cave_depth_end = 2.60f;
+    float enclosed_start = 0.28f;
+    float enclosed_end = 0.76f;
+    float occlusion_full = 0.64f;
+    float emergency_hidden_time = 0.50f;
+
+    float transparency_alpha = 0.30f;
+    float transparency_fade_in = 10.0f;
+    float transparency_fade_out = 5.0f;
+
+    float collision_probe_step = 0.14f;
+    float collision_padding = 0.34f;
+    float min_collision_distance = 0.70f;
+    float debug_ray_length = 8.0f;
+};
+
+struct MiningConfig {
+    float hit_interval = 0.20f;          // intervalo base entre impactos
+    float hit_interval_min = 0.09f;      // limite para nao travar em FPS alto
+    float early_game_speed_mult = 1.12f; // inicio mais rapido
+    float late_game_speed_mult = 0.85f;  // fim um pouco mais lento (balance)
+
+    int hits_sand = 1;
+    int hits_dirt = 2;
+    int hits_ice = 2;
+    int hits_snow = 2;
+    int hits_stone = 3;
+    int hits_metal = 4;
+    int hits_crystal = 5;
+    int hits_ore = 4;
+    int hits_wood = 2;
+    int hits_modules = 4;
+};
+
+struct PlayerVisualConfig {
+    float breathing_amp = 0.018f;
+    float breathing_speed = 2.2f;
+    float walk_bob_amp = 0.060f;
+    float walk_bob_speed = 12.5f;
+    float walk_weight_amp = 0.10f;
+    float mine_impact_amp = 0.19f;
+    float idle_sway_amp = 0.016f;
+    float idle_sway_speed = 1.6f;
+
+    float visor_reflect_alpha = 0.36f;
+    float headlamp_intensity = 0.74f;
+    float suit_wear_strength = 0.20f;
+    float suit_dirt_strength = 0.24f;
+    float suit_frost_strength = 0.32f;
+    float suit_damage_strength = 0.45f;
+};
+
+struct BaseConfig {
+    float safe_radius = 15.0f;
+    float recharge_oxygen_rate = 3.0f;
+    float recharge_water_rate = 2.4f;
+    float recharge_food_rate = 1.2f;
+    float repair_player_hp_per_sec = 0.80f;
+    float jetpack_refuel_per_sec = 7.0f;
+    float auto_save_cooldown = 45.0f;
+    float beacon_height = 9.0f;
+    float beacon_alpha = 0.42f;
+    float beacon_pulse_speed = 2.0f;
+};
+
+struct MapConfig {
+    float minimap_size = 188.0f;
+    float minimap_zoom = 1.0f;
+    float minimap_zoom_min = 0.45f;
+    float minimap_zoom_max = 2.8f;
+    float minimap_scan_radius = 10.0f;
+    float minimap_update_interval = 0.08f;
+    float minimap_follow_lerp = 0.22f;
+
+    float world_map_zoom = 1.0f;
+    float world_map_zoom_min = 0.35f;
+    float world_map_zoom_max = 4.0f;
+    float world_map_pan_speed = 85.0f;
+    float waypoint_pick_radius = 2.2f;
+    int max_waypoints = 24;
+};
+
+struct MapWaypoint {
+    int x = 0;
+    int y = 0;
+    float r = 1.0f;
+    float g = 0.3f;
+    float b = 0.3f;
+    std::string label;
+    bool visible = true;
+};
+
+struct UiRect {
+    float x = 0.0f;
+    float y = 0.0f;
+    float w = 0.0f;
+    float h = 0.0f;
+};
+
+struct MiniMapRuntime {
+    std::vector<uint8_t> explored;
+    std::vector<uint8_t> pixels;
+    std::vector<MapWaypoint> waypoints;
+    GLuint texture = 0;
+    int tex_w = 0;
+    int tex_h = 0;
+    bool dirty_full = true;
+    float update_timer = 0.0f;
+    float base_auto_save_timer = 0.0f;
+    float center_x = 0.0f;
+    float center_y = 0.0f;
+    float minimap_zoom = 1.0f;
+    float world_zoom = 1.0f;
+    float world_pan_x = 0.0f;
+    float world_pan_y = 0.0f;
+    bool world_map_open = false;
+    UiRect world_map_rect = {};
 };
 
 static TerrainConfig g_terrain_cfg = {};
 static SkyConfig g_sky_cfg = {};
+static CameraConfig g_camera_cfg = {};
+static MiningConfig g_mining_cfg = {};
+static PlayerVisualConfig g_player_visual_cfg = {};
+static BaseConfig g_base_cfg = {};
+static MapConfig g_map_cfg = {};
+static MiniMapRuntime g_minimap = {};
 static std::string g_terrain_config_path = "terrain_config.json";
 static std::string g_sky_config_path = "sky_config.json";
+static std::string g_camera_config_path = "camera_config.json";
+static std::string g_mining_config_path = "mining_config.json";
+static std::string g_player_visual_config_path = "player_visual.json";
+static std::string g_base_config_path = "base_config.json";
+static std::string g_map_config_path = "map_config.json";
 
 // ============= World =============
 struct World {
@@ -1444,9 +1607,17 @@ static void generate_base(World& world);
 static Block surface_block_at(const World& world, int tx, int tz);
 static Block object_block_at(const World& world, int tx, int tz);
 static float surface_height_at(const World& world, int tx, int tz);
+static float get_block_height(Block b);
 static bool reload_physics_config(bool create_if_missing);
 static bool reload_terrain_config(bool create_if_missing);
+static void render_quad(float x, float y, float w, float h, float r, float g, float b, float a);
+static void draw_text(float x, float y, const std::string& s, float r, float g, float b, float a);
+static void set_toast(const std::string& msg, float duration);
+static float compute_daylight(float day_phase);
 static bool reload_sky_config(bool create_if_missing);
+static bool reload_camera_config(bool create_if_missing);
+static bool reload_mining_config(bool create_if_missing);
+static bool reload_player_visual_config(bool create_if_missing);
 static void reset_player_physics_runtime(bool clear_timers = true);
 static void step_player_physics(const PlayerPhysicsInput& input, float frame_dt);
 static void build_physics_test_map(World& world);
@@ -1472,43 +1643,87 @@ struct Camera3D {
     Vec3 up = {0.0f, 1.0f, 0.0f}; // Vetor up
     
     // Camera em terceira pessoa com horizonte visivel (menos "top-down")
-    float distance = 5.4f;      // Distancia do jogador
+    float distance = 4.8f;      // Distancia do jogador
     float yaw = 180.0f;         // Rotacao horizontal (graus)
     float pitch = 18.0f;        // Rotacao vertical (mais baixa para ver o horizonte)
     float min_pitch = 8.0f;
-    float max_pitch = 65.0f;
+    float max_pitch = 88.0f;
     float min_distance = 2.2f;
     float max_distance = 90.0f;
     float sensitivity = 0.18f;  // Sensibilidade mais suave
     float smooth_speed = 6.0f;  // Suavizacao do seguimento
     
     // Distancia efetiva (apos colisao)
-    float effective_distance = 5.4f;
+    float effective_distance = 4.8f;
 };
+
+enum class CameraMode : uint8_t {
+    Open = 0,
+    SemiClosed,
+    Cave,
+    Emergency,
+};
+
+struct CameraDebugRay {
+    Vec3 from = {0.0f, 0.0f, 0.0f};
+    Vec3 to = {0.0f, 0.0f, 0.0f};
+    bool blocked = false;
+};
+
 static Camera3D g_camera;
 static void check_camera_collision();
-static constexpr float kCameraSpawnDistance = 5.4f;
-static constexpr float kCameraSpawnPitch = 18.0f;
-static constexpr float kCameraSpawnYaw = 180.0f;
+static float g_camera_adapt_pitch = 0.0f;
+static float g_camera_adapt_distance_scale = 1.0f;
+static float g_camera_adapt_target_lift = 0.0f;
+static CameraMode g_camera_mode = CameraMode::Open;
+static std::string g_camera_mode_reason = "Open";
+static float g_camera_obstruction = 0.0f;
+static float g_camera_enclosed = 0.0f;
+static float g_camera_hidden_time = 0.0f;
+static std::unordered_map<int, float> g_camera_occluder_alpha;
+static std::array<CameraDebugRay, 96> g_camera_debug_rays = {};
+static int g_camera_debug_ray_count = 0;
+static bool g_debug = false;
+
+static const char* camera_mode_name(CameraMode mode) {
+    switch (mode) {
+        case CameraMode::Open: return "ABERTO";
+        case CameraMode::SemiClosed: return "SEMI";
+        case CameraMode::Cave: return "CAVERNA";
+        case CameraMode::Emergency: return "EMERGENCIA";
+        default: return "?";
+    }
+}
 
 static void reset_camera_near_player(bool reset_angles) {
-    g_camera.distance = std::clamp(kCameraSpawnDistance, g_camera.min_distance, g_camera.max_distance);
+    g_camera.distance = std::clamp(g_camera_cfg.spawn_distance, g_camera.min_distance, g_camera.max_distance);
     g_camera.effective_distance = g_camera.distance;
     if (reset_angles) {
-        g_camera.pitch = std::clamp(kCameraSpawnPitch, g_camera.min_pitch, g_camera.max_pitch);
-        g_camera.yaw = kCameraSpawnYaw;
+        g_camera.pitch = std::clamp(g_camera_cfg.spawn_pitch, g_camera.min_pitch, g_camera.max_pitch);
+        g_camera.yaw = g_camera_cfg.spawn_yaw;
     }
+    g_camera_adapt_pitch = 0.0f;
+    g_camera_adapt_distance_scale = 1.0f;
+    g_camera_adapt_target_lift = 0.0f;
+    g_camera_mode = CameraMode::Open;
+    g_camera_mode_reason = "Spawn";
+    g_camera_hidden_time = 0.0f;
+    g_camera_obstruction = 0.0f;
+    g_camera_enclosed = 0.0f;
+    g_camera_occluder_alpha.clear();
 }
 
 // Calcular posicao da camera baseada em coordenadas esfericas
 static void update_camera_position() {
     float rad_yaw = g_camera.yaw * (kPi / 180.0f);
-    float rad_pitch = g_camera.pitch * (kPi / 180.0f);
+    float adaptive_pitch = std::clamp(g_camera.pitch + g_camera_adapt_pitch, g_camera.min_pitch, g_camera.max_pitch);
+    float rad_pitch = adaptive_pitch * (kPi / 180.0f);
+    float dist = std::clamp(g_camera.effective_distance * g_camera_adapt_distance_scale, g_camera.min_distance, g_camera.max_distance);
     
     // Posicao da camera em coordenadas esfericas relativas ao target
-    float x = g_camera.effective_distance * std::cos(rad_pitch) * std::sin(rad_yaw);
-    float y = g_camera.effective_distance * std::sin(rad_pitch);
-    float z = g_camera.effective_distance * std::cos(rad_pitch) * std::cos(rad_yaw);
+    float x = dist * std::cos(rad_pitch) * std::sin(rad_yaw);
+    float y = dist * std::sin(rad_pitch);
+    float z = dist * std::cos(rad_pitch) * std::cos(rad_yaw);
     
     g_camera.position.x = g_camera.target.x + x;
     g_camera.position.y = g_camera.target.y + y;
@@ -1594,6 +1809,127 @@ static Vec3 get_mouse_ray_direction(int mouse_x, int mouse_y, int win_w, int win
 
 // Verificar colisao da camera com o mundo usando raycast
 // Nota: g_world e is_solid sao definidos apos esta funcao
+struct CameraTraceResult {
+    bool blocked = false;
+    float first_hit_t = 1.0f;   // 0..1 ao longo do segmento
+    float blocked_ratio = 0.0f; // 0..1
+};
+
+struct CameraVisibilityMetrics {
+    float primary_ratio = 0.0f;
+    float edge_ratio = 0.0f;
+    float up_ratio = 0.0f;
+    float total_ratio = 0.0f;
+    float blocked_ray_ratio = 0.0f;
+    bool primary_blocked = false;
+};
+
+static int camera_tile_key(int tx, int tz) {
+    return ((tz & 0xFFFF) << 16) ^ (tx & 0xFFFF);
+}
+
+static float camera_occluder_alpha_for_tile(int tx, int tz) {
+    auto it = g_camera_occluder_alpha.find(camera_tile_key(tx, tz));
+    if (it == g_camera_occluder_alpha.end()) return 1.0f;
+    return std::clamp(it->second, 0.08f, 1.0f);
+}
+
+static bool camera_sample_hits_world(float sx, float sy, float sz, int* out_tx = nullptr, int* out_tz = nullptr) {
+    if (!g_world) return false;
+
+    int tx = world_to_tile(sx);
+    int tz = world_to_tile(sz);
+    if (out_tx) *out_tx = tx;
+    if (out_tz) *out_tz = tz;
+
+    if (!g_world->in_bounds(tx, tz)) return true;
+
+    float terrain_y = (float)g_world->height_at(tx, tz) * kHeightScale;
+    if (sy <= terrain_y + 0.06f) return true;
+
+    Block obj = object_block_at(*g_world, tx, tz);
+    if (obj != Block::Air) {
+        float top = terrain_y + get_block_height(obj);
+        if (sy >= terrain_y - 0.03f && sy <= top + 0.02f) return true;
+    }
+    return false;
+}
+
+static CameraTraceResult camera_trace_segment(const Vec3& from, const Vec3& to,
+                                              bool collect_occluders,
+                                              std::unordered_map<int, float>* out_occluders,
+                                              bool store_debug_ray) {
+    CameraTraceResult out = {};
+    Vec3 seg = vec3_sub(to, from);
+    float len = vec3_length(seg);
+    if (len < 1e-4f) return out;
+    Vec3 dir = vec3_scale(seg, 1.0f / len);
+
+    float step = std::max(0.04f, g_camera_cfg.collision_probe_step);
+    int steps = std::max(1, (int)std::ceil(len / step));
+    int blocked_count = 0;
+    Vec3 first_hit_pos = to;
+
+    for (int i = 1; i <= steps; ++i) {
+        float t = (float)i / (float)steps;
+        Vec3 p = vec3_add(from, vec3_scale(dir, len * t));
+        int tx = 0, tz = 0;
+        bool hit = camera_sample_hits_world(p.x, p.y, p.z, &tx, &tz);
+        if (!hit) continue;
+
+        blocked_count++;
+        if (!out.blocked) {
+            out.blocked = true;
+            out.first_hit_t = t;
+            first_hit_pos = p;
+        }
+
+        if (collect_occluders && out_occluders && g_world && g_world->in_bounds(tx, tz)) {
+            int key = camera_tile_key(tx, tz);
+            auto it = out_occluders->find(key);
+            float desired = std::clamp(g_camera_cfg.transparency_alpha, 0.08f, 0.95f);
+            if (it == out_occluders->end()) (*out_occluders)[key] = desired;
+            else it->second = std::min(it->second, desired);
+        }
+    }
+
+    out.blocked_ratio = (float)blocked_count / (float)steps;
+
+    if (store_debug_ray && g_camera_debug_ray_count < (int)g_camera_debug_rays.size()) {
+        CameraDebugRay& dbg = g_camera_debug_rays[(size_t)g_camera_debug_ray_count++];
+        dbg.from = from;
+        dbg.to = out.blocked ? first_hit_pos : to;
+        dbg.blocked = out.blocked;
+    }
+    return out;
+}
+
+static void update_camera_occluder_fade(const std::unordered_map<int, float>& desired, float dt) {
+    auto move_towards = [](float cur, float target, float max_delta) -> float {
+        float d = target - cur;
+        if (d > max_delta) return cur + max_delta;
+        if (d < -max_delta) return cur - max_delta;
+        return target;
+    };
+
+    float fade_in = std::max(0.1f, g_camera_cfg.transparency_fade_in);
+    float fade_out = std::max(0.1f, g_camera_cfg.transparency_fade_out);
+
+    for (auto it = g_camera_occluder_alpha.begin(); it != g_camera_occluder_alpha.end();) {
+        auto dit = desired.find(it->first);
+        float target = (dit != desired.end()) ? dit->second : 1.0f;
+        float speed = (target < it->second) ? fade_in : fade_out;
+        it->second = move_towards(it->second, target, speed * dt);
+        if (dit == desired.end() && it->second >= 0.995f) it = g_camera_occluder_alpha.erase(it);
+        else ++it;
+    }
+
+    for (const auto& kv : desired) {
+        if (g_camera_occluder_alpha.find(kv.first) != g_camera_occluder_alpha.end()) continue;
+        g_camera_occluder_alpha[kv.first] = move_towards(1.0f, kv.second, fade_in * dt);
+    }
+}
+
 static void check_camera_collision() {
     if (!g_world) return;
     
@@ -1607,44 +1943,39 @@ static void check_camera_collision() {
     
     dir = vec3_normalize(dir);
     g_camera.effective_distance = g_camera.distance;
-    
-    constexpr float kProbeStart = 0.18f;
-    constexpr float kProbeStep = 0.18f;
-    constexpr float kCollisionPadding = 0.32f;
-    constexpr float kMinCollisionDistance = 0.75f;
 
-    // Raycast do target em direcao a camera
-    for (float t = kProbeStart; t < max_dist; t += kProbeStep) {
-        float test_x = g_camera.target.x + dir.x * t;
-        float test_y = g_camera.target.y + dir.y * t;
-        float test_z = g_camera.target.z + dir.z * t;
-        
-        int bx = (int)std::floor(test_x);
-        int bz = (int)std::floor(test_z);
+    Vec3 world_up = {0.0f, 1.0f, 0.0f};
+    Vec3 right = vec3_cross(dir, world_up);
+    if (vec3_length(right) < 0.0001f) right = {1.0f, 0.0f, 0.0f};
+    right = vec3_normalize(right);
+    Vec3 up = vec3_normalize(vec3_cross(right, dir));
 
-        bool hit = false;
-        if (!g_world->in_bounds(bx, bz)) {
-            hit = true;
-        } else {
-            float ground_y = (float)g_world->height_at(bx, bz) * kHeightScale;
-            float top_y = surface_height_at(*g_world, bx, bz);
-            Block obj = object_block_at(*g_world, bx, bz);
+    const Vec3 offsets[] = {
+        {0.0f, 0.0f, 0.0f},
+        vec3_scale(right, 0.18f),
+        vec3_scale(right, -0.18f),
+        vec3_scale(up, 0.18f),
+        vec3_scale(up, -0.18f),
+    };
 
-            // Colide com o terreno (nao deixar a camera atravessar o chao)
-            if (test_y < ground_y + 0.15f) {
-                hit = true;
-            }
-            // Colide com objetos (cubos) sobre o terreno
-            if (!hit && obj != Block::Air) {
-                if (test_y >= ground_y && test_y <= top_y) hit = true;
-            }
-        }
+    bool blocked_any = false;
+    float min_hit_t = 1.0f;
+    for (const Vec3& off : offsets) {
+        CameraTraceResult tr = camera_trace_segment(
+            vec3_add(g_camera.target, off),
+            vec3_add(g_camera.position, off),
+            false, nullptr, false);
+        if (!tr.blocked) continue;
+        blocked_any = true;
+        min_hit_t = std::min(min_hit_t, tr.first_hit_t);
+    }
 
-        if (hit) {
-            float safe_dist = t - kCollisionPadding;
-            g_camera.effective_distance = std::clamp(safe_dist, kMinCollisionDistance, g_camera.distance);
-            break;
-        }
+    if (blocked_any) {
+        float safe_dist = max_dist * min_hit_t - g_camera_cfg.collision_padding;
+        g_camera.effective_distance = std::clamp(
+            safe_dist,
+            std::max(0.35f, g_camera_cfg.min_collision_distance),
+            g_camera.distance);
     }
 }
 
@@ -1808,19 +2139,181 @@ static float get_player_render_rotation() { return g_physics.render_rotation; }
 
 // Atualiza alvo/posicao da camera para o frame atual (inclui offset para estilo Minicraft: player levemente fora do centro).
 static void update_camera_for_frame() {
-    // Alvo base (altura do jogador + offset para ver horizonte)
     Vec2 rpos = get_player_render_pos();
     float ry = get_player_render_y();
-    Vec3 base_target = {rpos.x, ry + 1.10f, rpos.y};
+    float frame_dt = std::max(1.0f / 240.0f, g_physics_cfg.fixed_timestep);
 
-    // Sem offset horizontal - mira centralizada no jogador
-    g_camera.target = base_target;
+    // Base do foco (player sempre centralizado).
+    Vec3 focus_base = {rpos.x, ry + 1.10f, rpos.y};
 
-    // Distancia efetiva (colisao)
+    // Analise macro de profundidade/enclausuramento.
+    float pit_factor = 0.0f;
+    float enclosed_factor = 0.0f;
+    if (g_world) {
+        int px = world_to_tile(rpos.x);
+        int pz = world_to_tile(rpos.y);
+        if (g_world->in_bounds(px, pz)) {
+            float here_h = (float)g_world->height_at(px, pz) * kHeightScale;
+            float neigh_max = here_h;
+            int high_walls = 0;
+            int samples = 0;
+            for (int oz = -3; oz <= 3; ++oz) {
+                for (int ox = -3; ox <= 3; ++ox) {
+                    if (ox == 0 && oz == 0) continue;
+                    int tx = px + ox;
+                    int tz = pz + oz;
+                    if (!g_world->in_bounds(tx, tz)) continue;
+                    float h = (float)g_world->height_at(tx, tz) * kHeightScale;
+                    float d = std::sqrt((float)(ox * ox + oz * oz));
+                    neigh_max = std::max(neigh_max, h - d * 0.16f);
+                    float rise = h - here_h;
+                    if (rise > 0.52f + d * 0.12f) high_walls++;
+                    samples++;
+                }
+            }
+            float pit_depth = std::max(0.0f, neigh_max - here_h);
+            pit_factor = smoothstep01(g_camera_cfg.cave_depth_start, g_camera_cfg.cave_depth_end, pit_depth);
+            if (samples > 0) {
+                float enclosed = (float)high_walls / (float)samples;
+                enclosed_factor = smoothstep01(g_camera_cfg.enclosed_start, g_camera_cfg.enclosed_end, enclosed);
+            }
+        }
+    }
+
+    auto evaluate_visibility = [&](const Vec3& target, const Vec3& cam_pos,
+                                   bool collect_occluders, bool store_debug,
+                                   std::unordered_map<int, float>* out_occ) -> CameraVisibilityMetrics {
+        CameraVisibilityMetrics m = {};
+        Vec3 view_dir = vec3_sub(target, cam_pos);
+        float cam_len = vec3_length(view_dir);
+        if (cam_len < 1e-4f) return m;
+        view_dir = vec3_scale(view_dir, 1.0f / cam_len);
+
+        Vec3 world_up = {0.0f, 1.0f, 0.0f};
+        Vec3 right = vec3_cross(view_dir, world_up);
+        if (vec3_length(right) < 0.0001f) right = {1.0f, 0.0f, 0.0f};
+        right = vec3_normalize(right);
+        Vec3 up = vec3_normalize(vec3_cross(right, view_dir));
+
+        float edge_off = std::clamp(cam_len * 0.18f, 0.45f, 1.55f);
+        Vec3 edge_pts[4] = {
+            vec3_add(cam_pos, vec3_scale(right, edge_off)),
+            vec3_add(cam_pos, vec3_scale(right, -edge_off)),
+            vec3_add(cam_pos, vec3_scale(up, edge_off * 0.95f)),
+            vec3_add(cam_pos, vec3_scale(up, -edge_off * 0.70f)),
+        };
+
+        CameraTraceResult main_tr = camera_trace_segment(target, cam_pos, collect_occluders, out_occ, store_debug);
+        m.primary_ratio = main_tr.blocked_ratio;
+        m.primary_blocked = main_tr.blocked;
+
+        float edge_ratio_acc = 0.0f;
+        int edge_hits = 0;
+        for (const Vec3& p : edge_pts) {
+            CameraTraceResult tr = camera_trace_segment(target, p, collect_occluders, out_occ, store_debug);
+            edge_ratio_acc += tr.blocked_ratio;
+            if (tr.blocked) edge_hits++;
+        }
+        m.edge_ratio = edge_ratio_acc * 0.25f;
+
+        Vec3 up_end = vec3_add(target, Vec3{0.0f, 2.9f, 0.0f});
+        CameraTraceResult up_tr = camera_trace_segment(target, up_end, collect_occluders, out_occ, store_debug);
+        m.up_ratio = up_tr.blocked_ratio;
+
+        // Peso maior no ray principal (player -> camera) e nas bordas da tela.
+        m.total_ratio = std::clamp((m.primary_ratio * 0.55f) + (m.edge_ratio * 0.35f) + (m.up_ratio * 0.10f), 0.0f, 1.0f);
+        float blocked_weight = (main_tr.blocked ? 3.0f : 0.0f) + (float)edge_hits + (up_tr.blocked ? 1.0f : 0.0f);
+        m.blocked_ray_ratio = blocked_weight / 8.0f; // 3 + 4 + 1
+        return m;
+    };
+
+    // 1) Sonda com o estado atual para decidir o modo.
+    g_camera.target = vec3_add(focus_base, Vec3{0.0f, g_camera_adapt_target_lift, 0.0f});
     g_camera.effective_distance = g_camera.distance;
     update_camera_position();
     check_camera_collision();
     update_camera_position();
+    CameraVisibilityMetrics vis_probe = evaluate_visibility(g_camera.target, g_camera.position, false, false, nullptr);
+
+    float occlusion_factor = std::clamp(
+        vis_probe.total_ratio * 0.80f + vis_probe.blocked_ray_ratio * 0.35f,
+        0.0f, 1.0f);
+    float cave_score = std::max(std::max(pit_factor, enclosed_factor), occlusion_factor);
+
+    if (vis_probe.primary_blocked || vis_probe.blocked_ray_ratio > 0.62f) {
+        g_camera_hidden_time += frame_dt;
+    } else {
+        g_camera_hidden_time = std::max(0.0f, g_camera_hidden_time - frame_dt * 1.8f);
+    }
+
+    CameraMode desired_mode = CameraMode::Open;
+    if (g_camera_hidden_time >= g_camera_cfg.emergency_hidden_time) {
+        desired_mode = CameraMode::Emergency;
+    } else if (cave_score >= 0.62f || (pit_factor > 0.52f && occlusion_factor > 0.45f)) {
+        desired_mode = CameraMode::Cave;
+    } else if (cave_score >= 0.30f) {
+        desired_mode = CameraMode::SemiClosed;
+    }
+
+    float desired_pitch_abs = g_camera_cfg.open_pitch;
+    float desired_scale = g_camera_cfg.open_distance_scale;
+    float desired_lift = g_camera_cfg.open_target_lift;
+
+    if (desired_mode == CameraMode::SemiClosed) {
+        float t = smoothstep01(0.30f, 0.72f, cave_score);
+        desired_pitch_abs = lerp(g_camera_cfg.open_pitch, g_camera_cfg.semi_pitch, t);
+        desired_scale = lerp(g_camera_cfg.open_distance_scale, g_camera_cfg.semi_distance_scale, t);
+        desired_lift = lerp(g_camera_cfg.open_target_lift, g_camera_cfg.semi_target_lift, t);
+    } else if (desired_mode == CameraMode::Cave) {
+        float t = smoothstep01(0.44f, 0.95f, std::max(cave_score, occlusion_factor));
+        desired_pitch_abs = lerp(g_camera_cfg.semi_pitch, g_camera_cfg.cave_pitch, t);
+        desired_scale = lerp(g_camera_cfg.semi_distance_scale, g_camera_cfg.cave_distance_scale, t);
+        desired_lift = lerp(g_camera_cfg.semi_target_lift, g_camera_cfg.cave_target_lift, t);
+    } else if (desired_mode == CameraMode::Emergency) {
+        desired_pitch_abs = g_camera_cfg.emergency_pitch;
+        desired_scale = g_camera_cfg.emergency_distance_scale;
+        desired_lift = g_camera_cfg.emergency_target_lift;
+    }
+
+    float desired_pitch_offset = desired_pitch_abs - g_camera.pitch;
+    float min_off = g_camera.min_pitch - g_camera.pitch;
+    float max_off = g_camera.max_pitch - g_camera.pitch;
+    desired_pitch_offset = std::clamp(desired_pitch_offset, min_off, max_off);
+
+    float pitch_lerp_t = clamp01(g_camera_cfg.pitch_lerp);
+    float dist_lerp_t = clamp01(g_camera_cfg.distance_lerp);
+    float lift_lerp_t = clamp01(g_camera_cfg.lift_lerp);
+    g_camera_adapt_pitch = lerp(g_camera_adapt_pitch, desired_pitch_offset, pitch_lerp_t);
+    g_camera_adapt_distance_scale = lerp(g_camera_adapt_distance_scale, desired_scale, dist_lerp_t);
+    g_camera_adapt_target_lift = lerp(g_camera_adapt_target_lift, desired_lift, lift_lerp_t);
+
+    g_camera_mode = desired_mode;
+    g_camera_enclosed = lerp(g_camera_enclosed, enclosed_factor, 0.20f);
+
+    float reason_pit = pit_factor;
+    float reason_occ = occlusion_factor;
+    float reason_enc = enclosed_factor;
+    if (desired_mode == CameraMode::Emergency) g_camera_mode_reason = "Oculto";
+    else if (reason_pit >= reason_occ && reason_pit >= reason_enc) g_camera_mode_reason = "Buraco";
+    else if (reason_enc >= reason_occ) g_camera_mode_reason = "Fechado";
+    else g_camera_mode_reason = "Obstrucao";
+
+    // 2) Aplica modo final + colisao de camera (sweep multi-ray).
+    g_camera.target = vec3_add(focus_base, Vec3{0.0f, g_camera_adapt_target_lift, 0.0f});
+    g_camera.effective_distance = g_camera.distance;
+    update_camera_position();
+    check_camera_collision();
+    update_camera_position();
+
+    // 3) Visibilidade final (debug + transparencia de blocos que obstruem).
+    std::unordered_map<int, float> occ_tiles;
+    g_camera_debug_ray_count = 0;
+    CameraVisibilityMetrics vis_final = evaluate_visibility(g_camera.target, g_camera.position, true, g_debug, &occ_tiles);
+    float final_occlusion = std::clamp(
+        vis_final.total_ratio * 0.80f + vis_final.blocked_ray_ratio * 0.35f,
+        0.0f, 1.0f);
+    g_camera_obstruction = lerp(g_camera_obstruction, final_occlusion, 0.24f);
+    update_camera_occluder_fade(occ_tiles, frame_dt);
 }
 
 static std::array<int, kBlockTypeCount> g_inventory = {};
@@ -1841,8 +2334,9 @@ static bool g_prev_f7 = false;
 static bool g_prev_h = false;
 static bool g_prev_tab = false;
 static bool g_prev_b = false;
-
-static bool g_debug = false;
+static bool g_prev_m = false;
+static bool g_prev_r = false;
+static bool g_prev_c = false;
 
 static float g_place_cd = 0.0f;
 static float g_drown_accum = 0.0f;
@@ -1851,6 +2345,8 @@ static float g_drown_accum = 0.0f;
 static int g_mine_block_x = -1;
 static int g_mine_block_y = -1;
 static float g_mine_progress = 0.0f; // 0..1
+static int g_mine_hits = 0;
+static float g_mine_hit_timer = 0.0f;
 
 static bool g_has_target = false;
 static int g_target_x = 0;
@@ -2328,7 +2824,7 @@ static bool save_game(const char* path) {
     if (!f) return false;
 
     const char magic[4] = {'T', 'F', '3', 'D'};  // Atualizado para 3D
-    uint32_t version = 5;  // Version 5 - adds heightmap + ground layer (relevo 3D)
+    uint32_t version = 6;  // Version 6 - adds fog of war + waypoints
     uint32_t w = (uint32_t)g_world->w;
     uint32_t h = (uint32_t)g_world->h;
     uint32_t seed = (uint32_t)g_world->seed;
@@ -2400,6 +2896,32 @@ static bool save_game(const char* path) {
     f.write((const char*)g_world->ground.data(), (std::streamsize)g_world->ground.size());
     f.write((const char*)g_world->heightmap.data(), (std::streamsize)(g_world->heightmap.size() * sizeof(int16_t)));
     f.write((const char*)g_world->tiles.data(), (std::streamsize)g_world->tiles.size());
+    
+    // Version 6: Fog of war e waypoints
+    // Fog of war
+    uint32_t explored_size = (uint32_t)g_minimap.explored.size();
+    f.write((const char*)&explored_size, sizeof(explored_size));
+    if (explored_size > 0) {
+        f.write((const char*)g_minimap.explored.data(), (std::streamsize)explored_size);
+    }
+    
+    // Waypoints
+    uint32_t waypoint_count = (uint32_t)g_minimap.waypoints.size();
+    f.write((const char*)&waypoint_count, sizeof(waypoint_count));
+    for (const auto& wp : g_minimap.waypoints) {
+        f.write((const char*)&wp.x, sizeof(wp.x));
+        f.write((const char*)&wp.y, sizeof(wp.y));
+        f.write((const char*)&wp.r, sizeof(wp.r));
+        f.write((const char*)&wp.g, sizeof(wp.g));
+        f.write((const char*)&wp.b, sizeof(wp.b));
+        uint8_t visible = wp.visible ? 1 : 0;
+        f.write((const char*)&visible, sizeof(visible));
+        uint32_t label_len = (uint32_t)wp.label.size();
+        f.write((const char*)&label_len, sizeof(label_len));
+        if (label_len > 0) {
+            f.write(wp.label.c_str(), (std::streamsize)label_len);
+        }
+    }
 
     return (bool)f;
 }
@@ -2443,7 +2965,7 @@ static bool load_game(const char* path) {
     float placeholder_fuel = 100.0f; // Placeholder para compatibilidade (era jetpack_fuel)
     
     // Camera 3D settings (Version 4+)
-    float cam_distance = kCameraSpawnDistance, cam_yaw = 180.0f, cam_pitch = kCameraSpawnPitch, cam_sensitivity = 0.25f;
+    float cam_distance = g_camera_cfg.spawn_distance, cam_yaw = g_camera_cfg.spawn_yaw, cam_pitch = g_camera_cfg.spawn_pitch, cam_sensitivity = 0.25f;
     float player_rotation = 180.0f;
 
     if (version == 1) {
@@ -2566,8 +3088,8 @@ static bool load_game(const char* path) {
     g_player.vel = vel;
     g_player.vel_y = 0.0f;
     {
-        int tx = (int)std::floor(g_player.pos.x);
-        int tz = (int)std::floor(g_player.pos.y);
+        int tx = world_to_tile(g_player.pos.x);
+        int tz = world_to_tile(g_player.pos.y);
         if (g_world->in_bounds(tx, tz)) {
             g_player.pos_y = surface_height_at(*g_world, tx, tz);
         } else {
@@ -2616,6 +3138,70 @@ static bool load_game(const char* path) {
     g_victory = false;
     g_show_build_menu = false;
     rebuild_modules_from_world();
+    
+    // Version 6: Carregar fog of war e waypoints
+    if (version >= 6) {
+        // Fog of war
+        uint32_t explored_size = 0;
+        f.read((char*)&explored_size, sizeof(explored_size));
+        if (f && explored_size > 0 && explored_size == (uint32_t)(g_world->w * g_world->h)) {
+            g_minimap.explored.resize(explored_size);
+            f.read((char*)g_minimap.explored.data(), (std::streamsize)explored_size);
+        } else {
+            // Inicializar fog of war se nao carregou corretamente
+            g_minimap.explored.clear();
+            g_minimap.explored.resize((size_t)g_world->w * (size_t)g_world->h, 0);
+        }
+        
+        // Waypoints
+        uint32_t waypoint_count = 0;
+        f.read((char*)&waypoint_count, sizeof(waypoint_count));
+        g_minimap.waypoints.clear();
+        if (f && waypoint_count > 0 && waypoint_count <= 100) {
+            for (uint32_t i = 0; i < waypoint_count; ++i) {
+                MapWaypoint wp;
+                f.read((char*)&wp.x, sizeof(wp.x));
+                f.read((char*)&wp.y, sizeof(wp.y));
+                f.read((char*)&wp.r, sizeof(wp.r));
+                f.read((char*)&wp.g, sizeof(wp.g));
+                f.read((char*)&wp.b, sizeof(wp.b));
+                uint8_t visible = 0;
+                f.read((char*)&visible, sizeof(visible));
+                wp.visible = (visible != 0);
+                uint32_t label_len = 0;
+                f.read((char*)&label_len, sizeof(label_len));
+                if (label_len > 0 && label_len < 256) {
+                    wp.label.resize(label_len);
+                    f.read(&wp.label[0], (std::streamsize)label_len);
+                }
+                g_minimap.waypoints.push_back(wp);
+            }
+        }
+    } else {
+        // Versao antiga - inicializar fog of war e waypoints
+        g_minimap.explored.clear();
+        g_minimap.explored.resize((size_t)g_world->w * (size_t)g_world->h, 0);
+        g_minimap.waypoints.clear();
+        
+        // Revelar area ao redor da base
+        int reveal_radius = 20;
+        for (int dy = -reveal_radius; dy <= reveal_radius; ++dy) {
+            for (int dx = -reveal_radius; dx <= reveal_radius; ++dx) {
+                int x = g_base_x + dx;
+                int y = g_base_y + dy;
+                if (g_world->in_bounds(x, y)) {
+                    float dist = std::sqrt((float)(dx * dx + dy * dy));
+                    if (dist <= (float)reveal_radius) {
+                        g_minimap.explored[(size_t)y * (size_t)g_world->w + (size_t)x] = 255;
+                    }
+                }
+            }
+        }
+    }
+    
+    g_minimap.dirty_full = true;
+    g_minimap.world_map_open = false;
+    
     return true;
 }
 
@@ -2640,7 +3226,7 @@ static void place_player_near(World& world, int x) {
                 int tx = x + dx, ty = y + dy;
                 if (tx < 1 || tx >= world.w - 1 || ty < 1 || ty >= world.h - 1) continue;
                 if (!is_solid(world.get(tx, ty))) {
-                    g_player.pos = {(float)tx + 0.5f, (float)ty + 0.5f};
+                    g_player.pos = {(float)tx, (float)ty};
                     g_player.vel = {0.0f, 0.0f};
                     g_player.pos_y = surface_height_at(world, tx, ty);
                     g_player.ground_height = g_player.pos_y;
@@ -2652,7 +3238,7 @@ static void place_player_near(World& world, int x) {
         }
     }
     // Fallback
-    g_player.pos = {(float)x + 0.5f, (float)y + 0.5f};
+    g_player.pos = {(float)x, (float)y};
     g_player.vel = {0.0f, 0.0f};
     g_player.pos_y = surface_height_at(world, x, y);
     g_player.ground_height = g_player.pos_y;
@@ -2691,6 +3277,31 @@ static void spawn_player_at_base() {
     g_player.h = g_physics_cfg.collider_depth;
     reset_camera_near_player(true);
     reset_player_physics_runtime(true);
+}
+
+// Respawn automatico na base quando o jogador morre
+static void respawn_player_at_base(const char* death_reason) {
+    spawn_player_at_base();
+    
+    // HP parcial apos respawn
+    g_player.hp = 50;
+    
+    // Restaurar recursos parciais do traje
+    g_player_oxygen = std::min(100.0f, g_player_oxygen + 50.0f);
+    g_player_water = std::min(100.0f, g_player_water + 30.0f);
+    g_player_food = std::min(100.0f, g_player_food + 20.0f);
+    
+    // Reabastecer jetpack
+    g_player.jetpack_fuel = 50.0f;
+    
+    // Feedback visual
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Resgatado na base! (%s)", death_reason);
+    set_toast(msg, 4.0f);
+    
+    // Pequena penalidade nos recursos da base
+    g_base_energy = std::max(0.0f, g_base_energy - 10.0f);
+    g_base_oxygen = std::max(0.0f, g_base_oxygen - 5.0f);
 }
 
 static void spawn_player_new_game(World& world) {
@@ -2752,6 +3363,584 @@ static void spawn_player_new_game(World& world) {
     
     g_show_build_menu = false;
     g_build_menu_selection = 0;
+    
+    // Inicializar minimapa e fog of war
+    size_t map_size = (size_t)world.w * (size_t)world.h;
+    g_minimap.explored.clear();
+    g_minimap.explored.resize(map_size, 0);  // Tudo inexplorado
+    g_minimap.waypoints.clear();
+    g_minimap.dirty_full = true;
+    g_minimap.world_map_open = false;
+    
+    // Revelar area inicial ao redor da base
+    int reveal_radius = 20;
+    for (int dy = -reveal_radius; dy <= reveal_radius; ++dy) {
+        for (int dx = -reveal_radius; dx <= reveal_radius; ++dx) {
+            int x = g_base_x + dx;
+            int y = g_base_y + dy;
+            if (world.in_bounds(x, y)) {
+                float dist = std::sqrt((float)(dx * dx + dy * dy));
+                if (dist <= (float)reveal_radius) {
+                    g_minimap.explored[(size_t)y * (size_t)world.w + (size_t)x] = 255;
+                }
+            }
+        }
+    }
+}
+
+// Atualizar fog of war baseado na posicao do jogador
+static void update_fog_of_war() {
+    if (!g_world) return;
+    
+    int px = (int)g_player.pos.x;
+    int py = (int)g_player.pos.y;
+    int reveal_radius = 15;  // Raio de visao do jogador
+    
+    bool changed = false;
+    for (int dy = -reveal_radius; dy <= reveal_radius; ++dy) {
+        for (int dx = -reveal_radius; dx <= reveal_radius; ++dx) {
+            int x = px + dx;
+            int y = py + dy;
+            if (g_world->in_bounds(x, y)) {
+                float dist = std::sqrt((float)(dx * dx + dy * dy));
+                if (dist <= (float)reveal_radius) {
+                    size_t idx = (size_t)y * (size_t)g_world->w + (size_t)x;
+                    if (g_minimap.explored[idx] < 255) {
+                        g_minimap.explored[idx] = 255;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    
+    if (changed) {
+        g_minimap.dirty_full = true;
+    }
+}
+
+// Adicionar waypoint na posicao especificada
+static void add_waypoint(int x, int y, const char* label = nullptr) {
+    // Verificar limite de waypoints
+    if ((int)g_minimap.waypoints.size() >= g_map_cfg.max_waypoints) {
+        set_toast("Limite de waypoints atingido!", 2.0f);
+        return;
+    }
+    
+    // Verificar se ja existe waypoint proximo
+    for (const auto& wp : g_minimap.waypoints) {
+        float dx = (float)(wp.x - x);
+        float dy = (float)(wp.y - y);
+        if (std::sqrt(dx * dx + dy * dy) < g_map_cfg.waypoint_pick_radius) {
+            set_toast("Waypoint ja existe nessa area", 1.5f);
+            return;
+        }
+    }
+    
+    MapWaypoint wp;
+    wp.x = x;
+    wp.y = y;
+    // Cor aleatoria para cada waypoint
+    wp.r = 0.5f + 0.5f * ((float)(rand() % 100) / 100.0f);
+    wp.g = 0.3f + 0.4f * ((float)(rand() % 100) / 100.0f);
+    wp.b = 0.3f + 0.4f * ((float)(rand() % 100) / 100.0f);
+    wp.label = label ? label : "";
+    wp.visible = true;
+    
+    g_minimap.waypoints.push_back(wp);
+    
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Waypoint adicionado em (%d, %d)", x, y);
+    set_toast(msg, 2.0f);
+}
+
+// Remover waypoint mais proximo da posicao
+static void remove_nearest_waypoint(int x, int y) {
+    if (g_minimap.waypoints.empty()) return;
+    
+    float best_dist = 999999.0f;
+    int best_idx = -1;
+    
+    for (int i = 0; i < (int)g_minimap.waypoints.size(); ++i) {
+        float dx = (float)(g_minimap.waypoints[i].x - x);
+        float dy = (float)(g_minimap.waypoints[i].y - y);
+        float dist = std::sqrt(dx * dx + dy * dy);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_idx = i;
+        }
+    }
+    
+    if (best_idx >= 0 && best_dist < g_map_cfg.waypoint_pick_radius * 3.0f) {
+        g_minimap.waypoints.erase(g_minimap.waypoints.begin() + best_idx);
+        set_toast("Waypoint removido", 1.5f);
+    }
+}
+
+// Limpar todos os waypoints
+static void clear_all_waypoints() {
+    g_minimap.waypoints.clear();
+    set_toast("Todos os waypoints removidos", 2.0f);
+}
+
+// Obter cor do minimapa para um tile especifico
+static void get_minimap_color(int x, int y, float& r, float& g, float& b) {
+    if (!g_world || !g_world->in_bounds(x, y)) {
+        r = 0.1f; g = 0.1f; b = 0.1f;
+        return;
+    }
+    
+    Block ground = g_world->get_ground(x, y);
+    Block tile = g_world->get(x, y);
+    int h = g_world->height_at(x, y);
+    
+    // Prioridade: base > modulos > tiles > terreno
+    if (x == g_base_x && y == g_base_y) {
+        // Base central - cor especial azul brilhante
+        r = 0.3f; g = 0.7f; b = 1.0f;
+        return;
+    }
+    
+    if (is_base_structure(tile)) {
+        r = 0.4f; g = 0.6f; b = 0.9f;
+        return;
+    }
+    
+    if (is_module(tile)) {
+        // Modulos - amarelo/laranja
+        r = 1.0f; g = 0.8f; b = 0.2f;
+        return;
+    }
+    
+    // Recursos especiais
+    if (tile == Block::Crystal) { r = 0.8f; g = 0.3f; b = 0.9f; return; }
+    if (tile == Block::Coal) { r = 0.2f; g = 0.2f; b = 0.2f; return; }
+    if (tile == Block::Iron) { r = 0.7f; g = 0.5f; b = 0.4f; return; }
+    if (tile == Block::Copper) { r = 0.9f; g = 0.6f; b = 0.3f; return; }
+    
+    // Terreno
+    switch (ground) {
+        case Block::Water:
+            r = 0.2f; g = 0.4f; b = 0.8f;
+            break;
+        case Block::Ice:
+            r = 0.7f; g = 0.9f; b = 1.0f;
+            break;
+        case Block::Snow:
+            r = 0.95f; g = 0.95f; b = 1.0f;
+            break;
+        case Block::Sand:
+            r = 0.9f; g = 0.8f; b = 0.5f;
+            break;
+        case Block::Stone:
+            r = 0.5f; g = 0.5f; b = 0.55f;
+            break;
+        case Block::Grass:
+            r = 0.35f; g = 0.65f; b = 0.3f;
+            break;
+        case Block::Dirt:
+            r = 0.5f; g = 0.4f; b = 0.3f;
+            break;
+        default:
+            // Variar cor por altura para dar profundidade
+            {
+                float hf = std::clamp((float)h / 30.0f, 0.0f, 1.0f);
+                r = 0.35f - hf * 0.15f;
+                g = 0.55f - hf * 0.15f;
+                b = 0.25f + hf * 0.1f;
+            }
+            break;
+    }
+    
+    // Ajuste de altura para dar sensacao de profundidade
+    float height_mod = 1.0f + (float)h * 0.008f;
+    r = std::clamp(r * height_mod, 0.0f, 1.0f);
+    g = std::clamp(g * height_mod, 0.0f, 1.0f);
+    b = std::clamp(b * height_mod, 0.0f, 1.0f);
+}
+
+// Renderizar minimapa no HUD
+static void render_minimap(int win_w, int win_h) {
+    if (!g_world) return;
+    
+    float map_size = g_map_cfg.minimap_size;
+    float map_x = (float)win_w - map_size - 15.0f;
+    float map_y = 200.0f;  // Abaixo do painel de terraformacao
+    
+    // Fundo do minimapa (borda)
+    render_quad(map_x - 3.0f, map_y - 3.0f, map_size + 6.0f, map_size + 6.0f, 0.1f, 0.1f, 0.15f, 0.95f);
+    render_quad(map_x - 1.0f, map_y - 1.0f, map_size + 2.0f, map_size + 2.0f, 0.2f, 0.25f, 0.3f, 0.9f);
+    
+    // Calcular viewport do mapa (tiles visiveis)
+    int view_tiles = (int)(g_map_cfg.minimap_zoom * 64.0f);
+    if (view_tiles < 16) view_tiles = 16;
+    if (view_tiles > 128) view_tiles = 128;
+    
+    int start_x = (int)g_player.pos.x - view_tiles / 2;
+    int start_y = (int)g_player.pos.y - view_tiles / 2;
+    
+    float tile_px = map_size / (float)view_tiles;
+    
+    // Renderizar tiles do minimapa
+    for (int ty = 0; ty < view_tiles; ++ty) {
+        for (int tx = 0; tx < view_tiles; ++tx) {
+            int wx = start_x + tx;
+            int wy = start_y + ty;
+            
+            float px = map_x + (float)tx * tile_px;
+            float py = map_y + (float)ty * tile_px;
+            
+            // Fora dos limites do mundo
+            if (!g_world->in_bounds(wx, wy)) {
+                render_quad(px, py, tile_px + 0.5f, tile_px + 0.5f, 0.05f, 0.05f, 0.08f, 1.0f);
+                continue;
+            }
+            
+            // Verificar fog of war
+            size_t idx = (size_t)wy * (size_t)g_world->w + (size_t)wx;
+            if (idx >= g_minimap.explored.size() || g_minimap.explored[idx] == 0) {
+                // Nao explorado - escuro
+                render_quad(px, py, tile_px + 0.5f, tile_px + 0.5f, 0.08f, 0.08f, 0.1f, 1.0f);
+                continue;
+            }
+            
+            // Obter cor do tile
+            float r, g, b;
+            get_minimap_color(wx, wy, r, g, b);
+            
+            // Ajustar brilho para ciclo dia/noite
+            float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
+            float daylight = compute_daylight(day_phase);
+            float brightness = 0.5f + daylight * 0.5f;
+            r *= brightness;
+            g *= brightness;
+            b *= brightness;
+            
+            render_quad(px, py, tile_px + 0.5f, tile_px + 0.5f, r, g, b, 1.0f);
+        }
+    }
+    
+    // Icone do jogador (centro do minimapa)
+    {
+        float player_px = map_x + map_size * 0.5f;
+        float player_py = map_y + map_size * 0.5f;
+        float icon_size = 4.0f;
+        
+        // Triangulo indicando direcao do jogador
+        float facing_rad = g_player.rotation * (kPi / 180.0f);
+        float cos_f = std::cos(facing_rad);
+        float sin_f = std::sin(facing_rad);
+        
+        glBegin(GL_TRIANGLES);
+        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+        // Ponta (frente do jogador)
+        glVertex2f(player_px - sin_f * icon_size * 1.5f, player_py - cos_f * icon_size * 1.5f);
+        // Base esquerda
+        glVertex2f(player_px + sin_f * icon_size - cos_f * icon_size, player_py + cos_f * icon_size + sin_f * icon_size);
+        // Base direita
+        glVertex2f(player_px + sin_f * icon_size + cos_f * icon_size, player_py + cos_f * icon_size - sin_f * icon_size);
+        glEnd();
+        
+        // Contorno
+        glLineWidth(1.5f);
+        glBegin(GL_LINE_LOOP);
+        glColor4f(0.0f, 0.0f, 0.0f, 0.8f);
+        glVertex2f(player_px - sin_f * icon_size * 1.5f, player_py - cos_f * icon_size * 1.5f);
+        glVertex2f(player_px + sin_f * icon_size - cos_f * icon_size, player_py + cos_f * icon_size + sin_f * icon_size);
+        glVertex2f(player_px + sin_f * icon_size + cos_f * icon_size, player_py + cos_f * icon_size - sin_f * icon_size);
+        glEnd();
+    }
+    
+    // Icone da base (se visivel no viewport)
+    {
+        int base_rel_x = g_base_x - start_x;
+        int base_rel_y = g_base_y - start_y;
+        
+        if (base_rel_x >= 0 && base_rel_x < view_tiles && base_rel_y >= 0 && base_rel_y < view_tiles) {
+            float base_px = map_x + ((float)base_rel_x + 0.5f) * tile_px;
+            float base_py = map_y + ((float)base_rel_y + 0.5f) * tile_px;
+            
+            // Icone de casa/base
+            float house_size = 5.0f;
+            
+            // Telhado (triangulo)
+            glBegin(GL_TRIANGLES);
+            glColor4f(0.3f, 0.7f, 1.0f, 1.0f);
+            glVertex2f(base_px, base_py - house_size);
+            glVertex2f(base_px - house_size, base_py);
+            glVertex2f(base_px + house_size, base_py);
+            glEnd();
+            
+            // Base (quadrado)
+            render_quad(base_px - house_size * 0.7f, base_py, house_size * 1.4f, house_size, 0.3f, 0.6f, 0.9f, 1.0f);
+        }
+    }
+    
+    // Renderizar waypoints no minimapa
+    for (const auto& wp : g_minimap.waypoints) {
+        int wp_rel_x = (int)wp.x - start_x;
+        int wp_rel_y = (int)wp.y - start_y;
+        
+        if (wp_rel_x >= 0 && wp_rel_x < view_tiles && wp_rel_y >= 0 && wp_rel_y < view_tiles) {
+            float wp_px = map_x + ((float)wp_rel_x + 0.5f) * tile_px;
+            float wp_py = map_y + ((float)wp_rel_y + 0.5f) * tile_px;
+            
+            // Marcador de waypoint (losango)
+            float wp_size = 3.0f;
+            glBegin(GL_QUADS);
+            glColor4f(wp.r, wp.g, wp.b, 1.0f);
+            glVertex2f(wp_px, wp_py - wp_size);
+            glVertex2f(wp_px + wp_size, wp_py);
+            glVertex2f(wp_px, wp_py + wp_size);
+            glVertex2f(wp_px - wp_size, wp_py);
+            glEnd();
+        }
+    }
+    
+    // Titulo do minimapa
+    draw_text(map_x + 4.0f, map_y + map_size + 14.0f, "MAPA [M]", 0.7f, 0.75f, 0.8f, 0.8f);
+    
+    // Mostrar zoom atual
+    char zoom_str[32];
+    snprintf(zoom_str, sizeof(zoom_str), "Zoom: %.1fx", g_map_cfg.minimap_zoom);
+    draw_text(map_x + map_size - 60.0f, map_y + map_size + 14.0f, zoom_str, 0.6f, 0.65f, 0.7f, 0.7f);
+}
+
+// Renderizar mapa grande (tela cheia, tecla M)
+static void render_world_map(int win_w, int win_h) {
+    if (!g_world || !g_minimap.world_map_open) return;
+    
+    // Fundo escuro semi-transparente
+    render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, 0.85f);
+    
+    // Dimensoes do mapa
+    float map_margin = 50.0f;
+    float map_w = (float)win_w - map_margin * 2.0f;
+    float map_h = (float)win_h - map_margin * 2.0f - 50.0f;  // Espaco para legenda
+    float map_x = map_margin;
+    float map_y = map_margin;
+    
+    // Borda do mapa
+    render_quad(map_x - 3.0f, map_y - 3.0f, map_w + 6.0f, map_h + 6.0f, 0.15f, 0.18f, 0.22f, 0.95f);
+    render_quad(map_x - 1.0f, map_y - 1.0f, map_w + 2.0f, map_h + 2.0f, 0.25f, 0.28f, 0.32f, 0.9f);
+    
+    // Calcular viewport baseado em zoom e pan
+    float zoom = g_minimap.world_zoom;
+    float center_x = g_minimap.world_pan_x;
+    float center_y = g_minimap.world_pan_y;
+    
+    // Se pan esta em 0, centralizar no jogador
+    if (std::fabs(center_x) < 0.1f && std::fabs(center_y) < 0.1f) {
+        center_x = g_player.pos.x;
+        center_y = g_player.pos.y;
+    }
+    
+    // Tiles visiveis
+    float tiles_visible_x = (float)g_world->w / zoom;
+    float tiles_visible_y = (float)g_world->h / zoom;
+    
+    // Ajustar para aspect ratio
+    float map_aspect = map_w / map_h;
+    float world_aspect = tiles_visible_x / tiles_visible_y;
+    
+    if (map_aspect > world_aspect) {
+        tiles_visible_x = tiles_visible_y * map_aspect;
+    } else {
+        tiles_visible_y = tiles_visible_x / map_aspect;
+    }
+    
+    float start_world_x = center_x - tiles_visible_x * 0.5f;
+    float start_world_y = center_y - tiles_visible_y * 0.5f;
+    
+    // Pixels por tile
+    float px_per_tile_x = map_w / tiles_visible_x;
+    float px_per_tile_y = map_h / tiles_visible_y;
+    
+    // Renderizar tiles (com resolucao adaptativa para performance)
+    int step = std::max(1, (int)(1.0f / zoom));
+    
+    for (float wy = 0.0f; wy < tiles_visible_y; wy += (float)step) {
+        for (float wx = 0.0f; wx < tiles_visible_x; wx += (float)step) {
+            int world_x = (int)(start_world_x + wx);
+            int world_y = (int)(start_world_y + wy);
+            
+            float px = map_x + wx * px_per_tile_x;
+            float py = map_y + wy * px_per_tile_y;
+            float tile_w = px_per_tile_x * (float)step + 1.0f;
+            float tile_h = px_per_tile_y * (float)step + 1.0f;
+            
+            // Fora do mundo
+            if (!g_world->in_bounds(world_x, world_y)) {
+                render_quad(px, py, tile_w, tile_h, 0.05f, 0.05f, 0.08f, 1.0f);
+                continue;
+            }
+            
+            // Fog of war
+            size_t idx = (size_t)world_y * (size_t)g_world->w + (size_t)world_x;
+            if (idx >= g_minimap.explored.size() || g_minimap.explored[idx] == 0) {
+                render_quad(px, py, tile_w, tile_h, 0.1f, 0.1f, 0.12f, 1.0f);
+                continue;
+            }
+            
+            // Cor do tile
+            float r, g, b;
+            get_minimap_color(world_x, world_y, r, g, b);
+            render_quad(px, py, tile_w, tile_h, r, g, b, 1.0f);
+        }
+    }
+    
+    // Converter coordenadas do mundo para coordenadas do mapa
+    auto world_to_map = [&](float wx, float wy, float& mx, float& my) {
+        mx = map_x + (wx - start_world_x) * px_per_tile_x;
+        my = map_y + (wy - start_world_y) * px_per_tile_y;
+    };
+    
+    // Icone da base
+    {
+        float base_mx, base_my;
+        world_to_map((float)g_base_x + 0.5f, (float)g_base_y + 0.5f, base_mx, base_my);
+        
+        if (base_mx >= map_x && base_mx <= map_x + map_w && base_my >= map_y && base_my <= map_y + map_h) {
+            float house_size = 10.0f;
+            
+            // Telhado
+            glBegin(GL_TRIANGLES);
+            glColor4f(0.3f, 0.7f, 1.0f, 1.0f);
+            glVertex2f(base_mx, base_my - house_size * 1.5f);
+            glVertex2f(base_mx - house_size, base_my);
+            glVertex2f(base_mx + house_size, base_my);
+            glEnd();
+            
+            // Base
+            render_quad(base_mx - house_size * 0.8f, base_my, house_size * 1.6f, house_size, 0.3f, 0.6f, 0.9f, 1.0f);
+            
+            // Label
+            draw_text(base_mx - 15.0f, base_my + house_size + 15.0f, "BASE", 0.3f, 0.7f, 1.0f, 1.0f);
+        }
+    }
+    
+    // Icone do jogador
+    {
+        float player_mx, player_my;
+        world_to_map(g_player.pos.x, g_player.pos.y, player_mx, player_my);
+        
+        if (player_mx >= map_x && player_mx <= map_x + map_w && player_my >= map_y && player_my <= map_y + map_h) {
+            float icon_size = 8.0f;
+            float facing_rad = g_player.rotation * (kPi / 180.0f);
+            float cos_f = std::cos(facing_rad);
+            float sin_f = std::sin(facing_rad);
+            
+            glBegin(GL_TRIANGLES);
+            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+            glVertex2f(player_mx - sin_f * icon_size * 1.5f, player_my - cos_f * icon_size * 1.5f);
+            glVertex2f(player_mx + sin_f * icon_size - cos_f * icon_size, player_my + cos_f * icon_size + sin_f * icon_size);
+            glVertex2f(player_mx + sin_f * icon_size + cos_f * icon_size, player_my + cos_f * icon_size - sin_f * icon_size);
+            glEnd();
+            
+            // Contorno
+            glLineWidth(2.0f);
+            glBegin(GL_LINE_LOOP);
+            glColor4f(0.0f, 0.0f, 0.0f, 0.9f);
+            glVertex2f(player_mx - sin_f * icon_size * 1.5f, player_my - cos_f * icon_size * 1.5f);
+            glVertex2f(player_mx + sin_f * icon_size - cos_f * icon_size, player_my + cos_f * icon_size + sin_f * icon_size);
+            glVertex2f(player_mx + sin_f * icon_size + cos_f * icon_size, player_my + cos_f * icon_size - sin_f * icon_size);
+            glEnd();
+        }
+    }
+    
+    // Waypoints
+    for (const auto& wp : g_minimap.waypoints) {
+        if (!wp.visible) continue;
+        
+        float wp_mx, wp_my;
+        world_to_map((float)wp.x + 0.5f, (float)wp.y + 0.5f, wp_mx, wp_my);
+        
+        if (wp_mx >= map_x && wp_mx <= map_x + map_w && wp_my >= map_y && wp_my <= map_y + map_h) {
+            float wp_size = 6.0f;
+            
+            // Losango
+            glBegin(GL_QUADS);
+            glColor4f(wp.r, wp.g, wp.b, 1.0f);
+            glVertex2f(wp_mx, wp_my - wp_size);
+            glVertex2f(wp_mx + wp_size, wp_my);
+            glVertex2f(wp_mx, wp_my + wp_size);
+            glVertex2f(wp_mx - wp_size, wp_my);
+            glEnd();
+            
+            // Contorno
+            glLineWidth(1.5f);
+            glBegin(GL_LINE_LOOP);
+            glColor4f(0.0f, 0.0f, 0.0f, 0.8f);
+            glVertex2f(wp_mx, wp_my - wp_size);
+            glVertex2f(wp_mx + wp_size, wp_my);
+            glVertex2f(wp_mx, wp_my + wp_size);
+            glVertex2f(wp_mx - wp_size, wp_my);
+            glEnd();
+            
+            // Label se houver
+            if (!wp.label.empty()) {
+                draw_text(wp_mx + wp_size + 3.0f, wp_my + 4.0f, wp.label, wp.r, wp.g, wp.b, 0.9f);
+            }
+        }
+    }
+    
+    // Modulos no mapa
+    for (const auto& mod : g_modules) {
+        float mod_mx, mod_my;
+        world_to_map((float)mod.x + 0.5f, (float)mod.y + 0.5f, mod_mx, mod_my);
+        
+        if (mod_mx >= map_x && mod_mx <= map_x + map_w && mod_my >= map_y && mod_my <= map_y + map_h) {
+            float mod_size = 4.0f;
+            render_quad(mod_mx - mod_size, mod_my - mod_size, mod_size * 2.0f, mod_size * 2.0f, 1.0f, 0.8f, 0.2f, 0.9f);
+        }
+    }
+    
+    // Titulo e controles
+    draw_text(map_x, map_y - 25.0f, "MAPA DO MUNDO", 0.9f, 0.92f, 0.95f, 1.0f);
+    
+    // Legenda na parte inferior
+    float legend_y = map_y + map_h + 15.0f;
+    draw_text(map_x, legend_y, "Controles: WASD=Mover | Scroll=Zoom | Clique=Waypoint | R=Remover | C=Limpar | M/ESC=Fechar", 
+              0.7f, 0.75f, 0.8f, 0.85f);
+    
+    // Info de posicao
+    char pos_str[64];
+    snprintf(pos_str, sizeof(pos_str), "Posicao: (%.0f, %.0f) | Zoom: %.1fx | Waypoints: %d/%d",
+             g_player.pos.x, g_player.pos.y, zoom, (int)g_minimap.waypoints.size(), g_map_cfg.max_waypoints);
+    draw_text(map_x + map_w - 350.0f, legend_y, pos_str, 0.6f, 0.65f, 0.7f, 0.8f);
+    
+    // Legenda de cores
+    float legend_x = map_x;
+    float legend_item_y = legend_y + 20.0f;
+    
+    // Base
+    render_quad(legend_x, legend_item_y, 12.0f, 12.0f, 0.3f, 0.7f, 1.0f, 1.0f);
+    draw_text(legend_x + 16.0f, legend_item_y + 10.0f, "Base", 0.7f, 0.75f, 0.8f, 0.9f);
+    
+    // Modulos
+    legend_x += 70.0f;
+    render_quad(legend_x, legend_item_y, 12.0f, 12.0f, 1.0f, 0.8f, 0.2f, 1.0f);
+    draw_text(legend_x + 16.0f, legend_item_y + 10.0f, "Modulos", 0.7f, 0.75f, 0.8f, 0.9f);
+    
+    // Jogador
+    legend_x += 90.0f;
+    render_quad(legend_x, legend_item_y, 12.0f, 12.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+    draw_text(legend_x + 16.0f, legend_item_y + 10.0f, "Jogador", 0.7f, 0.75f, 0.8f, 0.9f);
+    
+    // Agua
+    legend_x += 90.0f;
+    render_quad(legend_x, legend_item_y, 12.0f, 12.0f, 0.2f, 0.4f, 0.8f, 1.0f);
+    draw_text(legend_x + 16.0f, legend_item_y + 10.0f, "Agua", 0.7f, 0.75f, 0.8f, 0.9f);
+    
+    // Gelo
+    legend_x += 70.0f;
+    render_quad(legend_x, legend_item_y, 12.0f, 12.0f, 0.7f, 0.9f, 1.0f, 1.0f);
+    draw_text(legend_x + 16.0f, legend_item_y + 10.0f, "Gelo", 0.7f, 0.75f, 0.8f, 0.9f);
+    
+    // Inexplorado
+    legend_x += 70.0f;
+    render_quad(legend_x, legend_item_y, 12.0f, 12.0f, 0.1f, 0.1f, 0.12f, 1.0f);
+    draw_text(legend_x + 16.0f, legend_item_y + 10.0f, "Inexplorado", 0.7f, 0.75f, 0.8f, 0.9f);
 }
 
 static void build_physics_test_map(World& world) {
@@ -2877,36 +4066,38 @@ static bool is_mineable(Block b) {
     return true;
 }
 
-static float block_hardness(Block b) {
-    // Valores aproximados (segundos para quebrar, com base_speed = 1.0).
+static int block_hits_required(Block b) {
     switch (b) {
+        case Block::Sand:
+            return g_mining_cfg.hits_sand;
         case Block::Grass:
         case Block::Dirt:
-        case Block::Sand:
-        case Block::Snow:
-        case Block::Leaves:
         case Block::Organic:
-            return 0.55f;
+        case Block::Leaves:
+        case Block::BuildSlot:
+            return g_mining_cfg.hits_dirt;
         case Block::Ice:
-            return 0.75f;
-        case Block::Wood:
-            return 0.95f;
+            return g_mining_cfg.hits_ice;
+        case Block::Snow:
+            return g_mining_cfg.hits_snow;
         case Block::Stone:
-            return 1.55f;
+            return g_mining_cfg.hits_stone;
         case Block::Coal:
         case Block::Iron:
         case Block::Copper:
-            return 1.75f;
-        case Block::Crystal:
-            return 2.10f;
+            return g_mining_cfg.hits_ore;
         case Block::Metal:
         case Block::Components:
-            return 1.90f;
+            return g_mining_cfg.hits_metal;
+        case Block::Crystal:
+            return g_mining_cfg.hits_crystal;
+        case Block::Wood:
+            return g_mining_cfg.hits_wood;
         default:
             break;
     }
-    if (is_module(b)) return 2.25f;
-    return 1.35f;
+    if (is_module(b)) return g_mining_cfg.hits_modules;
+    return std::max(2, g_mining_cfg.hits_stone);
 }
 
 // Colisao 3D - considera altura do jogador para permitir pular sobre blocos
@@ -3134,35 +4325,35 @@ static void write_default_terrain_config(const std::string& path) {
     if (!f) return;
     f <<
 "{\n"
-"  \"macro_scale\": 0.00115,\n"
-"  \"ridge_scale\": 0.0048,\n"
-"  \"valley_scale\": 0.0020,\n"
-"  \"detail_scale\": 0.0180,\n"
-"  \"warp_scale\": 0.0032,\n"
-"  \"warp_strength\": 26.0,\n"
-"  \"macro_weight\": 0.52,\n"
-"  \"ridge_weight\": 0.76,\n"
-"  \"valley_weight\": 0.42,\n"
-"  \"detail_weight\": 0.10,\n"
-"  \"plateau_level\": 0.62,\n"
-"  \"plateau_flatten\": 0.30,\n"
+"  \"macro_scale\": 0.00095,\n"
+"  \"ridge_scale\": 0.0038,\n"
+"  \"valley_scale\": 0.00145,\n"
+"  \"detail_scale\": 0.0120,\n"
+"  \"warp_scale\": 0.0024,\n"
+"  \"warp_strength\": 19.0,\n"
+"  \"macro_weight\": 0.50,\n"
+"  \"ridge_weight\": 0.52,\n"
+"  \"valley_weight\": 0.58,\n"
+"  \"detail_weight\": 0.06,\n"
+"  \"plateau_level\": 0.57,\n"
+"  \"plateau_flatten\": 0.38,\n"
 "  \"min_height\": 2.0,\n"
-"  \"max_height\": 116.0,\n"
-"  \"sea_height\": 12.0,\n"
-"  \"snow_height\": 88.0,\n"
-"  \"thermal_erosion_passes\": 4,\n"
-"  \"hydraulic_erosion_passes\": 3,\n"
-"  \"smooth_passes\": 1,\n"
-"  \"erosion_strength\": 0.34,\n"
-"  \"thermal_talus\": 0.026,\n"
+"  \"max_height\": 92.0,\n"
+"  \"sea_height\": 14.0,\n"
+"  \"snow_height\": 76.0,\n"
+"  \"thermal_erosion_passes\": 5,\n"
+"  \"hydraulic_erosion_passes\": 5,\n"
+"  \"smooth_passes\": 2,\n"
+"  \"erosion_strength\": 0.40,\n"
+"  \"thermal_talus\": 0.022,\n"
 "  \"temp_scale\": 0.0016,\n"
 "  \"moisture_scale\": 0.0019,\n"
 "  \"biome_blend\": 0.18,\n"
-"  \"fissure_scale\": 0.010,\n"
-"  \"fissure_depth\": 0.090,\n"
-"  \"crater_scale\": 0.0050,\n"
-"  \"crater_depth\": 0.075,\n"
-"  \"detail_object_density\": 0.090\n"
+"  \"fissure_scale\": 0.0080,\n"
+"  \"fissure_depth\": 0.060,\n"
+"  \"crater_scale\": 0.0040,\n"
+"  \"crater_depth\": 0.055,\n"
+"  \"detail_object_density\": 0.060\n"
 "}\n";
 }
 
@@ -3275,36 +4466,36 @@ static void write_default_sky_config(const std::string& path) {
     if (!f) return;
     f <<
 "{\n"
-"  \"stars_density\": 1250.0,\n"
-"  \"stars_parallax\": 0.010,\n"
-"  \"nebula_alpha\": 0.17,\n"
-"  \"nebula_parallax\": 0.020,\n"
-"  \"cloud_alpha\": 0.14,\n"
-"  \"cloud_parallax\": 0.060,\n"
-"  \"planet_radius\": 132.0,\n"
-"  \"planet_distance\": 1180.0,\n"
-"  \"planet_orbit_speed\": 0.085,\n"
-"  \"planet_parallax\": 0.034,\n"
-"  \"sun_radius\": 44.0,\n"
-"  \"sun_distance\": 760.0,\n"
-"  \"sun_halo_size\": 1.90,\n"
-"  \"bloom_intensity\": 0.30,\n"
-"  \"moon_radius\": 31.0,\n"
-"  \"moon_distance\": 900.0,\n"
-"  \"moon_orbit_speed\": 0.55,\n"
-"  \"moon_parallax\": 0.050,\n"
-"  \"moon2_radius\": 18.0,\n"
-"  \"moon2_distance\": 980.0,\n"
-"  \"moon2_orbit_speed\": 1.15,\n"
-"  \"moon2_parallax\": 0.060,\n"
-"  \"atmosphere_horizon_boost\": 0.32,\n"
-"  \"atmosphere_zenith_boost\": 0.17,\n"
-"  \"horizon_fade\": 0.24,\n"
-"  \"fog_start_factor\": 0.40,\n"
-"  \"fog_end_factor\": 0.92,\n"
-"  \"fog_distance_bonus\": 22.0,\n"
-"  \"eclipse_frequency_days\": 6.0,\n"
-"  \"eclipse_strength\": 0.45\n"
+"  \"stars_density\": 1650.0,\n"
+"  \"stars_parallax\": 0.008,\n"
+"  \"nebula_alpha\": 0.22,\n"
+"  \"nebula_parallax\": 0.016,\n"
+"  \"cloud_alpha\": 0.20,\n"
+"  \"cloud_parallax\": 0.050,\n"
+"  \"planet_radius\": 160.0,\n"
+"  \"planet_distance\": 1220.0,\n"
+"  \"planet_orbit_speed\": 0.060,\n"
+"  \"planet_parallax\": 0.028,\n"
+"  \"sun_radius\": 52.0,\n"
+"  \"sun_distance\": 820.0,\n"
+"  \"sun_halo_size\": 2.25,\n"
+"  \"bloom_intensity\": 0.45,\n"
+"  \"moon_radius\": 36.0,\n"
+"  \"moon_distance\": 940.0,\n"
+"  \"moon_orbit_speed\": 0.48,\n"
+"  \"moon_parallax\": 0.040,\n"
+"  \"moon2_radius\": 22.0,\n"
+"  \"moon2_distance\": 1010.0,\n"
+"  \"moon2_orbit_speed\": 0.98,\n"
+"  \"moon2_parallax\": 0.050,\n"
+"  \"atmosphere_horizon_boost\": 0.45,\n"
+"  \"atmosphere_zenith_boost\": 0.24,\n"
+"  \"horizon_fade\": 0.28,\n"
+"  \"fog_start_factor\": 0.34,\n"
+"  \"fog_end_factor\": 0.88,\n"
+"  \"fog_distance_bonus\": 36.0,\n"
+"  \"eclipse_frequency_days\": 8.0,\n"
+"  \"eclipse_strength\": 0.50\n"
 "}\n";
 }
 
@@ -3414,6 +4605,366 @@ static bool reload_sky_config(bool create_if_missing) {
     return loaded;
 }
 
+static void write_default_camera_config(const std::string& path) {
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return;
+    f <<
+"{\n"
+"  \"spawn_distance\": 4.2,\n"
+"  \"spawn_pitch\": 24.0,\n"
+"  \"spawn_yaw\": 180.0,\n"
+"  \"open_pitch\": 26.0,\n"
+"  \"semi_pitch\": 50.0,\n"
+"  \"cave_pitch\": 72.0,\n"
+"  \"emergency_pitch\": 87.0,\n"
+"  \"open_distance_scale\": 1.00,\n"
+"  \"semi_distance_scale\": 0.86,\n"
+"  \"cave_distance_scale\": 0.74,\n"
+"  \"emergency_distance_scale\": 0.62,\n"
+"  \"open_target_lift\": 0.06,\n"
+"  \"semi_target_lift\": 0.46,\n"
+"  \"cave_target_lift\": 1.16,\n"
+"  \"emergency_target_lift\": 1.72,\n"
+"  \"pitch_lerp\": 0.14,\n"
+"  \"distance_lerp\": 0.14,\n"
+"  \"lift_lerp\": 0.15,\n"
+"  \"cave_depth_start\": 0.45,\n"
+"  \"cave_depth_end\": 2.60,\n"
+"  \"enclosed_start\": 0.28,\n"
+"  \"enclosed_end\": 0.76,\n"
+"  \"occlusion_full\": 0.64,\n"
+"  \"emergency_hidden_time\": 0.50,\n"
+"  \"transparency_alpha\": 0.30,\n"
+"  \"transparency_fade_in\": 10.0,\n"
+"  \"transparency_fade_out\": 5.0,\n"
+"  \"collision_probe_step\": 0.14,\n"
+"  \"collision_padding\": 0.34,\n"
+"  \"min_collision_distance\": 0.70,\n"
+"  \"debug_ray_length\": 8.0\n"
+"}\n";
+}
+
+static void apply_camera_config_overrides(const std::string& text, CameraConfig& cfg) {
+    auto setf = [&](const char* key, float& value) {
+        float parsed = 0.0f;
+        if (parse_json_number(text, key, parsed)) value = parsed;
+    };
+
+    setf("spawn_distance", cfg.spawn_distance);
+    setf("spawn_pitch", cfg.spawn_pitch);
+    setf("spawn_yaw", cfg.spawn_yaw);
+
+    setf("open_pitch", cfg.open_pitch);
+    setf("semi_pitch", cfg.semi_pitch);
+    setf("cave_pitch", cfg.cave_pitch);
+    setf("emergency_pitch", cfg.emergency_pitch);
+
+    setf("open_distance_scale", cfg.open_distance_scale);
+    setf("semi_distance_scale", cfg.semi_distance_scale);
+    setf("cave_distance_scale", cfg.cave_distance_scale);
+    setf("emergency_distance_scale", cfg.emergency_distance_scale);
+
+    setf("open_target_lift", cfg.open_target_lift);
+    setf("semi_target_lift", cfg.semi_target_lift);
+    setf("cave_target_lift", cfg.cave_target_lift);
+    setf("emergency_target_lift", cfg.emergency_target_lift);
+
+    setf("pitch_lerp", cfg.pitch_lerp);
+    setf("distance_lerp", cfg.distance_lerp);
+    setf("lift_lerp", cfg.lift_lerp);
+
+    setf("cave_depth_start", cfg.cave_depth_start);
+    setf("cave_depth_end", cfg.cave_depth_end);
+    setf("enclosed_start", cfg.enclosed_start);
+    setf("enclosed_end", cfg.enclosed_end);
+    setf("occlusion_full", cfg.occlusion_full);
+    setf("emergency_hidden_time", cfg.emergency_hidden_time);
+
+    setf("transparency_alpha", cfg.transparency_alpha);
+    setf("transparency_fade_in", cfg.transparency_fade_in);
+    setf("transparency_fade_out", cfg.transparency_fade_out);
+
+    setf("collision_probe_step", cfg.collision_probe_step);
+    setf("collision_padding", cfg.collision_padding);
+    setf("min_collision_distance", cfg.min_collision_distance);
+    setf("debug_ray_length", cfg.debug_ray_length);
+
+    cfg.spawn_distance = std::clamp(cfg.spawn_distance, 1.6f, 25.0f);
+    cfg.spawn_pitch = std::clamp(cfg.spawn_pitch, 8.0f, 88.0f);
+    while (cfg.spawn_yaw < 0.0f) cfg.spawn_yaw += 360.0f;
+    while (cfg.spawn_yaw >= 360.0f) cfg.spawn_yaw -= 360.0f;
+
+    cfg.open_pitch = std::clamp(cfg.open_pitch, 8.0f, 88.0f);
+    cfg.semi_pitch = std::clamp(cfg.semi_pitch, cfg.open_pitch, 88.0f);
+    cfg.cave_pitch = std::clamp(cfg.cave_pitch, cfg.semi_pitch, 88.0f);
+    cfg.emergency_pitch = std::clamp(cfg.emergency_pitch, cfg.cave_pitch, 89.0f);
+
+    cfg.open_distance_scale = std::clamp(cfg.open_distance_scale, 0.35f, 1.40f);
+    cfg.semi_distance_scale = std::clamp(cfg.semi_distance_scale, 0.35f, 1.40f);
+    cfg.cave_distance_scale = std::clamp(cfg.cave_distance_scale, 0.35f, 1.40f);
+    cfg.emergency_distance_scale = std::clamp(cfg.emergency_distance_scale, 0.35f, 1.40f);
+
+    cfg.open_target_lift = std::clamp(cfg.open_target_lift, 0.0f, 3.0f);
+    cfg.semi_target_lift = std::clamp(cfg.semi_target_lift, 0.0f, 3.0f);
+    cfg.cave_target_lift = std::clamp(cfg.cave_target_lift, 0.0f, 4.0f);
+    cfg.emergency_target_lift = std::clamp(cfg.emergency_target_lift, 0.0f, 4.0f);
+
+    cfg.pitch_lerp = std::clamp(cfg.pitch_lerp, 0.02f, 1.0f);
+    cfg.distance_lerp = std::clamp(cfg.distance_lerp, 0.02f, 1.0f);
+    cfg.lift_lerp = std::clamp(cfg.lift_lerp, 0.02f, 1.0f);
+
+    cfg.cave_depth_start = std::clamp(cfg.cave_depth_start, 0.0f, 10.0f);
+    cfg.cave_depth_end = std::clamp(cfg.cave_depth_end, cfg.cave_depth_start + 0.05f, 20.0f);
+    cfg.enclosed_start = std::clamp(cfg.enclosed_start, 0.0f, 1.0f);
+    cfg.enclosed_end = std::clamp(cfg.enclosed_end, cfg.enclosed_start + 0.01f, 1.0f);
+    cfg.occlusion_full = std::clamp(cfg.occlusion_full, 0.05f, 1.0f);
+    cfg.emergency_hidden_time = std::clamp(cfg.emergency_hidden_time, 0.05f, 3.0f);
+
+    cfg.transparency_alpha = std::clamp(cfg.transparency_alpha, 0.05f, 0.95f);
+    cfg.transparency_fade_in = std::clamp(cfg.transparency_fade_in, 0.1f, 40.0f);
+    cfg.transparency_fade_out = std::clamp(cfg.transparency_fade_out, 0.1f, 40.0f);
+    cfg.collision_probe_step = std::clamp(cfg.collision_probe_step, 0.04f, 0.60f);
+    cfg.collision_padding = std::clamp(cfg.collision_padding, 0.05f, 1.50f);
+    cfg.min_collision_distance = std::clamp(cfg.min_collision_distance, 0.20f, 4.0f);
+    cfg.debug_ray_length = std::clamp(cfg.debug_ray_length, 1.0f, 20.0f);
+}
+
+static bool reload_camera_config(bool create_if_missing) {
+    const char* candidates[] = {
+        "camera_config.json",
+        "..\\camera_config.json",
+        "..\\..\\camera_config.json",
+        "..\\..\\..\\camera_config.json"
+    };
+
+    std::string chosen_path;
+    for (const char* c : candidates) {
+        if (file_exists(c)) {
+            chosen_path = c;
+            break;
+        }
+    }
+
+    if (chosen_path.empty()) {
+        chosen_path = candidates[0];
+        if (create_if_missing) write_default_camera_config(chosen_path);
+    }
+
+    CameraConfig cfg = CameraConfig{};
+    bool loaded = false;
+    std::ifstream f(chosen_path);
+    if (f) {
+        std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        apply_camera_config_overrides(text, cfg);
+        loaded = true;
+    } else if (create_if_missing) {
+        write_default_camera_config(chosen_path);
+    }
+
+    g_camera_cfg = cfg;
+    g_camera_config_path = chosen_path;
+    g_camera.distance = std::clamp(g_camera.distance, g_camera.min_distance, g_camera.max_distance);
+    g_camera.pitch = std::clamp(g_camera.pitch, g_camera.min_pitch, g_camera.max_pitch);
+    return loaded;
+}
+
+static void write_default_mining_config(const std::string& path) {
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return;
+    f <<
+"{\n"
+"  \"hit_interval\": 0.20,\n"
+"  \"hit_interval_min\": 0.09,\n"
+"  \"early_game_speed_mult\": 1.12,\n"
+"  \"late_game_speed_mult\": 0.85,\n"
+"  \"hits_sand\": 1,\n"
+"  \"hits_dirt\": 2,\n"
+"  \"hits_ice\": 2,\n"
+"  \"hits_snow\": 2,\n"
+"  \"hits_stone\": 3,\n"
+"  \"hits_metal\": 4,\n"
+"  \"hits_crystal\": 5,\n"
+"  \"hits_ore\": 4,\n"
+"  \"hits_wood\": 2,\n"
+"  \"hits_modules\": 4\n"
+"}\n";
+}
+
+static void apply_mining_config_overrides(const std::string& text, MiningConfig& cfg) {
+    auto setf = [&](const char* key, float& value) {
+        float parsed = 0.0f;
+        if (parse_json_number(text, key, parsed)) value = parsed;
+    };
+    auto seti = [&](const char* key, int& value) {
+        float parsed = 0.0f;
+        if (parse_json_number(text, key, parsed)) value = (int)std::lround(parsed);
+    };
+
+    setf("hit_interval", cfg.hit_interval);
+    setf("hit_interval_min", cfg.hit_interval_min);
+    setf("early_game_speed_mult", cfg.early_game_speed_mult);
+    setf("late_game_speed_mult", cfg.late_game_speed_mult);
+    seti("hits_sand", cfg.hits_sand);
+    seti("hits_dirt", cfg.hits_dirt);
+    seti("hits_ice", cfg.hits_ice);
+    seti("hits_snow", cfg.hits_snow);
+    seti("hits_stone", cfg.hits_stone);
+    seti("hits_metal", cfg.hits_metal);
+    seti("hits_crystal", cfg.hits_crystal);
+    seti("hits_ore", cfg.hits_ore);
+    seti("hits_wood", cfg.hits_wood);
+    seti("hits_modules", cfg.hits_modules);
+
+    cfg.hit_interval = std::clamp(cfg.hit_interval, 0.06f, 0.80f);
+    cfg.hit_interval_min = std::clamp(cfg.hit_interval_min, 0.04f, cfg.hit_interval);
+    cfg.early_game_speed_mult = std::clamp(cfg.early_game_speed_mult, 0.50f, 3.00f);
+    cfg.late_game_speed_mult = std::clamp(cfg.late_game_speed_mult, 0.35f, 2.50f);
+
+    cfg.hits_sand = std::clamp(cfg.hits_sand, 1, 8);
+    cfg.hits_dirt = std::clamp(cfg.hits_dirt, 1, 8);
+    cfg.hits_ice = std::clamp(cfg.hits_ice, 1, 8);
+    cfg.hits_snow = std::clamp(cfg.hits_snow, 1, 8);
+    cfg.hits_stone = std::clamp(cfg.hits_stone, 1, 12);
+    cfg.hits_metal = std::clamp(cfg.hits_metal, 1, 12);
+    cfg.hits_crystal = std::clamp(cfg.hits_crystal, 1, 14);
+    cfg.hits_ore = std::clamp(cfg.hits_ore, 1, 12);
+    cfg.hits_wood = std::clamp(cfg.hits_wood, 1, 10);
+    cfg.hits_modules = std::clamp(cfg.hits_modules, 1, 14);
+}
+
+static bool reload_mining_config(bool create_if_missing) {
+    const char* candidates[] = {
+        "mining_config.json",
+        "..\\mining_config.json",
+        "..\\..\\mining_config.json",
+        "..\\..\\..\\mining_config.json"
+    };
+
+    std::string chosen_path;
+    for (const char* c : candidates) {
+        if (file_exists(c)) {
+            chosen_path = c;
+            break;
+        }
+    }
+
+    if (chosen_path.empty()) {
+        chosen_path = candidates[0];
+        if (create_if_missing) write_default_mining_config(chosen_path);
+    }
+
+    MiningConfig cfg = MiningConfig{};
+    bool loaded = false;
+    std::ifstream f(chosen_path);
+    if (f) {
+        std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        apply_mining_config_overrides(text, cfg);
+        loaded = true;
+    } else if (create_if_missing) {
+        write_default_mining_config(chosen_path);
+    }
+
+    g_mining_cfg = cfg;
+    g_mining_config_path = chosen_path;
+    return loaded;
+}
+
+static void write_default_player_visual_config(const std::string& path) {
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return;
+    f <<
+"{\n"
+"  \"breathing_amp\": 0.018,\n"
+"  \"breathing_speed\": 2.2,\n"
+"  \"walk_bob_amp\": 0.060,\n"
+"  \"walk_bob_speed\": 12.5,\n"
+"  \"walk_weight_amp\": 0.10,\n"
+"  \"mine_impact_amp\": 0.19,\n"
+"  \"idle_sway_amp\": 0.016,\n"
+"  \"idle_sway_speed\": 1.6,\n"
+"  \"visor_reflect_alpha\": 0.36,\n"
+"  \"headlamp_intensity\": 0.74,\n"
+"  \"suit_wear_strength\": 0.20,\n"
+"  \"suit_dirt_strength\": 0.24,\n"
+"  \"suit_frost_strength\": 0.32,\n"
+"  \"suit_damage_strength\": 0.45\n"
+"}\n";
+}
+
+static void apply_player_visual_config_overrides(const std::string& text, PlayerVisualConfig& cfg) {
+    auto setf = [&](const char* key, float& value) {
+        float parsed = 0.0f;
+        if (parse_json_number(text, key, parsed)) value = parsed;
+    };
+
+    setf("breathing_amp", cfg.breathing_amp);
+    setf("breathing_speed", cfg.breathing_speed);
+    setf("walk_bob_amp", cfg.walk_bob_amp);
+    setf("walk_bob_speed", cfg.walk_bob_speed);
+    setf("walk_weight_amp", cfg.walk_weight_amp);
+    setf("mine_impact_amp", cfg.mine_impact_amp);
+    setf("idle_sway_amp", cfg.idle_sway_amp);
+    setf("idle_sway_speed", cfg.idle_sway_speed);
+    setf("visor_reflect_alpha", cfg.visor_reflect_alpha);
+    setf("headlamp_intensity", cfg.headlamp_intensity);
+    setf("suit_wear_strength", cfg.suit_wear_strength);
+    setf("suit_dirt_strength", cfg.suit_dirt_strength);
+    setf("suit_frost_strength", cfg.suit_frost_strength);
+    setf("suit_damage_strength", cfg.suit_damage_strength);
+
+    cfg.breathing_amp = std::clamp(cfg.breathing_amp, 0.0f, 0.08f);
+    cfg.breathing_speed = std::clamp(cfg.breathing_speed, 0.2f, 8.0f);
+    cfg.walk_bob_amp = std::clamp(cfg.walk_bob_amp, 0.0f, 0.20f);
+    cfg.walk_bob_speed = std::clamp(cfg.walk_bob_speed, 2.0f, 24.0f);
+    cfg.walk_weight_amp = std::clamp(cfg.walk_weight_amp, 0.0f, 0.30f);
+    cfg.mine_impact_amp = std::clamp(cfg.mine_impact_amp, 0.0f, 0.50f);
+    cfg.idle_sway_amp = std::clamp(cfg.idle_sway_amp, 0.0f, 0.06f);
+    cfg.idle_sway_speed = std::clamp(cfg.idle_sway_speed, 0.2f, 6.0f);
+    cfg.visor_reflect_alpha = std::clamp(cfg.visor_reflect_alpha, 0.0f, 1.0f);
+    cfg.headlamp_intensity = std::clamp(cfg.headlamp_intensity, 0.0f, 2.0f);
+    cfg.suit_wear_strength = std::clamp(cfg.suit_wear_strength, 0.0f, 1.0f);
+    cfg.suit_dirt_strength = std::clamp(cfg.suit_dirt_strength, 0.0f, 1.0f);
+    cfg.suit_frost_strength = std::clamp(cfg.suit_frost_strength, 0.0f, 1.0f);
+    cfg.suit_damage_strength = std::clamp(cfg.suit_damage_strength, 0.0f, 1.0f);
+}
+
+static bool reload_player_visual_config(bool create_if_missing) {
+    const char* candidates[] = {
+        "player_visual.json",
+        "..\\player_visual.json",
+        "..\\..\\player_visual.json",
+        "..\\..\\..\\player_visual.json"
+    };
+
+    std::string chosen_path;
+    for (const char* c : candidates) {
+        if (file_exists(c)) {
+            chosen_path = c;
+            break;
+        }
+    }
+
+    if (chosen_path.empty()) {
+        chosen_path = candidates[0];
+        if (create_if_missing) write_default_player_visual_config(chosen_path);
+    }
+
+    PlayerVisualConfig cfg = PlayerVisualConfig{};
+    bool loaded = false;
+    std::ifstream f(chosen_path);
+    if (f) {
+        std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        apply_player_visual_config_overrides(text, cfg);
+        loaded = true;
+    } else if (create_if_missing) {
+        write_default_player_visual_config(chosen_path);
+    }
+
+    g_player_visual_cfg = cfg;
+    g_player_visual_config_path = chosen_path;
+    return loaded;
+}
+
 static TerrainPhysicsType terrain_type_from_block(Block b) {
     switch (b) {
         case Block::Ice:
@@ -3505,8 +5056,8 @@ static float sample_heightmap_continuous(const World& world, float x, float z) {
 }
 
 static Vec3 compute_surface_normal(const World& world, float x, float z) {
-    int tx = (int)std::floor(x);
-    int tz = (int)std::floor(z);
+    int tx = world_to_tile(x);
+    int tz = world_to_tile(z);
     if (world.in_bounds(tx, tz) && object_block_at(world, tx, tz) != Block::Air) {
         return {0.0f, 1.0f, 0.0f};
     }
@@ -3534,8 +5085,8 @@ static float sample_support_height(const World& world, float cx, float cz, float
     float best_h = -10000.0f;
     Block best_surface = Block::Dirt;
     for (const Vec2& off : samples) {
-        int tx = (int)std::floor(cx + off.x);
-        int tz = (int)std::floor(cz + off.y);
+        int tx = world_to_tile(cx + off.x);
+        int tz = world_to_tile(cz + off.y);
         if (!world.in_bounds(tx, tz)) continue;
         float h = surface_height_at(world, tx, tz);
         if (h > best_h) {
@@ -3580,19 +5131,19 @@ static bool overlaps_blocking_volume(const Player& p, const World& world, const 
     float front = test_z - p.h * 0.5f + cfg.collision_skin;
     float back = test_z + p.h * 0.5f - cfg.collision_skin;
 
-    int x0 = (int)std::floor(left);
-    int x1 = (int)std::floor(right);
-    int z0 = (int)std::floor(front);
-    int z1 = (int)std::floor(back);
+    int x0 = world_to_tile(left);
+    int x1 = world_to_tile(right);
+    int z0 = world_to_tile(front);
+    int z1 = world_to_tile(back);
 
     for (int tz = z0; tz <= z1; ++tz) {
         for (int tx = x0; tx <= x1; ++tx) {
             float tile_top = 0.0f;
             if (!column_blocks_movement(world, tx, tz, foot_y, head_y, 0.0f, tile_top)) continue;
-            float tile_l = (float)tx;
-            float tile_r = tile_l + 1.0f;
-            float tile_f = (float)tz;
-            float tile_b = tile_f + 1.0f;
+            float tile_l = tile_min(tx);
+            float tile_r = tile_max(tx);
+            float tile_f = tile_min(tz);
+            float tile_b = tile_max(tz);
             if (right > tile_l && left < tile_r && back > tile_f && front < tile_b) return true;
         }
     }
@@ -3611,8 +5162,8 @@ static bool try_step_climb(Player& p, const World& world, const PhysicsConfig& c
     for (int i = -1; i <= 1; ++i) {
         float sx = p.pos.x + dir.x * cfg.step_probe_distance + perp.x * lateral * (float)i;
         float sz = p.pos.y + dir.y * cfg.step_probe_distance + perp.y * lateral * (float)i;
-        int tx = (int)std::floor(sx);
-        int tz = (int)std::floor(sz);
+        int tx = world_to_tile(sx);
+        int tz = world_to_tile(sz);
         if (!world.in_bounds(tx, tz)) return false;
         float h = sample_support_height(world, sx, sz, p.w * 0.90f, p.h * 0.90f);
         best_front_h = std::max(best_front_h, h);
@@ -3646,12 +5197,12 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
     if (axis_x) {
         float front = p.pos.y - p.h * 0.5f + skin;
         float back = p.pos.y + p.h * 0.5f - skin;
-        int z0 = (int)std::floor(front);
-        int z1 = (int)std::floor(back);
+        int z0 = world_to_tile(front);
+        int z1 = world_to_tile(back);
         if (z1 < z0) z1 = z0;
 
         if (move_amount > 0.0f) {
-            int tx = (int)std::floor(p.pos.x + p.w * 0.5f);
+            int tx = world_to_tile(p.pos.x + p.w * 0.5f);
             for (int tz = z0; tz <= z1; ++tz) {
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
@@ -3663,14 +5214,14 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                     if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, post_step_top)) continue;
                 }
 
-                p.pos.x = (float)tx - p.w * 0.5f - skin;
+                p.pos.x = tile_min(tx) - p.w * 0.5f - skin;
                 p.vel.x = 0.0f;
                 g_physics.hit_x = true;
                 g_physics.collision_normal = {-1.0f, 0.0f};
                 break;
             }
         } else {
-            int tx = (int)std::floor(p.pos.x - p.w * 0.5f);
+            int tx = world_to_tile(p.pos.x - p.w * 0.5f);
             for (int tz = z0; tz <= z1; ++tz) {
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
@@ -3682,7 +5233,7 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                     if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, post_step_top)) continue;
                 }
 
-                p.pos.x = (float)(tx + 1) + p.w * 0.5f + skin;
+                p.pos.x = tile_max(tx) + p.w * 0.5f + skin;
                 p.vel.x = 0.0f;
                 g_physics.hit_x = true;
                 g_physics.collision_normal = {1.0f, 0.0f};
@@ -3692,12 +5243,12 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
     } else {
         float left = p.pos.x - p.w * 0.5f + skin;
         float right = p.pos.x + p.w * 0.5f - skin;
-        int x0 = (int)std::floor(left);
-        int x1 = (int)std::floor(right);
+        int x0 = world_to_tile(left);
+        int x1 = world_to_tile(right);
         if (x1 < x0) x1 = x0;
 
         if (move_amount > 0.0f) {
-            int tz = (int)std::floor(p.pos.y + p.h * 0.5f);
+            int tz = world_to_tile(p.pos.y + p.h * 0.5f);
             for (int tx = x0; tx <= x1; ++tx) {
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
@@ -3709,14 +5260,14 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                     if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, post_step_top)) continue;
                 }
 
-                p.pos.y = (float)tz - p.h * 0.5f - skin;
+                p.pos.y = tile_min(tz) - p.h * 0.5f - skin;
                 p.vel.y = 0.0f;
                 g_physics.hit_z = true;
                 g_physics.collision_normal = {0.0f, -1.0f};
                 break;
             }
         } else {
-            int tz = (int)std::floor(p.pos.y - p.h * 0.5f);
+            int tz = world_to_tile(p.pos.y - p.h * 0.5f);
             for (int tx = x0; tx <= x1; ++tx) {
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
@@ -3728,12 +5279,86 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                     if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, post_step_top)) continue;
                 }
 
-                p.pos.y = (float)(tz + 1) + p.h * 0.5f + skin;
+                p.pos.y = tile_max(tz) + p.h * 0.5f + skin;
                 p.vel.y = 0.0f;
                 g_physics.hit_z = true;
                 g_physics.collision_normal = {0.0f, 1.0f};
                 break;
             }
+        }
+    }
+}
+
+// Corrige pequenas penetracoes residuais em paredes (drift/jitter acumulado).
+static void depenetrate_player_horizontal(Player& p, const World& world, const PhysicsConfig& cfg) {
+    const float skin = cfg.collision_skin;
+    for (int iter = 0; iter < 5; ++iter) {
+        float foot_y = p.pos_y + skin;
+        float head_y = p.pos_y + cfg.collider_height - skin;
+
+        float left = p.pos.x - p.w * 0.5f + skin;
+        float right = p.pos.x + p.w * 0.5f - skin;
+        float front = p.pos.y - p.h * 0.5f + skin;
+        float back = p.pos.y + p.h * 0.5f - skin;
+
+        int x0 = world_to_tile(left) - 1;
+        int x1 = world_to_tile(right) + 1;
+        int z0 = world_to_tile(front) - 1;
+        int z1 = world_to_tile(back) + 1;
+
+        bool has_overlap = false;
+        float best_push = 0.0f;
+        bool best_axis_x = true;
+        float best_abs = std::numeric_limits<float>::infinity();
+
+        for (int tz = z0; tz <= z1; ++tz) {
+            for (int tx = x0; tx <= x1; ++tx) {
+                float tile_top = 0.0f;
+                if (!column_blocks_movement(world, tx, tz, foot_y, head_y, 0.0f, tile_top)) continue;
+
+                float tile_l = tile_min(tx);
+                float tile_r = tile_max(tx);
+                float tile_f = tile_min(tz);
+                float tile_b = tile_max(tz);
+
+                float overlap_x = std::min(right, tile_r) - std::max(left, tile_l);
+                float overlap_z = std::min(back, tile_b) - std::max(front, tile_f);
+                if (overlap_x <= 0.0f || overlap_z <= 0.0f) continue;
+                has_overlap = true;
+
+                float push_x_neg = (tile_l - right) - skin;
+                float push_x_pos = (tile_r - left) + skin;
+                float push_z_neg = (tile_f - back) - skin;
+                float push_z_pos = (tile_b - front) + skin;
+
+                float cand_x = (std::fabs(push_x_neg) < std::fabs(push_x_pos)) ? push_x_neg : push_x_pos;
+                float cand_z = (std::fabs(push_z_neg) < std::fabs(push_z_pos)) ? push_z_neg : push_z_pos;
+
+                float abs_x = std::fabs(cand_x);
+                float abs_z = std::fabs(cand_z);
+                if (abs_x < best_abs) {
+                    best_abs = abs_x;
+                    best_push = cand_x;
+                    best_axis_x = true;
+                }
+                if (abs_z < best_abs) {
+                    best_abs = abs_z;
+                    best_push = cand_z;
+                    best_axis_x = false;
+                }
+            }
+        }
+
+        if (!has_overlap || !std::isfinite(best_abs) || best_abs <= 1e-6f) break;
+        best_push = std::clamp(best_push, -0.35f, 0.35f);
+        if (best_axis_x) {
+            p.pos.x += best_push;
+            p.vel.x = 0.0f;
+            g_physics.hit_x = true;
+        } else {
+            p.pos.y += best_push;
+            p.vel.y = 0.0f;
+            g_physics.hit_z = true;
         }
     }
 }
@@ -3751,8 +5376,9 @@ static void move_player_horizontal(Player& p, const World& world, const PhysicsC
         resolve_axis_collision(p, world, cfg, step_delta.y, false, move_dir);
     }
 
-    p.pos.x = std::clamp(p.pos.x, 1.0f, (float)world.w - 2.0f);
-    p.pos.y = std::clamp(p.pos.y, 1.0f, (float)world.h - 2.0f);
+    p.pos.x = std::clamp(p.pos.x, 0.5f, (float)world.w - 1.5f);
+    p.pos.y = std::clamp(p.pos.y, 0.5f, (float)world.h - 1.5f);
+    depenetrate_player_horizontal(p, world, cfg);
 }
 
 static GroundProbeResult probe_ground(const Player& p, const World& world, const PhysicsConfig& cfg, bool capture_debug_rays) {
@@ -3781,8 +5407,8 @@ static GroundProbeResult probe_ground(const Player& p, const World& world, const
     for (const Vec2& off : offsets) {
         float sx = p.pos.x + off.x;
         float sz = p.pos.y + off.y;
-        int tx = (int)std::floor(sx);
-        int tz = (int)std::floor(sz);
+        int tx = world_to_tile(sx);
+        int tz = world_to_tile(sz);
         bool in_bounds = world.in_bounds(tx, tz);
         float sample_h = in_bounds ? surface_height_at(world, tx, tz) : -10000.0f;
         bool hit = in_bounds && sample_h <= ray_top + cfg.ground_tolerance && sample_h >= ray_bottom;
@@ -3919,7 +5545,7 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
         p.vel = vec2_scale(p.vel, damped / speed);
     }
 
-    if (p.on_ground && ground.normal.y < cfg.slope_limit_normal_y) {
+    if (p.on_ground && input.has_move && ground.normal.y < cfg.slope_limit_normal_y) {
         Vec2 downhill = vec2_normalize({-ground.normal.x, -ground.normal.z});
         float slope_factor = clamp01((cfg.slope_limit_normal_y - ground.normal.y) / std::max(0.0001f, cfg.slope_limit_normal_y));
         p.vel = vec2_add(p.vel, vec2_scale(downhill, cfg.slope_slide_accel * terrain.slide_mult * slope_factor * fixed_dt));
@@ -4634,8 +6260,8 @@ static void update_item_drops(float dt) {
         // Repouso no chao REAL (altura do heightmap), nao em Y constante (montanhas!)
         float rest_y = kRestOffset;
         if (g_world) {
-            int tx = (int)std::floor(d.x + 0.5f);
-            int tz = (int)std::floor(d.z + 0.5f);
+            int tx = world_to_tile(d.x);
+            int tz = world_to_tile(d.z);
             if (g_world->in_bounds(tx, tz)) {
                 rest_y = surface_height_at(*g_world, tx, tz) + kRestOffset;
             }
@@ -5369,28 +6995,27 @@ static void update_modules(World& world, float dt) {
         }
     }
 
-    // ========== PLAYER IS AT BASE - RECHARGE SUIT ==========
-    float dist_to_base = std::fabs(g_player.pos.x - (float)g_base_x);
-    bool at_base = (dist_to_base < 15.0f);  // Within 15 blocks of base
+    // ========== PLAYER IS AT BASE - ZONA SEGURA ==========
+    float dx_base = g_player.pos.x - (float)g_base_x;
+    float dy_base = g_player.pos.y - (float)g_base_y;
+    float dist_to_base = std::sqrt(dx_base * dx_base + dy_base * dy_base);
+    bool at_base = (dist_to_base < g_base_cfg.safe_radius);  // Usar raio configuravel
     
     if (at_base) {
-        // Recharge rate - slower for more challenge (3% per second)
-        float recharge_rate = 3.0f * dt;  // Recharge speed (reduced from 8.0f)
-        
         // Recharge O2 from base storage (consumes base O2!)
         if (g_player_oxygen < 100.0f && g_base_oxygen > 0.0f) {
-            float need = std::min(recharge_rate, 100.0f - g_player_oxygen);
-            float o2_cost = need * 0.20f;  // Costs 20% extra O2 from base (increased from 15%)
+            float need = std::min(g_base_cfg.recharge_oxygen_rate * dt, 100.0f - g_player_oxygen);
+            float o2_cost = need * 0.20f;  // Costs 20% extra O2 from base
             float available = std::min(need, g_base_oxygen - o2_cost);
             if (available > 0.0f) {
                 g_player_oxygen += available;
-                g_base_oxygen -= (available + o2_cost);  // Extra cost!
+                g_base_oxygen -= (available + o2_cost);
             }
         }
         
         // Recharge water from base storage
         if (g_player_water < 100.0f && g_base_water > 0.0f) {
-            float need = std::min(recharge_rate * 0.8f, 100.0f - g_player_water);
+            float need = std::min(g_base_cfg.recharge_water_rate * dt, 100.0f - g_player_water);
             float available = std::min(need, g_base_water);
             g_player_water += available;
             g_base_water -= available;
@@ -5398,10 +7023,25 @@ static void update_modules(World& world, float dt) {
         
         // Recharge food from base storage (slowest)
         if (g_player_food < 100.0f && g_base_food > 0.0f) {
-            float need = std::min(recharge_rate * 0.4f, 100.0f - g_player_food);
+            float need = std::min(g_base_cfg.recharge_food_rate * dt, 100.0f - g_player_food);
             float available = std::min(need, g_base_food);
             g_player_food += available;
             g_base_food -= available;
+        }
+        
+        // Reparar HP do jogador na zona segura (gratis)
+        if (g_player.hp < 100) {
+            g_player.hp = std::min(100, g_player.hp + (int)(g_base_cfg.repair_player_hp_per_sec * dt + 0.5f));
+        }
+        
+        // Reabastecer jetpack na zona segura (usa energia da base)
+        if (g_player.jetpack_fuel < 100.0f && g_base_energy > 5.0f) {
+            float fuel_need = std::min(g_base_cfg.jetpack_refuel_per_sec * dt, 100.0f - g_player.jetpack_fuel);
+            float energy_cost = fuel_need * 0.1f;  // Consome energia da base
+            if (g_base_energy >= energy_cost) {
+                g_player.jetpack_fuel += fuel_need;
+                g_base_energy -= energy_cost;
+            }
         }
         
         // Can't recharge if base O2 too low!
@@ -6541,13 +8181,28 @@ static void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_ph
     };
     Vec3 sun_dir = vec3_normalize(vec3_sub(sun_pos, camera_ref));
 
-    float planet_phase = g_day_time / (kDayLength * std::max(0.1f, g_sky_cfg.planet_orbit_speed * 12.0f));
-    float planet_ang = planet_phase * 2.0f * kPi + 0.75f;
-    Vec3 planet_pos = {
-        cam_x * g_sky_cfg.planet_parallax + std::cos(planet_ang) * g_sky_cfg.planet_distance,
-        140.0f + std::sin(planet_ang * 0.65f) * 190.0f,
-        cam_z * g_sky_cfg.planet_parallax + std::sin(planet_ang) * g_sky_cfg.planet_distance
+    // Movimento muito lento dos astros (em "dias" de jogo), evitando deslocamento brusco no ceu.
+    float sky_days = g_day_time / kDayLength;
+    float planet_phase = sky_days * std::max(0.0f, g_sky_cfg.planet_orbit_speed) * 0.10f;
+    float planet_orbit = planet_phase * 2.0f * kPi;
+    float planet_az = 2.25f + std::sin(planet_orbit) * 0.35f;
+    float planet_el = 0.30f + std::sin(planet_orbit * 0.43f + 0.9f) * 0.08f;
+    auto body_from_spherical = [&](float az, float el, float dist, float parallax) -> Vec3 {
+        float cos_el = std::cos(el);
+        return {
+            cam_x * parallax + std::cos(az) * cos_el * dist,
+            70.0f + std::sin(el) * dist,
+            cam_z * parallax + std::sin(az) * cos_el * dist
+        };
     };
+    Vec3 planet_pos = body_from_spherical(planet_az, planet_el, g_sky_cfg.planet_distance, g_sky_cfg.planet_parallax);
+
+    // Nao permitir que o planeta principal cruze visualmente o disco do sol.
+    Vec3 planet_dir = vec3_normalize(vec3_sub(planet_pos, camera_ref));
+    if (vec3_dot(planet_dir, sun_dir) > 0.66f) {
+        planet_az += (sun_dir.x >= 0.0f) ? -0.95f : 0.95f;
+        planet_pos = body_from_spherical(planet_az, planet_el, g_sky_cfg.planet_distance, g_sky_cfg.planet_parallax);
+    }
     render_lit_sphere(planet_pos, g_sky_cfg.planet_radius, sun_dir, g_camera.position,
                       0.20f, 0.28f, 0.42f, 0.98f,
                       0.22f, 0.90f, 0.18f,
@@ -6557,16 +8212,32 @@ static void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_ph
     render_billboard_disc(planet_pos, g_sky_cfg.planet_radius * 1.45f, 0.46f, 0.60f, 0.90f, night_alpha * 0.16f, 34);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    Vec3 moon1_pos = {
-        cam_x * g_sky_cfg.moon_parallax + std::cos(day_phase * g_sky_cfg.moon_orbit_speed * 2.0f * kPi + 1.1f) * g_sky_cfg.moon_distance,
-        220.0f + std::sin(day_phase * g_sky_cfg.moon_orbit_speed * 2.0f * kPi + 1.1f) * 150.0f,
-        cam_z * g_sky_cfg.moon_parallax + std::sin(day_phase * g_sky_cfg.moon_orbit_speed * 2.0f * kPi + 1.1f) * (g_sky_cfg.moon_distance * 0.58f)
+    float moon_phase = sky_days * std::max(0.0f, g_sky_cfg.moon_orbit_speed) * 0.08f;
+    float moon2_phase = sky_days * std::max(0.0f, g_sky_cfg.moon2_orbit_speed) * 0.10f;
+    float moon_a1 = moon_phase * 2.0f * kPi + 1.1f;
+    float moon_a2 = moon2_phase * 2.0f * kPi + 2.7f;
+    Vec3 moon1_pos = body_from_spherical(1.7f + std::sin(moon_a1) * 0.75f,
+                                         0.38f + std::sin(moon_a1 * 0.83f) * 0.15f,
+                                         g_sky_cfg.moon_distance,
+                                         g_sky_cfg.moon_parallax);
+    Vec3 moon2_pos = body_from_spherical(2.5f + std::sin(moon_a2) * 0.92f,
+                                         0.46f + std::sin(moon_a2 * 0.71f) * 0.13f,
+                                         g_sky_cfg.moon2_distance,
+                                         g_sky_cfg.moon2_parallax);
+
+    auto avoid_sun_cross = [&](Vec3& pos, float min_dot, float yaw_shift) {
+        Vec3 dir = vec3_normalize(vec3_sub(pos, camera_ref));
+        if (vec3_dot(dir, sun_dir) <= min_dot) return;
+        float vx = pos.x - camera_ref.x;
+        float vz = pos.z - camera_ref.z;
+        float r = std::sqrt(vx * vx + vz * vz);
+        if (r < 0.001f) return;
+        float yaw = std::atan2(vz, vx) + yaw_shift;
+        pos.x = camera_ref.x + std::cos(yaw) * r;
+        pos.z = camera_ref.z + std::sin(yaw) * r;
     };
-    Vec3 moon2_pos = {
-        cam_x * g_sky_cfg.moon2_parallax + std::cos(day_phase * g_sky_cfg.moon2_orbit_speed * 2.0f * kPi + 2.7f) * g_sky_cfg.moon2_distance,
-        250.0f + std::sin(day_phase * g_sky_cfg.moon2_orbit_speed * 2.0f * kPi + 2.7f) * 120.0f,
-        cam_z * g_sky_cfg.moon2_parallax + std::sin(day_phase * g_sky_cfg.moon2_orbit_speed * 2.0f * kPi + 2.7f) * (g_sky_cfg.moon2_distance * 0.75f)
-    };
+    avoid_sun_cross(moon1_pos, 0.84f, (sun_dir.x >= 0.0f) ? -0.65f : 0.65f);
+    avoid_sun_cross(moon2_pos, 0.84f, (sun_dir.x >= 0.0f) ? 0.75f : -0.75f);
 
     float moon_alpha = 0.35f + night_alpha * 0.65f;
     render_lit_sphere(moon1_pos, g_sky_cfg.moon_radius, sun_dir, g_camera.position,
@@ -6800,6 +8471,17 @@ static void render_physics_debug_3d() {
         glEnd();
     }
 
+    // Camera rays (obstruction checks).
+    for (int i = 0; i < g_camera_debug_ray_count; ++i) {
+        const CameraDebugRay& ray = g_camera_debug_rays[(size_t)i];
+        if (ray.blocked) glColor4f(1.0f, 0.35f, 0.20f, 0.92f);
+        else glColor4f(0.35f, 0.78f, 1.0f, 0.85f);
+        glBegin(GL_LINES);
+        glVertex3f(ray.from.x, ray.from.y, ray.from.z);
+        glVertex3f(ray.to.x, ray.to.y, ray.to.z);
+        glEnd();
+    }
+
     // Ground normal.
     Vec3 n0 = {rp.x, g_player.ground_height + 0.03f, rp.y};
     Vec3 n1 = {n0.x + g_physics.ground_normal.x * 1.1f,
@@ -6882,8 +8564,8 @@ static void render_world(HDC hdc, int win_w, int win_h) {
     // Calcular area visivel baseada na posicao do jogador (culling)
     Vec2 rpos = get_player_render_pos();
     float rpy = get_player_render_y();
-    int player_tile_x = (int)std::floor(rpos.x);
-    int player_tile_z = (int)std::floor(rpos.y);  // Y do 2D = Z no 3D
+    int player_tile_x = world_to_tile(rpos.x);
+    int player_tile_z = world_to_tile(rpos.y);  // Y do 2D = Z no 3D
     int view_radius = (int)std::clamp(g_camera.distance * 3.8f + 55.0f, 110.0f, 200.0f);
     int wall_radius = std::clamp(view_radius - 45, 80, view_radius);
     int obj_radius = std::clamp(view_radius - 30, 90, view_radius);
@@ -6996,6 +8678,7 @@ static void render_world(HDC hdc, int win_w, int win_h) {
                         if (gtex.uses_tint) { tint_r = cr; tint_g = cg; tint_b = cb; }
                         if (gtex.transparent) a = ca;
                     }
+                    a *= camera_occluder_alpha_for_tile(tx, tz);
 
                     // Edge blending entre terrenos adjacentes (transicao visual suave).
                     float neigh_r = 0.0f, neigh_g = 0.0f, neigh_b = 0.0f;
@@ -7154,6 +8837,7 @@ static void render_world(HDC hdc, int win_w, int win_h) {
                         if (tex.uses_tint) { tint_r = cr; tint_g = cg; tint_b = cb; }
                         if (tex.transparent) a = ca;
                     }
+                    a *= camera_occluder_alpha_for_tile(tx, tz);
                     
                     // === ILUMINACAO 2D PARA OBJETOS (RTX FAKE) ===
                     if (g_lighting.enabled) {
@@ -7275,10 +8959,38 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         float rot_rad = get_player_render_rotation() * (kPi / 180.0f);
         float sin_rot = std::sin(rot_rad);
         float cos_rot = std::cos(rot_rad);
-        
-        // Animacao de movimento (bob up/down)
-        float bob = g_player.is_moving ? std::sin(g_player.walk_timer * 14.0f) * 0.04f : 0.0f;
-        float leg_swing = g_player.is_moving ? std::sin(g_player.walk_timer * 10.0f) * 0.12f : 0.0f;
+
+        int surf_tx = world_to_tile(px);
+        int surf_tz = world_to_tile(pz);
+        Block surf = Block::Dirt;
+        if (g_world && g_world->in_bounds(surf_tx, surf_tz)) {
+            surf = surface_block_at(*g_world, surf_tx, surf_tz);
+        }
+
+        float temp_cold = smoothstep01(-35.0f, -65.0f, g_temperature);
+        float frost = temp_cold * g_player_visual_cfg.suit_frost_strength;
+        if (surf == Block::Snow || surf == Block::Ice) frost = std::min(1.0f, frost + 0.26f);
+        float dirt = 0.0f;
+        if (surf == Block::Dirt || surf == Block::Sand || surf == Block::Stone) dirt = g_player_visual_cfg.suit_dirt_strength;
+        float damage = clamp01((100.0f - (float)g_player.hp) / 100.0f) * g_player_visual_cfg.suit_damage_strength;
+        float wear = g_player_visual_cfg.suit_wear_strength;
+
+        // Animacao de movimento (andar com peso + respiracao + idle).
+        float breath = std::sin(g_player.anim_frame * g_player_visual_cfg.breathing_speed) * g_player_visual_cfg.breathing_amp;
+        float idle_sway = std::sin(g_player.anim_frame * g_player_visual_cfg.idle_sway_speed) * g_player_visual_cfg.idle_sway_amp;
+        float walk_wave = std::sin(g_player.walk_timer * g_player_visual_cfg.walk_bob_speed);
+        float walk_bob = g_player.is_moving ? walk_wave * g_player_visual_cfg.walk_bob_amp : 0.0f;
+        float walk_weight = g_player.is_moving ? std::fabs(std::sin(g_player.walk_timer * 0.5f * g_player_visual_cfg.walk_bob_speed)) * g_player_visual_cfg.walk_weight_amp : 0.0f;
+        float mine_impact = g_player.is_mining ? g_player.mine_anim : 0.0f;
+        float bob = breath + walk_bob - walk_weight - mine_impact * 0.06f;
+        float leg_swing = g_player.is_moving ? walk_wave * 0.12f : 0.0f;
+
+        float suit_r = 0.92f - wear * 0.12f - dirt * 0.16f - damage * 0.18f + frost * 0.12f;
+        float suit_g = 0.93f - wear * 0.11f - dirt * 0.14f - damage * 0.17f + frost * 0.12f;
+        float suit_b = 0.96f - wear * 0.08f - dirt * 0.10f - damage * 0.12f + frost * 0.16f;
+        suit_r = clamp01(suit_r);
+        suit_g = clamp01(suit_g);
+        suit_b = clamp01(suit_b);
         
         // === CHAMA DO JETPACK (renderizar primeiro, atras do jogador) ===
         if (g_player.jetpack_active && g_player.jetpack_fuel > 0.0f) {
@@ -7320,16 +9032,21 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         }
         
         // === CORPO (Bloco principal - torso branco do astronauta) ===
-        render_cube_3d(px, py + 0.30f + bob, pz, 0.45f, 0.95f, 0.95f, 0.98f, 1.0f, true);
+        render_cube_3d(px, py + 0.30f + bob, pz, 0.45f, suit_r, suit_g, suit_b, 1.0f, true);
         
         // === CABECA (Capacete - bloco branco com visor) ===
-        render_cube_3d(px, py + 0.68f + bob, pz, 0.38f, 0.92f, 0.92f, 0.95f, 1.0f, true);
+        render_cube_3d(px, py + 0.68f + bob, pz, 0.38f, suit_r * 0.98f, suit_g * 0.98f, suit_b, 1.0f, true);
         
         // Visor (bloco azul na frente da cabeca)
         float visor_dist = 0.12f;
         float vx = px + sin_rot * visor_dist;
         float vz = pz + cos_rot * visor_dist;
-        render_cube_3d(vx, py + 0.68f + bob, vz, 0.22f, 0.1f, 0.35f, 0.75f, 0.95f, false);
+        render_cube_3d(vx, py + 0.68f + bob, vz, 0.22f, 0.10f, 0.35f, 0.75f, 0.95f, false);
+
+        // Reflexo no visor.
+        float refl_x = vx + sin_rot * 0.03f + cos_rot * 0.03f;
+        float refl_z = vz + cos_rot * 0.03f - sin_rot * 0.03f;
+        render_cube_3d(refl_x, py + 0.73f + bob, refl_z, 0.08f, 0.95f, 0.98f, 1.0f, g_player_visual_cfg.visor_reflect_alpha, false);
         
         // === MOCHILA (Bloco cinza atras) ===
         float pack_dist = 0.25f;
@@ -7341,39 +9058,62 @@ static void render_world(HDC hdc, int win_w, int win_h) {
             pack_r = 0.55f; pack_g = 0.50f; pack_b = 0.45f;
         }
         render_cube_3d(pack_x, py + 0.35f + bob, pack_z, 0.30f, pack_r, pack_g, pack_b, 1.0f, true);
+
+        // Tubos de oxigenio (mangueiras laterais da mochila ao torso).
+        float tube_mid_x = px - sin_rot * 0.12f;
+        float tube_mid_z = pz - cos_rot * 0.12f;
+        float tube_side = 0.12f;
+        float perp_x = cos_rot;
+        float perp_z = -sin_rot;
+        render_cube_3d(tube_mid_x - perp_x * tube_side, py + 0.36f + bob, tube_mid_z - perp_z * tube_side, 0.07f, 0.38f, 0.44f, 0.52f, 1.0f, false);
+        render_cube_3d(tube_mid_x + perp_x * tube_side, py + 0.36f + bob, tube_mid_z + perp_z * tube_side, 0.07f, 0.38f, 0.44f, 0.52f, 1.0f, false);
+
+        // Painel do peito.
+        float chest_x = px + sin_rot * 0.16f;
+        float chest_z = pz + cos_rot * 0.16f;
+        render_cube_3d(chest_x, py + 0.30f + bob, chest_z, 0.12f, 0.10f, 0.14f, 0.18f, 0.98f, false);
+        render_cube_3d(chest_x + perp_x * 0.030f, py + 0.31f + bob, chest_z + perp_z * 0.030f, 0.03f, 0.16f, 0.85f, 0.30f, 1.0f, false);
+        render_cube_3d(chest_x - perp_x * 0.030f, py + 0.29f + bob, chest_z - perp_z * 0.030f, 0.03f, 0.90f, 0.24f, 0.18f, 1.0f, false);
+
+        // Luz frontal do capacete.
+        float lamp_x = px + sin_rot * 0.22f;
+        float lamp_z = pz + cos_rot * 0.22f;
+        float lamp_i = std::clamp(g_player_visual_cfg.headlamp_intensity, 0.0f, 2.0f);
+        render_cube_3d(lamp_x, py + 0.80f + bob, lamp_z, 0.06f, 0.95f * lamp_i, 0.90f * lamp_i, 0.58f * lamp_i, 0.95f, false);
+        glDisable(GL_DEPTH_TEST);
+        render_plane_3d(lamp_x + sin_rot * 0.18f, py + 0.70f + bob, lamp_z + cos_rot * 0.18f, 0.42f, 1.0f, 0.92f, 0.68f, 0.20f * lamp_i);
+        glEnable(GL_DEPTH_TEST);
         
         // === PERNAS (2 blocos pequenos animados) ===
         float leg_sep = 0.12f;
-        // Offset perpendicular a direcao
-        float perp_x = cos_rot;
-        float perp_z = -sin_rot;
         
         // Perna esquerda
-        float ll_x = px - perp_x * leg_sep + sin_rot * leg_swing;
+        float ll_x = px - perp_x * leg_sep + sin_rot * leg_swing + idle_sway * 0.4f;
         float ll_z = pz - perp_z * leg_sep + cos_rot * leg_swing;
-        render_cube_3d(ll_x, py - 0.10f, ll_z, 0.18f, 0.25f, 0.27f, 0.30f, 1.0f, true);
+        render_cube_3d(ll_x, py - 0.10f - walk_weight * 0.25f, ll_z, 0.18f, 0.25f, 0.27f, 0.30f, 1.0f, true);
         
         // Perna direita
-        float rl_x = px + perp_x * leg_sep - sin_rot * leg_swing;
+        float rl_x = px + perp_x * leg_sep - sin_rot * leg_swing - idle_sway * 0.4f;
         float rl_z = pz + perp_z * leg_sep - cos_rot * leg_swing;
-        render_cube_3d(rl_x, py - 0.10f, rl_z, 0.18f, 0.25f, 0.27f, 0.30f, 1.0f, true);
+        render_cube_3d(rl_x, py - 0.10f - walk_weight * 0.25f, rl_z, 0.18f, 0.25f, 0.27f, 0.30f, 1.0f, true);
         
         // === BRACOS (2 blocos pequenos - animados se minerando) ===
-        float arm_bob = g_player.is_mining ? std::sin(g_player.mine_anim * 15.0f) * 0.15f : 0.0f;
+        float arm_bob = g_player.is_mining ? std::sin(g_player.mine_anim * 20.0f + g_player.anim_frame * 4.0f) * 0.14f : breath * 0.35f;
         float arm_sep = 0.28f;
         
         // Braco esquerdo
         float la_x = px - perp_x * arm_sep;
         float la_z = pz - perp_z * arm_sep;
-        render_cube_3d(la_x, py + 0.25f + bob - arm_bob, la_z, 0.15f, 0.90f, 0.90f, 0.92f, 1.0f, true);
+        render_cube_3d(la_x, py + 0.25f + bob - arm_bob, la_z, 0.15f, suit_r * 0.96f, suit_g * 0.96f, suit_b, 1.0f, true);
         
         // Braco direito
         float ra_x = px + perp_x * arm_sep;
         float ra_z = pz + perp_z * arm_sep;
-        render_cube_3d(ra_x, py + 0.25f + bob + arm_bob, ra_z, 0.15f, 0.90f, 0.90f, 0.92f, 1.0f, true);
+        render_cube_3d(ra_x, py + 0.25f + bob + arm_bob + mine_impact * 0.05f, ra_z, 0.15f, suit_r * 0.96f, suit_g * 0.96f, suit_b, 1.0f, true);
+
     }
 
-    if (g_debug) {
+    if (g_debug && DEBUG_DRAW_COLLISIONS) {
         render_physics_debug_3d();
     }
 
@@ -7391,7 +9131,14 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         glEnd();
     };
 
-    if (g_has_target && g_world->in_bounds(g_target_x, g_target_y)) {
+    int ptx = world_to_tile(rpos.x);
+    int ptz = world_to_tile(rpos.y);
+    bool draw_selection_boxes = (g_debug && DEBUG_DRAW_COLLISIONS);
+    auto is_player_tile = [&](int tx, int tz) -> bool {
+        return tx == ptx && tz == ptz;
+    };
+
+    if (draw_selection_boxes && g_has_target && g_world->in_bounds(g_target_x, g_target_y)) {
         Block tb = g_world->get(g_target_x, g_target_y);
         float base_y = (float)g_world->height_at(g_target_x, g_target_y) * kHeightScale;
 
@@ -7399,31 +9146,34 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        // Contorno preto + contorno branco por cima (boa leitura em qualquer tile)
-        if (tb == Block::Air || tb == Block::Leaves || tb == Block::Water || is_ground_like(tb)) {
-            float y = base_y + 0.018f;
-            if (tb == Block::Leaves) y = base_y + 0.60f + 0.004f;
-            else if (tb == Block::Water) y = base_y - 0.18f + 0.004f;
-            draw_tile_outline(g_target_x, g_target_y, y, 1.03f, 0.0f, 0.0f, 0.0f, 0.85f, 2.5f);
-            draw_tile_outline(g_target_x, g_target_y, y, 1.03f, 1.0f, 1.0f, 1.0f, 0.80f, 1.5f);
-        } else {
-            float cy = base_y + 0.5f;
-            render_cube_outline_3d((float)g_target_x, cy, (float)g_target_y, 1.04f, 2.5f);
+        // Evita caixa em volta do proprio jogador.
+        if (!is_player_tile(g_target_x, g_target_y)) {
+            // Contorno preto + contorno branco por cima (boa leitura em qualquer tile)
+            if (tb == Block::Air || tb == Block::Leaves || tb == Block::Water || is_ground_like(tb)) {
+                float y = base_y + 0.018f;
+                if (tb == Block::Leaves) y = base_y + 0.60f + 0.004f;
+                else if (tb == Block::Water) y = base_y - 0.18f + 0.004f;
+                draw_tile_outline(g_target_x, g_target_y, y, 1.03f, 0.0f, 0.0f, 0.0f, 0.85f, 2.5f);
+                draw_tile_outline(g_target_x, g_target_y, y, 1.03f, 1.0f, 1.0f, 1.0f, 0.80f, 1.5f);
+            } else {
+                float cy = base_y + 0.5f;
+                render_cube_outline_3d((float)g_target_x, cy, (float)g_target_y, 1.04f, 2.5f);
 
-            // Outline branco leve
-            glLineWidth(1.5f);
-            glColor4f(1.0f, 1.0f, 1.0f, 0.55f);
-            float half = 1.04f * 0.5f;
-            glBegin(GL_LINE_LOOP);
-            glVertex3f((float)g_target_x - half, cy + half, (float)g_target_y - half);
-            glVertex3f((float)g_target_x + half, cy + half, (float)g_target_y - half);
-            glVertex3f((float)g_target_x + half, cy + half, (float)g_target_y + half);
-            glVertex3f((float)g_target_x - half, cy + half, (float)g_target_y + half);
-            glEnd();
+                // Outline branco leve
+                glLineWidth(1.5f);
+                glColor4f(1.0f, 1.0f, 1.0f, 0.55f);
+                float half = 1.04f * 0.5f;
+                glBegin(GL_LINE_LOOP);
+                glVertex3f((float)g_target_x - half, cy + half, (float)g_target_y - half);
+                glVertex3f((float)g_target_x + half, cy + half, (float)g_target_y - half);
+                glVertex3f((float)g_target_x + half, cy + half, (float)g_target_y + half);
+                glVertex3f((float)g_target_x - half, cy + half, (float)g_target_y + half);
+                glEnd();
+            }
         }
     }
 
-    if (g_has_place_target && g_world->in_bounds(g_place_x, g_place_y)) {
+    if (draw_selection_boxes && g_has_place_target && g_world->in_bounds(g_place_x, g_place_y) && !is_player_tile(g_place_x, g_place_y)) {
         // Mostra um contorno azul para o tile onde o RMB vai colocar
         Block pb = g_world->get(g_place_x, g_place_y);
         float base_y = (float)g_world->height_at(g_place_x, g_place_y) * kHeightScale;
@@ -7457,6 +9207,103 @@ static void render_world(HDC hdc, int win_w, int win_h) {
             render_plane_3d_tex(target_x, crack_y, target_z, 1.04f, crack, 1.0f, 1.0f, 1.0f, 1.0f);
             glBindTexture(GL_TEXTURE_2D, 0);
             glDisable(GL_TEXTURE_2D);
+            glDepthMask(GL_TRUE);
+
+            // Barra de quebra opcional (feedback claro).
+            if (!is_player_tile(g_target_x, g_target_y)) {
+                float bar_w = 0.84f;
+                float bar_h = 0.06f;
+                float y = crack_y + 0.012f;
+                float x0 = (float)g_target_x - bar_w * 0.5f;
+                float z0 = (float)g_target_y - 0.56f;
+                glDisable(GL_TEXTURE_2D);
+                glColor4f(0.02f, 0.02f, 0.03f, 0.78f);
+                glBegin(GL_QUADS);
+                glVertex3f(x0, y, z0);
+                glVertex3f(x0 + bar_w, y, z0);
+                glVertex3f(x0 + bar_w, y, z0 + bar_h);
+                glVertex3f(x0, y, z0 + bar_h);
+                glEnd();
+
+                float fill = std::clamp(g_mine_progress, 0.0f, 1.0f) * (bar_w - 0.02f);
+                glColor4f(0.95f, 0.82f, 0.26f, 0.92f);
+                glBegin(GL_QUADS);
+                glVertex3f(x0 + 0.01f, y + 0.001f, z0 + 0.01f);
+                glVertex3f(x0 + 0.01f + fill, y + 0.001f, z0 + 0.01f);
+                glVertex3f(x0 + 0.01f + fill, y + 0.001f, z0 + bar_h - 0.01f);
+                glVertex3f(x0 + 0.01f, y + 0.001f, z0 + bar_h - 0.01f);
+                glEnd();
+            }
+        }
+    }
+    
+    // === BEACON VISUAL DA BASE (farol visivel a distancia) ===
+    {
+        float bx = (float)g_base_x + 0.5f;
+        float bz = (float)g_base_y + 0.5f;
+        float base_h = (float)g_world->height_at(g_base_x, g_base_y) * kHeightScale;
+        float beacon_h = base_h + g_base_cfg.beacon_height;
+        
+        // Verificar se esta longe da base para mostrar o beacon
+        float dx_beacon = g_player.pos.x - (float)g_base_x;
+        float dy_beacon = g_player.pos.y - (float)g_base_y;
+        float dist_beacon = std::sqrt(dx_beacon * dx_beacon + dy_beacon * dy_beacon);
+        
+        // Mostrar beacon quando longe da base (mais intenso quanto mais longe)
+        float beacon_intensity = std::clamp((dist_beacon - g_base_cfg.safe_radius) / 50.0f, 0.0f, 1.0f);
+        
+        if (beacon_intensity > 0.01f) {
+            // Pulso animado
+            float pulse = 0.5f + 0.5f * std::sin(g_day_time * g_base_cfg.beacon_pulse_speed);
+            float final_alpha = beacon_intensity * pulse * g_base_cfg.beacon_alpha;
+            
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDisable(GL_TEXTURE_2D);
+            glDepthMask(GL_FALSE);
+            
+            // Pilar de luz principal (gradiente vertical)
+            glBegin(GL_QUAD_STRIP);
+            for (int i = 0; i <= 20; ++i) {
+                float t = (float)i / 20.0f;
+                float y = base_h + t * (beacon_h - base_h);
+                float alpha = (1.0f - t * 0.8f) * final_alpha;
+                float width = 0.2f * (1.0f - t * 0.5f);  // Afina no topo
+                
+                // Cor azul ciano pulsante
+                glColor4f(0.3f, 0.8f, 1.0f, alpha);
+                glVertex3f(bx - width, y, bz);
+                glVertex3f(bx + width, y, bz);
+            }
+            glEnd();
+            
+            // Pilar secundario (perpendicular para visibilidade 3D)
+            glBegin(GL_QUAD_STRIP);
+            for (int i = 0; i <= 20; ++i) {
+                float t = (float)i / 20.0f;
+                float y = base_h + t * (beacon_h - base_h);
+                float alpha = (1.0f - t * 0.8f) * final_alpha * 0.7f;
+                float width = 0.15f * (1.0f - t * 0.5f);
+                
+                glColor4f(0.3f, 0.8f, 1.0f, alpha);
+                glVertex3f(bx, y, bz - width);
+                glVertex3f(bx, y, bz + width);
+            }
+            glEnd();
+            
+            // Halo na base do beacon
+            float halo_pulse = 0.6f + 0.4f * pulse;
+            glBegin(GL_TRIANGLE_FAN);
+            glColor4f(0.3f, 0.8f, 1.0f, final_alpha * 0.5f * halo_pulse);
+            glVertex3f(bx, base_h + 0.1f, bz);
+            glColor4f(0.3f, 0.8f, 1.0f, 0.0f);
+            for (int i = 0; i <= 16; ++i) {
+                float angle = (float)i * (2.0f * kPi / 16.0f);
+                float halo_r = 1.5f * halo_pulse;
+                glVertex3f(bx + std::cos(angle) * halo_r, base_h + 0.05f, bz + std::sin(angle) * halo_r);
+            }
+            glEnd();
+            
             glDepthMask(GL_TRUE);
         }
     }
@@ -7643,9 +9490,11 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         float bar_h = 14.0f;
         float bar_gap = 18.0f;
         
-        // Check if player is at base
-        float dist_to_base = std::fabs(g_player.pos.x - (float)g_base_x);
-        bool at_base = (dist_to_base < 15.0f);
+        // Check if player is at base (usando distancia 2D)
+        float dx_base = g_player.pos.x - (float)g_base_x;
+        float dy_base = g_player.pos.y - (float)g_base_y;
+        float dist_to_base = std::sqrt(dx_base * dx_base + dy_base * dy_base);
+        bool at_base = (dist_to_base < g_base_cfg.safe_radius);
         
         // === FUNDO TRANSPARENTE DO HUD ESQUERDO ===
         float left_panel_h = bar_gap * 10 + 100.0f;  // Altura aproximada do painel esquerdo (incluindo jetpack)
@@ -7785,18 +9634,69 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         render_bar(rx0, ry0, bar_w, bar_h, g_terraform / 100.0f, 0.25f, 0.90f, 0.40f);
         draw_text(rx0 + 6.0f, ry0 + 11.0f, "Terraform " + std::to_string((int)g_terraform) + "%", 0.90f, 0.90f, 0.90f, 0.90f);
         
-        // === BASE INDICATOR ===
+        // === BASE INDICATOR (com direcao 2D e seta) ===
         ry0 += bar_gap + 10.0f;
-        float dist_x = (float)g_base_x - g_player.pos.x;
-        float dist_blocks = std::fabs(dist_x);
-        std::string dir = dist_x > 2.0f ? "<<<" : (dist_x < -2.0f ? ">>>" : "AQUI");
-        std::string dist_str = "Base: " + dir + " " + std::to_string((int)dist_blocks) + "m";
-        float dist_alpha = (dist_blocks > 30.0f) ? 0.95f : 0.70f;
-        float dist_r = (dist_blocks > 80.0f) ? 0.95f : 0.65f;
-        float dist_g = (dist_blocks > 80.0f) ? 0.55f : 0.85f;
-        render_quad(rx0, ry0, bar_w, 20.0f, 0.15f, 0.18f, 0.25f, 0.75f);
-        draw_text(rx0 + 6.0f, ry0 + 15.0f, dist_str, dist_r, dist_g, 0.60f, dist_alpha);
-        draw_text(rx0 + bar_w - 50.0f, ry0 + 15.0f, "[H]", 0.55f, 0.75f, 0.95f, 0.80f);
+        {
+            float dir_x = (float)g_base_x - g_player.pos.x;
+            float dir_y = (float)g_base_y - g_player.pos.y;
+            float dist_blocks = std::sqrt(dir_x * dir_x + dir_y * dir_y);
+            
+            // Fundo do indicador
+            render_quad(rx0, ry0, bar_w, 28.0f, 0.15f, 0.18f, 0.25f, 0.75f);
+            
+            // Cores baseadas na distancia
+            float dist_alpha = (dist_blocks > 30.0f) ? 0.95f : 0.70f;
+            float dist_r = (dist_blocks > 80.0f) ? 0.95f : (at_base ? 0.35f : 0.65f);
+            float dist_g = (dist_blocks > 80.0f) ? 0.55f : (at_base ? 0.85f : 0.85f);
+            float dist_b = at_base ? 0.45f : 0.60f;
+            
+            // Texto de distancia
+            char dist_str[64];
+            if (at_base) {
+                snprintf(dist_str, sizeof(dist_str), "BASE (Zona Segura)");
+            } else {
+                snprintf(dist_str, sizeof(dist_str), "Base: %.0fm", dist_blocks);
+            }
+            draw_text(rx0 + 6.0f, ry0 + 12.0f, dist_str, dist_r, dist_g, dist_b, dist_alpha);
+            
+            // Desenhar seta de direcao quando longe da base
+            if (!at_base && dist_blocks > 5.0f) {
+                float arrow_cx = rx0 + bar_w - 35.0f;
+                float arrow_cy = ry0 + 14.0f;
+                float angle = std::atan2(dir_y, dir_x);
+                float arrow_size = 10.0f;
+                
+                // Normalizar direcao
+                float nx = dir_x / dist_blocks;
+                float ny = dir_y / dist_blocks;
+                
+                // Ponta da seta
+                float tip_x = arrow_cx + nx * arrow_size;
+                float tip_y = arrow_cy + ny * arrow_size;
+                
+                // Base da seta (perpendicular)
+                float perp_x = -ny * arrow_size * 0.5f;
+                float perp_y = nx * arrow_size * 0.5f;
+                
+                // Cor pulsante para seta
+                float pulse = 0.7f + 0.3f * std::sin(g_day_time * 3.0f);
+                
+                glBegin(GL_TRIANGLES);
+                glColor4f(0.3f * pulse, 0.8f * pulse, 1.0f * pulse, 0.9f);
+                glVertex2f(tip_x, tip_y);
+                glVertex2f(arrow_cx - nx * arrow_size * 0.3f + perp_x, arrow_cy - ny * arrow_size * 0.3f + perp_y);
+                glVertex2f(arrow_cx - nx * arrow_size * 0.3f - perp_x, arrow_cy - ny * arrow_size * 0.3f - perp_y);
+                glEnd();
+            }
+            
+            // Tecla de atalho
+            draw_text(rx0 + bar_w - 22.0f, ry0 + 24.0f, "[H]", 0.55f, 0.75f, 0.95f, 0.70f);
+        }
+        
+        // === MINIMAPA ===
+        if (!g_minimap.world_map_open) {
+            render_minimap(win_w, win_h);
+        }
 
         // === HOTBAR ESTILO MINICRAFT ===
         // Funcao local para desenhar slot pixelado
@@ -8077,9 +9977,15 @@ static void render_world(HDC hdc, int win_w, int win_h) {
                 (g_physics.hit_x || g_physics.hit_z) ? "HIT" : "");
             draw_text(20.0f, win_h - 118.0f, buf, 0.85f, 0.85f, 0.90f, 0.95f);
 
-            snprintf(buf, sizeof(buf), "Cam: yaw=%.0f pitch=%.0f dist=%.1f  Phys: dt=%.4f alpha=%.2f",
-                g_camera.yaw, g_camera.pitch, g_camera.distance, g_physics_cfg.fixed_timestep, g_physics.alpha);
+            snprintf(buf, sizeof(buf), "Cam: yaw=%.0f pitch=%.0f dist=%.1f mode=%s(%s) occ=%.2f encl=%.2f",
+                g_camera.yaw, g_camera.pitch, g_camera.distance,
+                camera_mode_name(g_camera_mode), g_camera_mode_reason.c_str(),
+                g_camera_obstruction, g_camera_enclosed);
             draw_text(20.0f, win_h - 100.0f, buf, 0.85f, 0.85f, 0.90f, 0.95f);
+
+            snprintf(buf, sizeof(buf), "Phys: dt=%.4f alpha=%.2f cam_hide=%.2fs cam_rays=%d",
+                g_physics_cfg.fixed_timestep, g_physics.alpha, g_camera_hidden_time, g_camera_debug_ray_count);
+            draw_text(20.0f, win_h - 82.0f, buf, 0.85f, 0.85f, 0.90f, 0.95f);
         }
     }
 
@@ -8630,6 +10536,11 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         }
     }
 
+    // === MAPA GRANDE (sobreposicao) ===
+    if (g_minimap.world_map_open) {
+        render_world_map(win_w, win_h);
+    }
+
     // Resetar clique do mouse no final do frame
     g_mouse_left_clicked = false;
 
@@ -8673,6 +10584,9 @@ static void update_game(float dt, HWND hwnd) {
     
     // Atualizar onboarding
     update_onboarding(dt);
+    
+    // Atualizar fog of war do minimapa
+    update_fog_of_war();
 
     // Stats timer (periodically recompute terraform score)
     g_stats_timer += dt;
@@ -8695,6 +10609,99 @@ static void update_game(float dt, HWND hwnd) {
     bool h_pressed = key_pressed('H', g_prev_h);
     bool tab_pressed = key_pressed(VK_TAB, g_prev_tab);
     bool b_pressed = key_pressed('B', g_prev_b);
+    bool m_pressed = key_pressed('M', g_prev_m);
+    bool r_pressed = key_pressed('R', g_prev_r);
+    bool c_key_pressed = key_pressed('C', g_prev_c);
+    
+    // === MAPA GRANDE (tecla M) ===
+    if (m_pressed && g_state == GameState::Playing) {
+        g_minimap.world_map_open = !g_minimap.world_map_open;
+        if (g_minimap.world_map_open) {
+            // Centralizar no jogador ao abrir
+            g_minimap.world_pan_x = g_player.pos.x;
+            g_minimap.world_pan_y = g_player.pos.y;
+            g_minimap.world_zoom = 1.0f;
+        }
+    }
+    
+    // Controles do mapa grande
+    if (g_minimap.world_map_open && g_state == GameState::Playing) {
+        // ESC fecha o mapa
+        if (esc_pressed) {
+            g_minimap.world_map_open = false;
+            g_prev_esc = true;  // Consumir o ESC para nao pausar
+        }
+        
+        // WASD para mover o mapa
+        float pan_speed = g_map_cfg.world_map_pan_speed * dt / g_minimap.world_zoom;
+        if (key_down('W') || key_down(VK_UP)) g_minimap.world_pan_y -= pan_speed;
+        if (key_down('S') || key_down(VK_DOWN)) g_minimap.world_pan_y += pan_speed;
+        if (key_down('A') || key_down(VK_LEFT)) g_minimap.world_pan_x -= pan_speed;
+        if (key_down('D') || key_down(VK_RIGHT)) g_minimap.world_pan_x += pan_speed;
+        
+        // Limitar pan aos limites do mundo
+        g_minimap.world_pan_x = std::clamp(g_minimap.world_pan_x, 0.0f, (float)g_world->w);
+        g_minimap.world_pan_y = std::clamp(g_minimap.world_pan_y, 0.0f, (float)g_world->h);
+        
+        // Clique para adicionar waypoint
+        if (g_mouse_left_clicked) {
+            // Converter posicao do mouse para coordenadas do mundo
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int win_w = rc.right - rc.left;
+            int win_h = rc.bottom - rc.top;
+            
+            float map_margin = 50.0f;
+            float map_w = (float)win_w - map_margin * 2.0f;
+            float map_h = (float)win_h - map_margin * 2.0f - 50.0f;
+            float map_x = map_margin;
+            float map_y = map_margin;
+            
+            // Verificar se clicou dentro do mapa
+            if (g_mouse_x >= map_x && g_mouse_x <= map_x + map_w &&
+                g_mouse_y >= map_y && g_mouse_y <= map_y + map_h) {
+                
+                float zoom = g_minimap.world_zoom;
+                float tiles_visible_x = (float)g_world->w / zoom;
+                float tiles_visible_y = (float)g_world->h / zoom;
+                
+                float map_aspect = map_w / map_h;
+                float world_aspect = tiles_visible_x / tiles_visible_y;
+                if (map_aspect > world_aspect) {
+                    tiles_visible_x = tiles_visible_y * map_aspect;
+                } else {
+                    tiles_visible_y = tiles_visible_x / map_aspect;
+                }
+                
+                float start_world_x = g_minimap.world_pan_x - tiles_visible_x * 0.5f;
+                float start_world_y = g_minimap.world_pan_y - tiles_visible_y * 0.5f;
+                
+                float px_per_tile_x = map_w / tiles_visible_x;
+                float px_per_tile_y = map_h / tiles_visible_y;
+                
+                int world_x = (int)(start_world_x + (g_mouse_x - map_x) / px_per_tile_x);
+                int world_y = (int)(start_world_y + (g_mouse_y - map_y) / px_per_tile_y);
+                
+                if (g_world->in_bounds(world_x, world_y)) {
+                    add_waypoint(world_x, world_y);
+                }
+            }
+            g_mouse_left_clicked = false;
+        }
+        
+        // R para remover waypoint mais proximo do centro da visao
+        if (r_pressed) {
+            remove_nearest_waypoint((int)g_minimap.world_pan_x, (int)g_minimap.world_pan_y);
+        }
+        
+        // C para limpar todos os waypoints
+        if (c_key_pressed) {
+            clear_all_waypoints();
+        }
+        
+        // Nao processar movimento do jogador enquanto mapa esta aberto
+        return;
+    }
 
     // F3 alterna entre modos de debug: normal -> lightmap -> lights -> off
     if (f3_pressed) {
@@ -9097,8 +11104,11 @@ static void update_game(float dt, HWND hwnd) {
         reload_physics_config(true);
         reload_terrain_config(true);
         reload_sky_config(true);
+        reload_camera_config(true);
+        reload_mining_config(true);
+        reload_player_visual_config(true);
         reset_player_physics_runtime(false);
-        set_toast(std::string("Configs recarregadas: ") + g_physics_config_path + " | " + g_terrain_config_path + " | " + g_sky_config_path, 3.0f);
+        set_toast(std::string("Configs recarregadas: ") + g_physics_config_path + " | " + g_terrain_config_path + " | " + g_sky_config_path + " | " + g_camera_config_path + " | " + g_mining_config_path + " | " + g_player_visual_config_path, 3.5f);
     }
 
     if (f6_pressed) {
@@ -9209,8 +11219,7 @@ static void update_game(float dt, HWND hwnd) {
         if (suffocation_timer > kDamageDelay) {
             g_player.hp = std::max(0, g_player.hp - 10);
             if (g_player.hp <= 0) {
-                g_toast = "You suffocated!";
-                g_state = GameState::Dead;
+                respawn_player_at_base("Sufocamento");
                 return;
             }
         }
@@ -9219,8 +11228,7 @@ static void update_game(float dt, HWND hwnd) {
         if (dehydration_timer > kDamageDelay) {
             g_player.hp = std::max(0, g_player.hp - 8);
             if (g_player.hp <= 0) {
-                g_toast = "You died of dehydration!";
-                g_state = GameState::Dead;
+                respawn_player_at_base("Desidratacao");
                 return;
             }
         }
@@ -9292,6 +11300,7 @@ static void update_game(float dt, HWND hwnd) {
 
     auto blocks_raycast = [&](Block b) -> bool {
         if (b == Block::Air) return false;
+        if (is_ground_like(b)) return true; // permite selecionar/minerar o chao corretamente
         if (b == Block::Water) return true;
         if (b == Block::Leaves) return true;
         if (is_base_structure(b)) return true;
@@ -9301,7 +11310,7 @@ static void update_game(float dt, HWND hwnd) {
 
     // Ray da camera (mira) - agora baseado na posicao do mouse
     Vec3 ray_o = g_camera.position;
-    Vec3 ray_d = get_mouse_ray_direction(g_mouse_x, g_mouse_y, win_w, win_h);
+    Vec3 ray_d = get_mouse_ray_direction(cursor.x, cursor.y, win_w, win_h);
     float ray_max = std::clamp(g_camera.effective_distance + kReach + 3.0f, 8.0f, 55.0f);
 
     // Primeiro: tentar mirar um drop (para facilitar coleta visual)
@@ -9337,112 +11346,118 @@ static void update_game(float dt, HWND hwnd) {
 
     int last_place_x = -1;
     int last_place_y = -1;
-    int last_in_bounds_x = -1;
-    int last_in_bounds_y = -1;
 
-    auto sample_hits_tile = [&](int tx, int tz, const Vec3& p, Block b) -> bool {
-        float base_y = (float)g_world->height_at(tx, tz) * kHeightScale;
-        if (b == Block::Air) {
-            // Tile vazio: mirar/colocar no "chao" (ground layer) daquele tile.
-            float y = base_y + 0.01f;
-            return std::fabs(p.y - y) <= 0.40f;
-        }
-        if (b == Block::Leaves) {
-            float y = base_y + 0.60f;
-            return std::fabs(p.y - y) <= 0.20f;
-        }
-        if (b == Block::Water) {
-            float y = base_y - 0.18f;
-            return std::fabs(p.y - y) <= 0.26f;
-        }
-        if (!is_ground_like(b)) {
-            return (p.y >= base_y - 0.05f && p.y <= base_y + 1.05f);
-        }
-        // Solo: tratar como "plano" pro raycast (fica facil mirar no chao para minerar/colocar)
-        float y = base_y + 0.01f;
-        return std::fabs(p.y - y) <= 0.40f;
+    auto ray_aabb_hit = [&](const Vec3& bmin, const Vec3& bmax, float& out_t) -> bool {
+        float tmin = 0.0f;
+        float tmax = ray_max;
+        const float eps = 1e-6f;
+        auto axis_test = [&](float ro, float rd, float mn, float mx) -> bool {
+            if (std::fabs(rd) < eps) {
+                return ro >= mn && ro <= mx;
+            }
+            float inv = 1.0f / rd;
+            float t1 = (mn - ro) * inv;
+            float t2 = (mx - ro) * inv;
+            if (t1 > t2) std::swap(t1, t2);
+            tmin = std::max(tmin, t1);
+            tmax = std::min(tmax, t2);
+            return tmin <= tmax;
+        };
+
+        if (!axis_test(ray_o.x, ray_d.x, bmin.x, bmax.x)) return false;
+        if (!axis_test(ray_o.y, ray_d.y, bmin.y, bmax.y)) return false;
+        if (!axis_test(ray_o.z, ray_d.z, bmin.z, bmax.z)) return false;
+
+        out_t = (tmin >= 0.0f) ? tmin : tmax;
+        return out_t >= 0.0f && out_t <= ray_max;
     };
 
-    // Raymarch em tiles (X/Z), com um criterio simples de altura para evitar "mirar o chao" quando a mira esta no ceu.
+    auto ray_hits_tile = [&](int tx, int tz, Block b, float& out_t) -> bool {
+        float base_y = (float)g_world->height_at(tx, tz) * kHeightScale;
+        Vec3 bmin = {tile_min(tx), base_y - 0.05f, tile_min(tz)};
+        Vec3 bmax = {tile_max(tx), base_y + 1.05f, tile_max(tz)};
+
+        if (b == Block::Water) {
+            bmin.y = base_y - 0.30f;
+            bmax.y = base_y + 0.08f;
+        } else if (b == Block::Leaves) {
+            bmin.y = base_y + 0.45f;
+            bmax.y = base_y + 0.82f;
+        } else if (is_ground_like(b)) {
+            // Coluna baixa para permitir selecionar topo e paredes de buracos.
+            bmin.y = base_y - 1.05f;
+            bmax.y = base_y + 0.10f;
+        }
+        return ray_aabb_hit(bmin, bmax, out_t);
+    };
+
+    // Raymarch por tiles + teste preciso de intersecao com AABB do alvo.
     int prev_tx = std::numeric_limits<int>::min();
     int prev_tz = std::numeric_limits<int>::min();
-    for (float t = 0.35f; t <= ray_max; t += 0.12f) {
+    for (float t = 0.20f; t <= ray_max; t += 0.05f) {
         Vec3 p = vec3_add(ray_o, vec3_scale(ray_d, t));
-        int tx = (int)std::floor(p.x);
-        int tz = (int)std::floor(p.z);
+        int tx = world_to_tile(p.x);
+        int tz = world_to_tile(p.z);
         if (tx == prev_tx && tz == prev_tz) continue;
-        prev_tx = tx; prev_tz = tz;
+        prev_tx = tx;
+        prev_tz = tz;
 
         if (!g_world->in_bounds(tx, tz)) break;
-        last_in_bounds_x = tx;
-        last_in_bounds_y = tz;
 
-        Block b = g_world->get(tx, tz);
-        if (!sample_hits_tile(tx, tz, p, b)) continue;
+        Block top_b = g_world->get(tx, tz);
+        Block b = (top_b == Block::Air) ? surface_block_at(*g_world, tx, tz) : top_b;
 
-        if (placeable_tile(b)) {
+        if (placeable_tile(top_b)) {
             last_place_x = tx;
             last_place_y = tz;
         }
 
-        if (blocks_raycast(b)) {
-            g_target_x = tx;
-            g_target_y = tz;
-            g_has_target = true;
+        float hit_t = 0.0f;
+        if (!blocks_raycast(b) || !ray_hits_tile(tx, tz, b, hit_t)) continue;
 
-            float dx = (g_target_x + 0.5f) - g_player.pos.x;
-            float dz = (g_target_y + 0.5f) - g_player.pos.y;
-            float dist = std::sqrt(dx * dx + dz * dz);
-            g_target_in_range = (dist <= kReach);
+        g_target_x = tx;
+        g_target_y = tz;
+        g_has_target = true;
 
-            // Alvo de colocacao: se o alvo for substituivel, coloca nele; senao, no tile anterior "placeable"
-            if (placeable_tile(b)) {
-                g_place_x = tx;
-                g_place_y = tz;
-                g_has_place_target = true;
-                g_place_in_range = g_target_in_range;
-            } else if (last_place_x != -1) {
-                g_place_x = last_place_x;
-                g_place_y = last_place_y;
-                g_has_place_target = true;
-                // range baseado no place target (nao no bloqueador)
-                float pdx = (g_place_x + 0.5f) - g_player.pos.x;
-                float pdz = (g_place_y + 0.5f) - g_player.pos.y;
-                g_place_in_range = (std::sqrt(pdx * pdx + pdz * pdz) <= kReach);
-            }
+        float dx = tile_center(g_target_x) - g_player.pos.x;
+        float dz = tile_center(g_target_y) - g_player.pos.y;
+        float dist = std::sqrt(dx * dx + dz * dz);
+        g_target_in_range = (dist <= kReach);
 
-            if (!g_onboarding.shown_first_mine && is_mineable(b)) {
-                show_tip("Segure clique esquerdo (ou E) para minerar blocos", g_onboarding.shown_first_mine);
-            }
-            break;
+        // Alvo de colocacao: tile atual se substituivel, ou o ultimo substituivel antes do hit.
+        if (placeable_tile(top_b)) {
+            g_place_x = tx;
+            g_place_y = tz;
+            g_has_place_target = true;
+            g_place_in_range = g_target_in_range;
+        } else if (last_place_x != -1) {
+            g_place_x = last_place_x;
+            g_place_y = last_place_y;
+            g_has_place_target = true;
+            float pdx = tile_center(g_place_x) - g_player.pos.x;
+            float pdz = tile_center(g_place_y) - g_player.pos.y;
+            g_place_in_range = (std::sqrt(pdx * pdx + pdz * pdz) <= kReach);
         }
+
+        if (!g_onboarding.shown_first_mine && is_mineable(b)) {
+            show_tip("Segure clique esquerdo (ou E) para minerar blocos", g_onboarding.shown_first_mine);
+        }
+        break;
     }
 
-    // Se nao encontrou nada "bloqueando", usar o ultimo tile valido na direcao da mira
-    if (!g_has_target) {
-        if (last_place_x != -1) {
-            g_target_x = last_place_x;
-            g_target_y = last_place_y;
-            g_has_target = true;
-        } else if (last_in_bounds_x != -1) {
-            g_target_x = last_in_bounds_x;
-            g_target_y = last_in_bounds_y;
-            g_has_target = true;
-        }
+    // Sem hit: mantem selecao apenas no ultimo tile substituivel realmente visto.
+    if (!g_has_target && last_place_x != -1) {
+        g_target_x = last_place_x;
+        g_target_y = last_place_y;
+        g_has_target = true;
+        float dx = tile_center(g_target_x) - g_player.pos.x;
+        float dz = tile_center(g_target_y) - g_player.pos.y;
+        g_target_in_range = (std::sqrt(dx * dx + dz * dz) <= kReach);
 
-        if (g_has_target) {
-            float dx = (g_target_x + 0.5f) - g_player.pos.x;
-            float dz = (g_target_y + 0.5f) - g_player.pos.y;
-            g_target_in_range = (std::sqrt(dx * dx + dz * dz) <= kReach);
-
-            Block b = g_world->get(g_target_x, g_target_y);
-            if (placeable_tile(b)) {
-                g_place_x = g_target_x;
-                g_place_y = g_target_y;
-                g_has_place_target = true;
-                g_place_in_range = g_target_in_range;
-            }
-        }
+        g_place_x = g_target_x;
+        g_place_y = g_target_y;
+        g_has_place_target = true;
+        g_place_in_range = g_target_in_range;
     }
 
     // Fallback: se nao houver tile de colocacao direto, tenta um adjacente do alvo atual.
@@ -9458,8 +11473,8 @@ static void update_game(float dt, HWND hwnd) {
                 if (!g_world->in_bounds(tx, tz)) continue;
                 Block nb = g_world->get(tx, tz);
                 if (!placeable_tile(nb)) continue;
-                float dx = (tx + 0.5f) - g_player.pos.x;
-                float dz = (tz + 0.5f) - g_player.pos.y;
+                float dx = tile_center(tx) - g_player.pos.x;
+                float dz = tile_center(tz) - g_player.pos.y;
                 float d2 = dx * dx + dz * dz;
                 if (d2 < best_d2) {
                     best_d2 = d2;
@@ -9489,6 +11504,9 @@ static void update_game(float dt, HWND hwnd) {
     bool mine_input = (lmb || e_key);
     bool has_mine_target = g_has_target && g_target_in_range && g_world->in_bounds(g_target_x, g_target_y);
     Block mine_block = has_mine_target ? g_world->get(g_target_x, g_target_y) : Block::Air;
+    if (has_mine_target && mine_block == Block::Air) {
+        mine_block = surface_block_at(*g_world, g_target_x, g_target_y);
+    }
 
     // Feedback ao tentar minerar estrutura da base
     if (mine_input && has_mine_target && is_base_structure(mine_block)) {
@@ -9501,26 +11519,64 @@ static void update_game(float dt, HWND hwnd) {
     }
 
     bool mine_ok = mine_input && has_mine_target && is_mineable(mine_block);
+    if (mine_ok && is_ground_like(mine_block)) {
+        int16_t h = g_world->height_at(g_target_x, g_target_y);
+        if (h <= 0) mine_ok = false; // bedrock local: evita mineracao infinita
+    }
     static float mining_particle_timer = 0.0f;
     if (mine_ok) {
         g_player.is_mining = true;
-        g_player.mine_anim += dt;
+        g_player.mine_anim = std::max(g_player.mine_anim - dt * 7.5f, 0.0f);
 
         // Virar na direcao do alvo
-        float dx = (g_target_x + 0.5f) - g_player.pos.x;
-        float dz = (g_target_y + 0.5f) - g_player.pos.y;
+        float dx = tile_center(g_target_x) - g_player.pos.x;
+        float dz = tile_center(g_target_y) - g_player.pos.y;
         g_player.target_rotation = std::atan2(-dx, -dz) * (180.0f / kPi);
         if (g_player.target_rotation < 0.0f) g_player.target_rotation += 360.0f;
 
-        // Se mudou de bloco alvo, resetar progresso
+        // Se mudou de bloco alvo, resetar progresso/hits.
         if (g_target_x != g_mine_block_x || g_target_y != g_mine_block_y) {
             g_mine_block_x = g_target_x;
             g_mine_block_y = g_target_y;
             g_mine_progress = 0.0f;
+            g_mine_hits = 0;
+            g_mine_hit_timer = 0.0f;
         }
 
-        float hard = std::max(0.05f, block_hardness(mine_block));
-        g_mine_progress = std::min(1.0f, g_mine_progress + (dt / hard));
+        int req_hits = std::max(1, block_hits_required(mine_block));
+        float stage = clamp01(g_terraform / 100.0f);
+        float speed_mult = lerp(g_mining_cfg.early_game_speed_mult, g_mining_cfg.late_game_speed_mult, stage);
+        speed_mult = std::max(0.25f, speed_mult);
+        float hit_interval = std::max(g_mining_cfg.hit_interval_min, g_mining_cfg.hit_interval / speed_mult);
+
+        g_mine_hit_timer -= dt;
+        if (g_mine_hit_timer <= 0.0f) {
+            g_mine_hit_timer = hit_interval;
+            g_mine_hits = std::min(req_hits, g_mine_hits + 1);
+            g_mine_progress = (float)g_mine_hits / (float)req_hits;
+
+            // Impacto visivel por hit.
+            g_player.mine_anim = std::max(g_player.mine_anim, g_player_visual_cfg.mine_impact_amp);
+            g_screen_flash_green = std::max(g_screen_flash_green, 0.07f);
+            Beep(880, 1);
+
+            // Particulas por golpe.
+            for (int i = 0; i < 4; ++i) {
+                Particle p;
+                p.pos.x = tile_center(g_target_x) + (rand() % 100 - 50) / 100.0f * 0.42f;
+                p.pos.y = tile_center(g_target_y) + (rand() % 100 - 50) / 100.0f * 0.42f;
+                p.vel.x = (rand() % 100 - 50) / 45.0f;
+                p.vel.y = (rand() % 100 - 50) / 45.0f - 1.2f;
+                p.life = 0.22f + (rand() % 16) / 100.0f;
+                float br, bg, bb, ba;
+                block_color(mine_block, g_target_y, g_world->h, br, bg, bb, ba);
+                p.r = br * 0.85f + 0.15f;
+                p.g = bg * 0.85f + 0.15f;
+                p.b = bb * 0.85f + 0.15f;
+                p.a = 0.95f;
+                g_particles.push_back(p);
+            }
+        }
 
         // Particulas de mineracao (feedback visual constante)
         mining_particle_timer += dt;
@@ -9529,8 +11585,8 @@ static void update_game(float dt, HWND hwnd) {
             if (mine_block != Block::Air) {
                 for (int i = 0; i < 2; ++i) {
                     Particle p;
-                    p.pos.x = g_target_x + 0.5f + (rand() % 100 - 50) / 100.0f * 0.4f;
-                    p.pos.y = g_target_y + 0.5f + (rand() % 100 - 50) / 100.0f * 0.4f;
+                    p.pos.x = tile_center(g_target_x) + (rand() % 100 - 50) / 100.0f * 0.4f;
+                    p.pos.y = tile_center(g_target_y) + (rand() % 100 - 50) / 100.0f * 0.4f;
                     p.vel.x = (rand() % 100 - 50) / 50.0f;
                     p.vel.y = (rand() % 100 - 50) / 50.0f - 1.0f;
                     p.life = 0.3f + (rand() % 20) / 100.0f;
@@ -9546,19 +11602,28 @@ static void update_game(float dt, HWND hwnd) {
         }
 
         // Quebrar bloco ao completar progresso
-        if (g_mine_progress >= 0.999f) {
+        if (g_mine_hits >= req_hits || g_mine_progress >= 0.999f) {
             Block b = mine_block;
-            spawn_block_particles(b, g_target_x + 0.5f, g_target_y + 0.5f, g_world->h);
-            g_world->set(g_target_x, g_target_y, Block::Air);
+            spawn_block_particles(b, tile_center(g_target_x), tile_center(g_target_y), g_world->h);
 
-            // Para blocos de terreno, remover volume real para feedback visual claro.
+            // Para blocos de terreno, remover 1 bloco "inteiro" em altura de mundo.
+            // Como o heightmap usa kHeightScale, convertemos 1.0 mundo -> unidades do heightmap.
             if (is_ground_like(b)) {
+                constexpr float kWorldBlockHeight = 1.0f;
+                int dig_units = std::max(1, (int)std::lround(kWorldBlockHeight / std::max(0.01f, kHeightScale)));
                 int16_t h = g_world->height_at(g_target_x, g_target_y);
-                if (h > 0) g_world->set_height(g_target_x, g_target_y, (int16_t)(h - 1));
-                Block g = g_world->get_ground(g_target_x, g_target_y);
-                if (g == b || g == Block::Snow || g == Block::Ice || g == Block::Sand || g == Block::Dirt || g == Block::Grass) {
-                    g_world->set_ground(g_target_x, g_target_y, Block::Stone);
-                }
+                int nh = std::max(0, (int)h - dig_units);
+                g_world->set_height(g_target_x, g_target_y, (int16_t)nh);
+
+                // Mantem material de solo (ground-like) para permitir mineracao sequencial.
+                Block prev_ground = g_world->get_ground(g_target_x, g_target_y);
+                Block next_ground = Block::Dirt;
+                if (prev_ground == Block::Sand) next_ground = Block::Sand;
+                else if (prev_ground == Block::Snow || prev_ground == Block::Ice) next_ground = Block::Ice;
+                g_world->set_ground(g_target_x, g_target_y, next_ground);
+                g_world->set(g_target_x, g_target_y, next_ground);
+            } else {
+                g_world->set(g_target_x, g_target_y, Block::Air);
             }
 
             g_surface_dirty = true;
@@ -9570,22 +11635,26 @@ static void update_game(float dt, HWND hwnd) {
             } else {
                 Block drop = drop_item_for_block(b);
                 float sy = (float)g_world->height_at(g_target_x, g_target_y) * kHeightScale + drop_spawn_y_for_block(b);
-                spawn_item_drop(drop, (float)g_target_x, (float)g_target_y, sy);
+                spawn_item_drop(drop, tile_center(g_target_x), tile_center(g_target_y), sy);
             }
 
             // Reset apos quebrar
             g_mine_progress = 0.0f;
             g_mine_block_x = -1;
             g_mine_block_y = -1;
+            g_mine_hits = 0;
+            g_mine_hit_timer = 0.0f;
             mining_particle_timer = 0.0f;
         }
     } else {
         g_player.is_mining = false;
-        g_player.mine_anim = 0.0f;
+        g_player.mine_anim = std::max(g_player.mine_anim - dt * 8.0f, 0.0f);
         mining_particle_timer = 0.0f;
         g_mine_progress = 0.0f;
         g_mine_block_x = -1;
         g_mine_block_y = -1;
+        g_mine_hits = 0;
+        g_mine_hit_timer = 0.0f;
     }
 
     g_prev_lmb = lmb;
@@ -9606,7 +11675,11 @@ static void update_game(float dt, HWND hwnd) {
             float pr = g_player.pos.x + g_player.w * 0.5f;
             float pt = g_player.pos.y - g_player.h * 0.5f;
             float pb = g_player.pos.y + g_player.h * 0.5f;
-            bool overlaps_player = !(g_place_x + 1 <= pl || g_place_x >= pr || g_place_y + 1 <= pt || g_place_y >= pb);
+            float tl = tile_min(g_place_x);
+            float tr = tile_max(g_place_x);
+            float tf = tile_min(g_place_y);
+            float tb = tile_max(g_place_y);
+            bool overlaps_player = !(tr <= pl || tl >= pr || tb <= pt || tf >= pb);
 
             if (!overlaps_player) {
                 if (is_module(g_selected)) {
@@ -9678,10 +11751,19 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             return 0;
         case WM_MOUSEWHEEL: {
-            // Zoom da camera com scroll do mouse
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            g_camera.distance -= (float)delta * 0.005f;
-            g_camera.distance = std::clamp(g_camera.distance, g_camera.min_distance, g_camera.max_distance);
+            
+            // Se mapa grande esta aberto, controlar zoom do mapa
+            if (g_minimap.world_map_open) {
+                float zoom_delta = (float)delta * 0.001f;
+                g_minimap.world_zoom += zoom_delta;
+                g_minimap.world_zoom = std::clamp(g_minimap.world_zoom, 
+                    g_map_cfg.world_map_zoom_min, g_map_cfg.world_map_zoom_max);
+            } else {
+                // Zoom da camera com scroll do mouse
+                g_camera.distance -= (float)delta * 0.005f;
+                g_camera.distance = std::clamp(g_camera.distance, g_camera.min_distance, g_camera.max_distance);
+            }
             return 0;
         }
         case WM_MBUTTONDOWN:
@@ -9793,6 +11875,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     reload_physics_config(true);
     reload_terrain_config(true);
     reload_sky_config(true);
+    reload_camera_config(true);
+    reload_mining_config(true);
+    reload_player_visual_config(true);
 
     // Initialize world for menu background
     g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, 1337);
