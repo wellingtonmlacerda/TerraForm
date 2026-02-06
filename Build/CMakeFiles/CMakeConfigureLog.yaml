@@ -78,9 +78,9 @@ events:
       The output was:
       0
       Vers├úo do MSBuild 17.14.40+3e7442088 para .NET Framework
-      Compila├º├úo de 05/02/2026 17:58:10 iniciada.
+      Compila├º├úo de 06/02/2026 14:34:00 iniciada.
       
-      Projeto "C:\\Users\\9173\\Documents\\Projects\\TerraForm\\Build\\CMakeFiles\\4.2.3\\CompilerIdCXX\\CompilerIdCXX.vcxproj" no n├│ 1 (destinos padr├úo).
+      Projeto "C:\\Projetos\\TerraForm\\Build\\CMakeFiles\\4.2.3\\CompilerIdCXX\\CompilerIdCXX.vcxproj" no n├│ 1 (destinos padr├úo).
       PrepareForBuild:
         Criando o diret├│rio "Debug\\".
         Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
@@ -93,7 +93,7 @@ events:
         CMakeCXXCompilerId.cpp
       Link:
         C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:".\\CompilerIdCXX.exe" /INCREMENTAL:NO /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /PDB:".\\CompilerIdCXX.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:".\\CompilerIdCXX.lib" /MACHINE:X64 Debug\\CMakeCXXCompilerId.obj
-        CompilerIdCXX.vcxproj -> C:\\Users\\9173\\Documents\\Projects\\TerraForm\\Build\\CMakeFiles\\4.2.3\\CompilerIdCXX\\CompilerIdCXX.exe
+        CompilerIdCXX.vcxproj -> C:\\Projetos\\TerraForm\\Build\\CMakeFiles\\4.2.3\\CompilerIdCXX\\CompilerIdCXX.exe
       PostBuildEvent:
         for %%i in (cl.exe) do @echo CMAKE_CXX_COMPILER=%%~$PATH:i
         :VCEnd
@@ -101,13 +101,13 @@ events:
       FinalizeBuildStatus:
         Excluindo o arquivo "Debug\\CompilerIdCXX.tlog\\unsuccessfulbuild".
         Tocando "Debug\\CompilerIdCXX.tlog\\CompilerIdCXX.lastbuildstate".
-      Projeto de compila├º├úo pronto "C:\\Users\\9173\\Documents\\Projects\\TerraForm\\Build\\CMakeFiles\\4.2.3\\CompilerIdCXX\\CompilerIdCXX.vcxproj" (destinos padr├úo).
+      Projeto de compila├º├úo pronto "C:\\Projetos\\TerraForm\\Build\\CMakeFiles\\4.2.3\\CompilerIdCXX\\CompilerIdCXX.vcxproj" (destinos padr├úo).
       
       Compila├º├úo com ├¬xito.
           0 Aviso(s)
           0 Erro(s)
       
-      Tempo Decorrido 00:00:01.56
+      Tempo Decorrido 00:00:03.86
       
       
       Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CompilerIdCXX.exe"
@@ -115,7 +115,7 @@ events:
       Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CompilerIdCXX.vcxproj"
       
       The CXX compiler identification is MSVC, found in:
-        C:/Users/9173/Documents/Projects/TerraForm/Build/CMakeFiles/4.2.3/CompilerIdCXX/CompilerIdCXX.exe
+        C:/Projetos/TerraForm/Build/CMakeFiles/4.2.3/CompilerIdCXX/CompilerIdCXX.exe
       
   -
     kind: "find-v1"
@@ -912,8 +912,8 @@ events:
     checks:
       - "Detecting CXX compiler ABI info"
     directories:
-      source: "C:/Users/9173/Documents/Projects/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-748mfm"
-      binary: "C:/Users/9173/Documents/Projects/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-748mfm"
+      source: "C:/Projetos/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-ycpb95"
+      binary: "C:/Projetos/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-ycpb95"
     cmakeVariables:
       CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /GR /EHsc"
       CMAKE_CXX_FLAGS_DEBUG: "/Zi /Ob0 /Od /RTC1"
@@ -923,39 +923,39 @@ events:
       variable: "CMAKE_CXX_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: 'C:/Users/9173/Documents/Projects/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-748mfm'
+        Change Dir: 'C:/Projetos/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-ycpb95'
         
-        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Professional/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_9b7f4.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Professional/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_8ffdb.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
         Vers├úo do MSBuild 17.14.40+3e7442088 para .NET Framework
-        Compila├º├úo de 05/02/2026 17:58:12 iniciada.
+        Compila├º├úo de 06/02/2026 14:34:05 iniciada.
         
-        Projeto "C:\\Users\\9173\\Documents\\Projects\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-748mfm\\cmTC_9b7f4.vcxproj" no n├│ 1 (destinos padr├úo).
+        Projeto "C:\\Projetos\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-ycpb95\\cmTC_8ffdb.vcxproj" no n├│ 1 (destinos padr├úo).
         PrepareForBuild:
           Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
-          Criando o diret├│rio "C:\\Users\\9173\\Documents\\Projects\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-748mfm\\Debug\\".
-          Criando o diret├│rio "cmTC_9b7f4.dir\\Debug\\cmTC_9b7f4.tlog\\".
+          Criando o diret├│rio "C:\\Projetos\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-ycpb95\\Debug\\".
+          Criando o diret├│rio "cmTC_8ffdb.dir\\Debug\\cmTC_8ffdb.tlog\\".
         InitializeBuildStatus:
-          Criando "cmTC_9b7f4.dir\\Debug\\cmTC_9b7f4.tlog\\unsuccessfulbuild" porque "AlwaysCreate" foi especificado.
-          Tocando "cmTC_9b7f4.dir\\Debug\\cmTC_9b7f4.tlog\\unsuccessfulbuild".
+          Criando "cmTC_8ffdb.dir\\Debug\\cmTC_8ffdb.tlog\\unsuccessfulbuild" porque "AlwaysCreate" foi especificado.
+          Tocando "cmTC_8ffdb.dir\\Debug\\cmTC_8ffdb.tlog\\unsuccessfulbuild".
         ClCompile:
-          C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GR /Fo"cmTC_9b7f4.dir\\Debug\\\\" /Fd"cmTC_9b7f4.dir\\Debug\\vc143.pdb" /external:W1 /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-4.2\\Modules\\CMakeCXXCompilerABI.cpp"
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GR /Fo"cmTC_8ffdb.dir\\Debug\\\\" /Fd"cmTC_8ffdb.dir\\Debug\\vc143.pdb" /external:W1 /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-4.2\\Modules\\CMakeCXXCompilerABI.cpp"
           Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35222 for x64
           Copyright (C) Microsoft Corporation.  All rights reserved.
-          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GR /Fo"cmTC_9b7f4.dir\\Debug\\\\" /Fd"cmTC_9b7f4.dir\\Debug\\vc143.pdb" /external:W1 /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-4.2\\Modules\\CMakeCXXCompilerABI.cpp"
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GR /Fo"cmTC_8ffdb.dir\\Debug\\\\" /Fd"cmTC_8ffdb.dir\\Debug\\vc143.pdb" /external:W1 /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-4.2\\Modules\\CMakeCXXCompilerABI.cpp"
           CMakeCXXCompilerABI.cpp
         Link:
-          C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\9173\\Documents\\Projects\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-748mfm\\Debug\\cmTC_9b7f4.exe" /INCREMENTAL /ILK:"cmTC_9b7f4.dir\\Debug\\cmTC_9b7f4.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/9173/Documents/Projects/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-748mfm/Debug/cmTC_9b7f4.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/9173/Documents/Projects/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-748mfm/Debug/cmTC_9b7f4.lib" /MACHINE:X64  /machine:x64 cmTC_9b7f4.dir\\Debug\\CMakeCXXCompilerABI.obj
-          cmTC_9b7f4.vcxproj -> C:\\Users\\9173\\Documents\\Projects\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-748mfm\\Debug\\cmTC_9b7f4.exe
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Projetos\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-ycpb95\\Debug\\cmTC_8ffdb.exe" /INCREMENTAL /ILK:"cmTC_8ffdb.dir\\Debug\\cmTC_8ffdb.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Projetos/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-ycpb95/Debug/cmTC_8ffdb.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Projetos/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-ycpb95/Debug/cmTC_8ffdb.lib" /MACHINE:X64  /machine:x64 cmTC_8ffdb.dir\\Debug\\CMakeCXXCompilerABI.obj
+          cmTC_8ffdb.vcxproj -> C:\\Projetos\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-ycpb95\\Debug\\cmTC_8ffdb.exe
         FinalizeBuildStatus:
-          Excluindo o arquivo "cmTC_9b7f4.dir\\Debug\\cmTC_9b7f4.tlog\\unsuccessfulbuild".
-          Tocando "cmTC_9b7f4.dir\\Debug\\cmTC_9b7f4.tlog\\cmTC_9b7f4.lastbuildstate".
-        Projeto de compila├º├úo pronto "C:\\Users\\9173\\Documents\\Projects\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-748mfm\\cmTC_9b7f4.vcxproj" (destinos padr├úo).
+          Excluindo o arquivo "cmTC_8ffdb.dir\\Debug\\cmTC_8ffdb.tlog\\unsuccessfulbuild".
+          Tocando "cmTC_8ffdb.dir\\Debug\\cmTC_8ffdb.tlog\\cmTC_8ffdb.lastbuildstate".
+        Projeto de compila├º├úo pronto "C:\\Projetos\\TerraForm\\Build\\CMakeFiles\\CMakeScratch\\TryCompile-ycpb95\\cmTC_8ffdb.vcxproj" (destinos padr├úo).
         
         Compila├º├úo com ├¬xito.
             0 Aviso(s)
             0 Erro(s)
         
-        Tempo Decorrido 00:00:01.37
+        Tempo Decorrido 00:00:01.75
         
       exitCode: 0
   -

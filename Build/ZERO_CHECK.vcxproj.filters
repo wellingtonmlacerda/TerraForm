@@ -1,13 +1,13 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <CustomBuild Include="C:\Users\9173\Documents\Projects\TerraForm\Build\CMakeFiles\115cfc74edfaa1db168f08df7402a572\generate.stamp.rule">
+    <CustomBuild Include="C:\Projetos\TerraForm\Build\CMakeFiles\6ae659ca0a29b53ce6246ba275da61c8\generate.stamp.rule">
       <Filter>CMake Rules</Filter>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="CMake Rules">
-      <UniqueIdentifier>{59E5B475-F9A7-33F9-B826-BAE89DBAF0AC}</UniqueIdentifier>
+      <UniqueIdentifier>{2634ADF8-BFC3-350C-91B8-CA830C7EC2B4}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>
