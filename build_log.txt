@@ -1,0 +1,57 @@
+-- The C compiler identification is MSVC 19.44.35222.0
+-- The CXX compiler identification is MSVC 19.44.35222.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - failed
+-- Check for working C compiler: C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe
+-- Check for working C compiler: C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe - broken
+CMake Error at C:/Program Files/CMake/share/cmake-4.2/Modules/CMakeTestCCompiler.cmake:67 (message):
+  The C compiler
+
+    "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe"
+
+  is not able to compile a simple test program.
+
+  It fails with the following output:
+
+    Change Dir: 'C:/Users/9173/Documents/Projects/TerraForm/Build/CMakeFiles/CMakeScratch/TryCompile-3owdei'
+    
+    Run Build Command(s): "C:/Program Files/CMake/bin/cmake.exe" -E env VERBOSE=1 nmake -f Makefile /nologo cmTC_8048b\fast
+    	"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\nmake.exe"  -f CMakeFiles\cmTC_8048b.dir\build.make /nologo -L                  CMakeFiles\cmTC_8048b.dir\build
+    Building C object CMakeFiles/cmTC_8048b.dir/testCCompiler.c.obj
+    	"C:\Program Files\CMake\bin\cmake.exe" -E cmake_cl_compile_depends --dep-file=CMakeFiles\cmTC_8048b.dir\testCCompiler.c.obj.d --working-dir=C:\Users\9173\Documents\Projects\TerraForm\Build\CMakeFiles\CMakeScratch\TryCompile-3owdei --filter-prefix="Note: including file: " -- C:\PROGRA~1\MIB055~1\2022\PROFES~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\cl.exe @C:\Users\9173\AppData\Local\Temp\nm56D9.tmp
+    testCCompiler.c
+    Linking C executable cmTC_8048b.exe
+    	"C:\Program Files\CMake\bin\cmake.exe" -E vs_link_exe --msvc-ver=1944 --intdir=CMakeFiles\cmTC_8048b.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\mt.exe --manifests -- C:\PROGRA~1\MIB055~1\2022\PROFES~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\link.exe /nologo @CMakeFiles\cmTC_8048b.dir\objects1.rsp @C:\Users\9173\AppData\Local\Temp\nm5767.tmp
+    Visual Studio Incremental Link with embedded manifests
+    Create CMakeFiles\cmTC_8048b.dir/manifest.rc
+    Create empty: CMakeFiles\cmTC_8048b.dir/embed.manifest
+    RC Pass 1:
+    C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\rc.exe /fo CMakeFiles\cmTC_8048b.dir/manifest.res CMakeFiles\cmTC_8048b.dir/manifest.rc
+    LINK Pass 1:
+    C:\PROGRA~1\MIB055~1\2022\PROFES~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\link.exe /nologo @CMakeFiles\cmTC_8048b.dir\objects1.rsp /out:cmTC_8048b.exe /implib:cmTC_8048b.lib /pdb:C:\Users\9173\Documents\Projects\TerraForm\Build\CMakeFiles\CMakeScratch\TryCompile-3owdei\cmTC_8048b.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\cmTC_8048b.dir/intermediate.manifest CMakeFiles\cmTC_8048b.dir/manifest.res
+    MT:
+    C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\mt.exe /nologo /manifest CMakeFiles\cmTC_8048b.dir/intermediate.manifest /out:CMakeFiles\cmTC_8048b.dir/embed.manifest /notify_update
+    RC Pass 2:
+    C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\rc.exe /fo CMakeFiles\cmTC_8048b.dir/manifest.res CMakeFiles\cmTC_8048b.dir/manifest.rc
+    FINAL LINK:
+    C:\PROGRA~1\MIB055~1\2022\PROFES~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\link.exe /nologo @CMakeFiles\cmTC_8048b.dir\objects1.rsp /out:cmTC_8048b.exe /implib:cmTC_8048b.lib /pdb:C:\Users\9173\Documents\Projects\TerraForm\Build\CMakeFiles\CMakeScratch\TryCompile-3owdei\cmTC_8048b.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\cmTC_8048b.dir/intermediate.manifest CMakeFiles\cmTC_8048b.dir/manifest.res
+    FINAL LINK: command "C:\PROGRA~1\MIB055~1\2022\PROFES~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\link.exe /nologo @CMakeFiles\cmTC_8048b.dir\objects1.rsp /out:cmTC_8048b.exe /implib:cmTC_8048b.lib /pdb:C:\Users\9173\Documents\Projects\TerraForm\Build\CMakeFiles\CMakeScratch\TryCompile-3owdei\cmTC_8048b.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\cmTC_8048b.dir/intermediate.manifest CMakeFiles\cmTC_8048b.dir/manifest.res" failed (exit code 1168) with the following output:
+    LINK : fatal error LNK1168: cannot open cmTC_8048b.exe for writing
+    NMAKE : fatal error U1077: '"C:\Program Files\CMake\bin\cmake.exe" -E vs_link_exe --msvc-ver=1944 --intdir=CMakeFiles\cmTC_8048b.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\mt.exe --manifests -- C:\PROGRA~1\MIB055~1\2022\PROFES~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\link.exe /nologo @CMakeFiles\cmTC_8048b.dir\objects1.rsp @C:\Users\9173\AppData\Local\Temp\nm5767.tmp' : return code '0xffffffff'
+    Stop.
+    NMAKE : fatal error U1077: '"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\nmake.exe"  -f CMakeFiles\cmTC_8048b.dir\build.make /nologo -L                  CMakeFiles\cmTC_8048b.dir\build' : return code '0x2'
+    Stop.
+    
+    
+
+
+
+  CMake will not be able to correctly generate this project.
+Call Stack (most recent call first):
+  CMakeLists.txt:2 (project)
+
+
+-- Configuring incomplete, errors occurred!
+NMAKE : fatal error U1052: file 'Makefile' not found
+Stop.
+Pressione qualquer tecla para continuar. . . 
