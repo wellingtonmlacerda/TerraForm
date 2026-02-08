@@ -1,3 +1,0 @@
-C:/Users/Wellington/source/repos/wellingtonmlacerda/TerraForm/Build/CMakeFiles/terraformer.dir
-C:/Users/Wellington/source/repos/wellingtonmlacerda/TerraForm/Build/CMakeFiles/edit_cache.dir
-C:/Users/Wellington/source/repos/wellingtonmlacerda/TerraForm/Build/CMakeFiles/rebuild_cache.dir

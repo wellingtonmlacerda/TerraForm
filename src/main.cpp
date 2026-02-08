@@ -94,7 +94,7 @@ static float compute_night_alpha(float day_phase) {
 
 // Escala vertical do heightmap (suaviza o relevo e evita "degraus" grandes por tile).
 // 1 unidade no heightmap = kHeightScale unidades no mundo 3D.
-static constexpr float kHeightScale = 0.25f;
+static constexpr float kHeightScale = 0.55f;
 static constexpr bool DEBUG_DRAW_COLLISIONS = false;
 
 // Conversao consistente entre coordenadas de mundo e indice de tile.
@@ -520,6 +520,114 @@ struct OnboardingState {
 };
 static OnboardingState g_onboarding;
 
+// ============= SISTEMA DE MISSOES =============
+enum class MissionType { Main, Side, Emergency };
+enum class MissionStatus { Locked, Active, Completed };
+
+struct Mission {
+    int id;
+    const char* title;
+    const char* description;
+    MissionType type;
+    MissionStatus status;
+    // Condicao de conclusao
+    Block target_module;        // Modulo a construir (Air = nao e modulo)
+    int target_count;           // Quantos construir
+    Block target_resource;      // Recurso a coletar (Air = nao e recurso)
+    int target_resource_amount; // Quantidade necessaria
+    Block target_resource2;     // Segundo recurso opcional (Air = nenhum)
+    int target_resource2_amount;
+    int next_mission_id;        // Proxima missao a ativar (-1 = nenhuma)
+    bool show_waypoint;
+    int waypoint_slot_index;    // Indice do build slot alvo (-1 = base)
+};
+
+static std::vector<Mission> g_missions;
+static int g_active_main_mission = -1;
+static std::vector<int> g_active_emergencies; // IDs de emergencias ativas
+
+static void init_missions() {
+    g_missions.clear();
+    g_active_emergencies.clear();
+
+    // === MAIN QUEST (progressao linear) ===
+    // ID 0: Coletar ferro para comecar
+    g_missions.push_back({0, "Colete Ferro", "Voce precisa de ferro para construir. Minere depositos cinza.",
+        MissionType::Main, MissionStatus::Active,
+        Block::Air, 0, Block::Iron, 5, Block::Air, 0,
+        1, true, -1});
+
+    // ID 1: Construir primeiro painel solar
+    g_missions.push_back({1, "Construa Painel Solar", "Energia e essencial. Construa um painel solar na base.",
+        MissionType::Main, MissionStatus::Locked,
+        Block::SolarPanel, 1, Block::Air, 0, Block::Air, 0,
+        2, true, 0});
+
+    // ID 2: Coletar gelo e ferro para O2
+    g_missions.push_back({2, "Colete Gelo e Ferro", "Voce precisa de gelo e ferro para o gerador de O2.",
+        MissionType::Main, MissionStatus::Locked,
+        Block::Air, 0, Block::Ice, 30, Block::Iron, 30,
+        3, true, -1});
+
+    // ID 3: Construir gerador de O2
+    g_missions.push_back({3, "Construa Gerador de O2", "Oxigenio e prioridade maxima. Construa o gerador agora!",
+        MissionType::Main, MissionStatus::Locked,
+        Block::OxygenGenerator, 1, Block::Air, 0, Block::Air, 0,
+        4, true, 1});
+
+    // ID 4: Construir extrator de agua
+    g_missions.push_back({4, "Construa Extrator de Agua", "Agua e vital para sobrevivencia e producao de alimentos.",
+        MissionType::Main, MissionStatus::Locked,
+        Block::WaterExtractor, 1, Block::Air, 0, Block::Air, 0,
+        5, true, 2});
+
+    // ID 5: Construir estufa
+    g_missions.push_back({5, "Construa uma Estufa", "Comida acabando. A estufa produz alimentos renovaveis.",
+        MissionType::Main, MissionStatus::Locked,
+        Block::Greenhouse, 1, Block::Air, 0, Block::Air, 0,
+        6, true, 3});
+
+    // ID 6: Construir habitat
+    g_missions.push_back({6, "Construa Habitat", "Expanda a base com um modulo habitacional.",
+        MissionType::Main, MissionStatus::Locked,
+        Block::Habitat, 1, Block::Air, 0, Block::Air, 0,
+        7, true, 4});
+
+    // ID 7: Iniciar terraformacao
+    g_missions.push_back({7, "Inicie Terraformacao", "Construa a fabrica de CO2 para comecar a aquecer o planeta.",
+        MissionType::Main, MissionStatus::Locked,
+        Block::CO2Factory, 1, Block::Air, 0, Block::Air, 0,
+        -1, true, 5});
+
+    // === EMERGENCIAS (IDs 100+) ===
+    g_missions.push_back({100, "Oxigenio Critico!", "O2 da base muito baixo! Construa um Gerador de Oxigenio!",
+        MissionType::Emergency, MissionStatus::Locked,
+        Block::OxygenGenerator, 1, Block::Air, 0, Block::Air, 0,
+        -1, false, -1});
+
+    g_missions.push_back({101, "Energia Zerada!", "Sem energia os sistemas param! Construa um Painel Solar!",
+        MissionType::Emergency, MissionStatus::Locked,
+        Block::SolarPanel, 1, Block::Air, 0, Block::Air, 0,
+        -1, false, -1});
+
+    g_missions.push_back({102, "Agua Esgotando!", "Agua da base critica! Construa um Extrator de Agua!",
+        MissionType::Emergency, MissionStatus::Locked,
+        Block::WaterExtractor, 1, Block::Air, 0, Block::Air, 0,
+        -1, false, -1});
+
+    g_active_main_mission = 0;
+}
+
+static Mission* find_mission(int id) {
+    for (auto& m : g_missions) {
+        if (m.id == id) return &m;
+    }
+    return nullptr;
+}
+
+// Forward declaration - definido depois de g_modules
+static int count_modules_of_type(Block type);
+
 // ============= CONFIGURACOES DE ACESSIBILIDADE =============
 struct GameSettings {
     float ui_scale = 1.0f;           // 0.75 - 1.5
@@ -555,8 +663,20 @@ static std::string g_unlock_popup_subtitle = "";
 // Base location (landing site)
 static int g_base_x = 0;
 static int g_base_y = 0;
-static bool g_show_build_menu = false;
-static int g_build_menu_selection = 0;
+// ============= PAINEL DE MODULOS E MODO PLACEMENT =============
+static bool g_module_placement_mode = false;   // Estamos em modo de posicionamento?
+static Block g_placement_module = Block::Air;   // Modulo selecionado para posicionar
+static bool g_module_panel_visible = false;     // Painel lateral visivel? (comeca fechado)
+static float g_placement_pulse = 0.0f;          // Timer para efeito pulsante do ghost
+static float g_build_hammer_pulse = 0.0f;       // Pulsa quando modulo novo disponivel
+
+// Sistema de alertas graduais por recurso
+struct ResourceAlertState {
+    float last_alert_time = -999.0f;
+    int last_level = 0; // 0=normal, 1=atencao, 2=alerta, 3=critico
+};
+static ResourceAlertState g_alert_o2, g_alert_energy, g_alert_water;
+static std::unordered_map<int, bool> g_notified_affordable; // blocos ja notificados como acessiveis
 static int g_settings_selection = 0;  // 0=sensibilidade, 1=inverter Y, 2=brilho, 3=escala UI, 4=iluminacao, 5=sombras, 6=bloom, 7=vinheta, 8=voltar
 static int g_pause_selection = -1;     // -1=nenhum, 0=continuar, 1=salvar, 2=carregar, 3=config, 4=novo jogo
 static int g_menu_selection = -1;      // -1=nenhum, 0=novo jogo, 1=carregar, 2=sair
@@ -1149,31 +1269,31 @@ static BlockTex block_tex(Block b) {
 }
 
 struct TerrainConfig {
-    float macro_scale = 0.00095f;
-    float ridge_scale = 0.0038f;
+    float macro_scale = 0.00080f;
+    float ridge_scale = 0.0028f;
     float valley_scale = 0.00145f;
     float detail_scale = 0.0120f;
     float warp_scale = 0.0024f;
-    float warp_strength = 19.0f;
+    float warp_strength = 28.0f;
 
     float macro_weight = 0.50f;
-    float ridge_weight = 0.52f;
-    float valley_weight = 0.58f;
+    float ridge_weight = 0.68f;
+    float valley_weight = 0.70f;
     float detail_weight = 0.06f;
 
     float plateau_level = 0.57f;
     float plateau_flatten = 0.38f;
 
     float min_height = 2.0f;
-    float max_height = 92.0f;
-    float sea_height = 14.0f;
-    float snow_height = 76.0f;
+    float max_height = 140.0f;
+    float sea_height = 20.0f;
+    float snow_height = 110.0f;
 
     int thermal_erosion_passes = 5;
     int hydraulic_erosion_passes = 5;
     int smooth_passes = 2;
-    float erosion_strength = 0.40f;
-    float thermal_talus = 0.022f;
+    float erosion_strength = 0.32f;
+    float thermal_talus = 0.030f;
 
     float temp_scale = 0.0016f;
     float moisture_scale = 0.0019f;
@@ -1194,8 +1314,8 @@ struct SkyConfig {
     float cloud_alpha = 0.20f;
     float cloud_parallax = 0.050f;
 
-    float planet_radius = 160.0f;
-    float planet_distance = 1220.0f;
+    float planet_radius = 220.0f;
+    float planet_distance = 1400.0f;
     float planet_orbit_speed = 0.060f;
     float planet_parallax = 0.028f;
 
@@ -1204,13 +1324,13 @@ struct SkyConfig {
     float sun_halo_size = 2.25f;
     float bloom_intensity = 0.45f;
 
-    float moon_radius = 36.0f;
-    float moon_distance = 940.0f;
+    float moon_radius = 48.0f;
+    float moon_distance = 1000.0f;
     float moon_orbit_speed = 0.48f;
     float moon_parallax = 0.040f;
 
-    float moon2_radius = 22.0f;
-    float moon2_distance = 1010.0f;
+    float moon2_radius = 30.0f;
+    float moon2_distance = 1080.0f;
     float moon2_orbit_speed = 0.98f;
     float moon2_parallax = 0.050f;
 
@@ -1218,9 +1338,9 @@ struct SkyConfig {
     float atmosphere_zenith_boost = 0.24f;
     float horizon_fade = 0.28f;
 
-    float fog_start_factor = 0.34f;
-    float fog_end_factor = 0.88f;
-    float fog_distance_bonus = 36.0f;
+    float fog_start_factor = 0.55f;
+    float fog_end_factor = 0.98f;
+    float fog_distance_bonus = 140.0f;
 
     float eclipse_frequency_days = 8.0f;
     float eclipse_strength = 0.50f;
@@ -1304,7 +1424,7 @@ struct PlayerVisualConfig {
 };
 
 struct BaseConfig {
-    float safe_radius = 15.0f;
+    float safe_radius = 50.0f;  // Raio do biodomo (nova base)
     float recharge_oxygen_rate = 3.0f;
     float recharge_water_rate = 2.4f;
     float recharge_food_rate = 1.2f;
@@ -1501,15 +1621,15 @@ struct World {
                 float hills = fbm(wx * (cfg.detail_scale * 0.52f) + 900.0f,
                                   wy * (cfg.detail_scale * 0.52f) + 900.0f, 3);
 
-                float mountain_w = smoothstep01(0.56f, 0.90f, ridge) * smoothstep01(0.38f, 0.88f, macro);
-                float valley_w = smoothstep01(0.52f, 0.92f, valley) * (1.0f - mountain_w * 0.58f);
+                float mountain_w = smoothstep01(0.50f, 0.90f, ridge) * smoothstep01(0.38f, 0.88f, macro);
+                float valley_w = smoothstep01(0.45f, 0.92f, valley) * (1.0f - mountain_w * 0.58f);
                 float plateau_w = smoothstep01(cfg.plateau_level - 0.10f, cfg.plateau_level + 0.12f, macro) *
                                   smoothstep01(0.35f, 0.74f, hills) * (1.0f - mountain_w * 0.75f);
                 float plains_w = clamp01(1.0f - mountain_w - valley_w * 0.72f - plateau_w * 0.48f);
 
-                float plains_h = 0.30f + (macro - 0.5f) * 0.12f + (hills - 0.5f) * 0.11f + (detail - 0.5f) * 0.07f;
-                float valley_h = 0.24f + (macro - 0.5f) * 0.08f + (detail - 0.5f) * 0.05f - valley_w * 0.23f - basin * 0.08f;
-                float mountain_h = 0.42f + std::pow(ridge, 1.85f) * 0.60f + (hills - 0.5f) * 0.08f;
+                float plains_h = 0.25f + (macro - 0.5f) * 0.12f + (hills - 0.5f) * 0.11f + (detail - 0.5f) * 0.07f;
+                float valley_h = 0.18f + (macro - 0.5f) * 0.08f + (detail - 0.5f) * 0.05f - valley_w * 0.30f - basin * 0.12f;
+                float mountain_h = 0.45f + std::pow(ridge, 1.65f) * 0.70f + (hills - 0.5f) * 0.08f;
                 float plateau_h = 0.52f + std::pow(macro, 1.15f) * 0.30f + (detail - 0.5f) * 0.04f;
                 plateau_h = lerp(plateau_h, std::floor(plateau_h * 9.0f) / 9.0f, cfg.plateau_flatten);
 
@@ -1542,11 +1662,13 @@ struct World {
                 float moisture = fbm(wx * cfg.moisture_scale + 1300.0f, wy * cfg.moisture_scale + 1300.0f, 4);
                 moisture = clamp01(moisture * 0.80f + basin * 0.20f);
 
-                uint8_t biome = 0; // 0 Planicie | 1 Vale | 2 Montanha | 3 Plato | 4 Gelo
+                uint8_t biome = 0; // 0 Planicie | 1 Vale | 2 Montanha | 3 Plato | 4 Gelo | 5 Deserto
                 if (hn > 0.72f && temp < 0.44f) biome = 4;
                 else if (mountain_w >= valley_w && mountain_w >= plateau_w && mountain_w >= plains_w) biome = 2;
                 else if (plateau_w >= valley_w && plateau_w >= plains_w) biome = 3;
                 else if (valley_w >= plains_w) biome = 1;
+                // Deserto: areas quentes e secas que nao sao montanha
+                if (biome != 2 && biome != 4 && temp > 0.58f && moisture < 0.32f) biome = 5;
 
                 size_t idx = index_of(x, y);
                 heights[idx] = hn;
@@ -1649,6 +1771,11 @@ struct World {
                 } else if (biome == 4 || (int)th >= snow_h || temp < 0.25f) {
                     float snow_var = fbm((float)x * 0.045f + 7600.0f, (float)y * 0.045f + 7600.0f, 2);
                     g = (snow_var > 0.56f) ? Block::Ice : Block::Snow;
+                } else if (biome == 5) {
+                    // Deserto: areia com variacao de pedra
+                    float desert_var = fbm((float)x * 0.035f + 8800.0f, (float)y * 0.035f + 8800.0f, 3);
+                    if (desert_var > 0.72f) g = Block::Stone; // afloramentos rochosos
+                    else g = Block::Sand;
                 } else if (biome == 1 && moisture > 0.66f) {
                     g = Block::Dirt; // vale mais umido
                 } else if (moisture < 0.30f && temp > 0.52f) {
@@ -1759,8 +1886,8 @@ static void build_physics_test_map(World& world);
 
 // ============= Gameplay State =============
 static bool g_quit = false;
-static const int WORLD_WIDTH = 512;
-static const int WORLD_HEIGHT = 256;
+static const int WORLD_WIDTH = 1536;
+static const int WORLD_HEIGHT = 1024;
 static constexpr float TILE_PX = 16.0f;
 
 // Sistema de zoom para melhor visibilidade
@@ -1780,11 +1907,11 @@ struct Camera3D {
     // Camera em terceira pessoa com horizonte visivel (menos "top-down")
     float distance = 4.8f;      // Distancia do jogador
     float yaw = 180.0f;         // Rotacao horizontal (graus)
-    float pitch = 18.0f;        // Rotacao vertical (mais baixa para ver o horizonte)
-    float min_pitch = 8.0f;
+    float pitch = 18.0f;        // Rotacao vertical (negativo = olhar pro ceu)
+    float min_pitch = -45.0f;
     float max_pitch = 88.0f;
     float min_distance = 2.2f;
-    float max_distance = 90.0f;
+    float max_distance = 140.0f;
     float sensitivity = 0.18f;  // Sensibilidade mais suave
     float smooth_speed = 6.0f;  // Suavizacao do seguimento
     
@@ -1863,6 +1990,18 @@ static void update_camera_position() {
     g_camera.position.x = g_camera.target.x + x;
     g_camera.position.y = g_camera.target.y + y;
     g_camera.position.z = g_camera.target.z + z;
+    
+    // Protecao: nao deixar camera ir abaixo do solo
+    if (g_world) {
+        int ctx = world_to_tile(g_camera.position.x);
+        int ctz = world_to_tile(g_camera.position.z);
+        if (ctx >= 0 && ctx < g_world->w && ctz >= 0 && ctz < g_world->h) {
+            float ground = (float)g_world->height_at(ctx, ctz) * kHeightScale + 0.8f;
+            if (g_camera.position.y < ground) {
+                g_camera.position.y = ground;
+            }
+        }
+    }
 }
 
 static void update_camera_for_frame();
@@ -2403,13 +2542,15 @@ static void update_camera_for_frame() {
         desired_mode = CameraMode::SemiClosed;
     }
 
-    float desired_pitch_abs = g_camera_cfg.open_pitch;
+    // Em modo Open, nao forcar pitch — respeitar controle do jogador
+    // Adapt pitch so intervem em espacos fechados (Semi/Cave/Emergency)
+    float desired_pitch_abs = g_camera.pitch; // padrao: sem correcao
     float desired_scale = g_camera_cfg.open_distance_scale;
     float desired_lift = g_camera_cfg.open_target_lift;
 
     if (desired_mode == CameraMode::SemiClosed) {
         float t = smoothstep01(0.30f, 0.72f, cave_score);
-        desired_pitch_abs = lerp(g_camera_cfg.open_pitch, g_camera_cfg.semi_pitch, t);
+        desired_pitch_abs = lerp(g_camera.pitch, g_camera_cfg.semi_pitch, t);
         desired_scale = lerp(g_camera_cfg.open_distance_scale, g_camera_cfg.semi_distance_scale, t);
         desired_lift = lerp(g_camera_cfg.open_target_lift, g_camera_cfg.semi_target_lift, t);
     } else if (desired_mode == CameraMode::Cave) {
@@ -2556,8 +2697,21 @@ struct Module {
     float t = 0.0f;
     float health = 100.0f;     // 0-100, se <= 0 fica Damaged
     ModuleStatus status = ModuleStatus::Active;
+    int level = 1;             // 1-4, upgrade aumenta producao
 };
 static std::vector<Module> g_modules;
+
+// Contar modulos ativos + em construcao de um tipo
+static int count_modules_of_type(Block type) {
+    int count = 0;
+    for (const auto& m : g_modules) {
+        if (m.type == type) ++count;
+    }
+    for (const auto& job : g_construction_queue) {
+        if (job.active && job.module_type == type) ++count;
+    }
+    return count;
+}
 
 // ============= SISTEMA DE ILUMINACAO 2D AVANCADA (RTX FAKE) =============
 // Estrutura para fontes de luz dinamicas
@@ -2702,55 +2856,9 @@ static void generate_biodome(World& world, int cx, int cy, int16_t base_h, const
     dome.base_y = (float)floor_h * kHeightScale;
     dome.radius = (float)R;
     dome.height = (float)H * kHeightScale;
-    dome.has_tree = true;
-    dome.tree_height = 12.0f;
+    dome.has_tree = false;
+    dome.tree_height = 0.0f;
     g_domes.push_back(dome);
-    
-    // === ARVORE CENTRAL GRANDE (Arvore da Vida) ===
-    {
-        int tree_x = cx;
-        int tree_y = cy;
-        int trunk_height = 12;  // Arvore alta
-        int canopy_radius = 8;  // Copa grande
-        
-        // Tronco central robusto (3x3)
-        for (int tz = -1; tz <= 1; ++tz) {
-            for (int tx_off = -1; tx_off <= 1; ++tx_off) {
-                int ttx = tree_x + tx_off;
-                int tty = tree_y + tz;
-                if (!world.in_bounds(ttx, tty)) continue;
-                
-                // Centro do tronco mais alto
-                int h_bonus = (tx_off == 0 && tz == 0) ? 3 : 0;
-                int16_t trunk_top = (int16_t)std::clamp((int)floor_h + trunk_height + h_bonus, 0, 256);
-                world.set_height(ttx, tty, trunk_top);
-                world.set(ttx, tty, Block::Wood);
-            }
-        }
-        
-        // Copa da arvore (esferica grande)
-        for (int cz = -canopy_radius; cz <= canopy_radius; ++cz) {
-            for (int cx_off = -canopy_radius; cx_off <= canopy_radius; ++cx_off) {
-                int leaf_x = tree_x + cx_off;
-                int leaf_y = tree_y + cz;
-                if (!world.in_bounds(leaf_x, leaf_y)) continue;
-                
-                float leaf_dist = std::sqrt((float)(cx_off * cx_off + cz * cz));
-                if (leaf_dist > (float)canopy_radius) continue;
-                
-                // Nao sobrescrever o tronco (centro 3x3)
-                if (std::abs(cx_off) <= 1 && std::abs(cz) <= 1) continue;
-                
-                // Altura das folhas (forma esferica)
-                float sphere_factor = std::sqrt(std::max(0.0f, 1.0f - (leaf_dist / (float)canopy_radius) * (leaf_dist / (float)canopy_radius)));
-                int leaf_h_offset = trunk_height + 2 + (int)(sphere_factor * 5.0f);
-                
-                int16_t leaf_h = (int16_t)std::clamp((int)floor_h + leaf_h_offset, 0, 256);
-                world.set_height(leaf_x, leaf_y, leaf_h);
-                world.set(leaf_x, leaf_y, Block::Leaves);
-            }
-        }
-    }
     
     // === AIRLOCK DE ENTRADA (frente da cupula) ===
     int airlock_y = cy - R - 2;  // Na frente da cupula
@@ -2957,229 +3065,10 @@ static void generate_base(World& world) {
             }
         }
     }
-     
-    // === PLATAFORMA DA BASE (3D) ===
-    // A base anterior era desenhada como "sprite" no grid (bom para top-down),
-    // mas em camera 3D isso parecia um desenho no chao. Aqui criamos uma plataforma real.
-    static constexpr int kPadHalfW = 22;
-    static constexpr int kPadHalfH = 12;
-    
-    // === ESTRUTURA 3D DA BASE ===
-    // Dimensoes do edificio principal (habitacao)
-    static constexpr int kBuildingHalfW = 8;   // Largura do edificio
-    static constexpr int kBuildingHalfH = 6;   // Profundidade do edificio
-    static constexpr int kWallHeight = 3;      // Altura das paredes (em unidades de heightmap)
-    static constexpr int kDoorWidth = 3;       // Largura da porta de entrada
 
-    // Levantar 2 unidades de heightmap para criar piso elevado
-    int16_t pad_h = (int16_t)std::clamp((int)base_h + 2, 0, 256);
-    int16_t floor_h = pad_h;  // Altura do piso interno
-    int16_t roof_h = (int16_t)std::clamp((int)pad_h + kWallHeight, 0, 256);  // Altura do teto
-
-    // === CRIAR AREA DE POUSO (plataforma externa) ===
-    for (int dy = -kPadHalfH; dy <= kPadHalfH; ++dy) {
-        for (int dx = -kPadHalfW; dx <= kPadHalfW; ++dx) {
-            int tx = best_x + dx;
-            int ty = surface + dy;
-            if (!world.in_bounds(tx, ty)) continue;
-
-            world.set_height(tx, ty, pad_h);
-
-            // Limpar objetos existentes (rochas/minerios) para nao poluir a base
-            if (object_block_at(world, tx, ty) != Block::Air) {
-                world.set(tx, ty, Block::Air);
-            }
-
-            world.set_ground(tx, ty, Block::LandingPad);
-            world.set(tx, ty, Block::LandingPad);
-        }
-    }
-    
-    // === CRIAR EDIFICIO PRINCIPAL DA BASE (HABITACAO 3D) ===
-    int bx = best_x;  // Centro do edificio
-    int by = surface + 2;  // Posicao Z do edificio (um pouco atras do centro)
-    
-    // Piso interno elevado
-    for (int dy = -kBuildingHalfH; dy <= kBuildingHalfH; ++dy) {
-        for (int dx = -kBuildingHalfW; dx <= kBuildingHalfW; ++dx) {
-            int tx = bx + dx;
-            int ty = by + dy;
-            if (!world.in_bounds(tx, ty)) continue;
-            
-            world.set_height(tx, ty, floor_h);
-            world.set_ground(tx, ty, Block::BaseFloor);
-            world.set(tx, ty, Block::BaseFloor);
-        }
-    }
-    
-    // Paredes perimetrais (usando o sistema de objetos existente)
-    // As paredes sao blocos 3D que serao renderizados com altura
-    for (int dy = -kBuildingHalfH; dy <= kBuildingHalfH; ++dy) {
-        for (int dx = -kBuildingHalfW; dx <= kBuildingHalfW; ++dx) {
-            int tx = bx + dx;
-            int ty = by + dy;
-            if (!world.in_bounds(tx, ty)) continue;
-            
-            bool is_wall = false;
-            bool is_door = false;
-            
-            // Paredes nas bordas
-            if (dx == -kBuildingHalfW || dx == kBuildingHalfW ||
-                dy == -kBuildingHalfH || dy == kBuildingHalfH) {
-                is_wall = true;
-                
-                // Porta na frente (lado negativo Y)
-                if (dy == -kBuildingHalfH && std::abs(dx) <= kDoorWidth / 2) {
-                    is_door = true;
-                    is_wall = false;
-                }
-            }
-            
-            // Janelas nos lados (exceto cantos)
-            bool is_window = false;
-            if (is_wall) {
-                // Janelas laterais
-                if ((dx == -kBuildingHalfW || dx == kBuildingHalfW) && 
-                    dy > -kBuildingHalfH + 1 && dy < kBuildingHalfH - 1 &&
-                    (dy % 3 == 0)) {
-                    is_window = true;
-                }
-                // Janelas traseiras
-                if (dy == kBuildingHalfH && std::abs(dx) > 2 && (std::abs(dx) % 3 == 0)) {
-                    is_window = true;
-                }
-            }
-            
-            if (is_door) {
-                world.set(tx, ty, Block::BaseDoor);
-                world.set_height(tx, ty, floor_h);  // Piso na porta
-            } else if (is_window) {
-                world.set(tx, ty, Block::BaseWindow);
-                world.set_height(tx, ty, roof_h);  // Janela tem altura ate o teto
-            } else if (is_wall) {
-                world.set(tx, ty, Block::BaseWall);
-                world.set_height(tx, ty, roof_h);  // Parede tem altura ate o teto
-            }
-        }
-    }
-    
-    // Teto (blocos no topo)
-    for (int dy = -kBuildingHalfH + 1; dy <= kBuildingHalfH - 1; ++dy) {
-        for (int dx = -kBuildingHalfW + 1; dx <= kBuildingHalfW - 1; ++dx) {
-            int tx = bx + dx;
-            int ty = by + dy;
-            if (!world.in_bounds(tx, ty)) continue;
-            
-            // O teto e representado elevando o heightmap para a altura do teto
-            // Os blocos de teto ficam nas bordas internas
-            bool is_roof_edge = (dx == -kBuildingHalfW + 1 || dx == kBuildingHalfW - 1 ||
-                                 dy == -kBuildingHalfH + 1 || dy == kBuildingHalfH - 1);
-            
-            if (is_roof_edge) {
-                // Estrutura do teto (bordas)
-                world.set(tx, ty, Block::BaseRoof);
-            }
-        }
-    }
-    
-    // Luzes internas (no centro e cantos do interior)
-    int light_positions[][2] = {
-        {0, 0},   // Centro
-        {-4, -3}, // Canto frontal esquerdo
-        {4, -3},  // Canto frontal direito
-        {-4, 3},  // Canto traseiro esquerdo
-        {4, 3},   // Canto traseiro direito
-    };
-    for (auto& pos : light_positions) {
-        int lx = bx + pos[0];
-        int ly = by + pos[1];
-        if (world.in_bounds(lx, ly)) {
-            world.set(lx, ly, Block::BaseLight);
-        }
-    }
-
-    auto place_slot = [&](int sx, int sy, const std::string& label) {
-        if (!world.in_bounds(sx, sy)) return;
-        world.set_ground(sx, sy, Block::BuildSlot);
-        world.set(sx, sy, Block::BuildSlot);
-        g_build_slots.push_back({sx, sy, Block::Air, label});
-    };
-
-    // === SLOTS DE CONSTRUCAO (organizados em grid) ===
-    int cx = best_x;
-    int cy = surface;
-    int front_y = cy - 6;
-    int back_y = cy + 5;
-    int mid_y = cy + 1;
-
-    // Solar (3 slots)
-    for (int i = 0; i < 3; ++i) {
-        int sx = cx - 12 + i * 2;
-        place_slot(sx, front_y, "Solar " + std::to_string(i + 1));
-    }
-
-    // Agua / Oxigenio
-    place_slot(cx + 6, front_y, "Water Extractor");
-    place_slot(cx + 8, front_y, "O2 Generator");
-
-    // Estufas (2 slots)
-    place_slot(cx - 14, back_y, "Greenhouse 1");
-    place_slot(cx - 12, back_y, "Greenhouse 2");
-
-    // Terraformacao (CO2 + Terraformer)
-    place_slot(cx + 12, back_y, "CO2 Factory");
-    place_slot(cx + 14, back_y, "Terraformer");
-
-    // Habitat (centro)
-    place_slot(cx - 1, mid_y, "Habitat");
-
-    // === DECORACAO 3D (simples) ===
-    // Pequeno "wreck" de foguete (nao deitado como sprite)
+    // === BIODOMO PRINCIPAL (nova base - centrado na posicao da base) ===
     {
-        int rx = cx + 14;
-        int ry = cy - 1;
-        for (int dy = -1; dy <= 1; ++dy) {
-            for (int dx = -1; dx <= 1; ++dx) {
-                if (world.in_bounds(rx + dx, ry + dy)) world.set(rx + dx, ry + dy, Block::RocketHull);
-            }
-        }
-        if (world.in_bounds(rx, ry)) world.set(rx, ry, Block::RocketEngine);
-        if (world.in_bounds(rx, ry - 2)) world.set(rx, ry - 2, Block::RocketNose);
-    }
-
-    // Pequeno "hub" em domo (anel)
-    {
-        int dx0 = cx - 12;
-        int dy0 = cy - 1;
-        for (int dy = -2; dy <= 2; ++dy) {
-            for (int dx = -2; dx <= 2; ++dx) {
-                int tx = dx0 + dx;
-                int ty = dy0 + dy;
-                if (!world.in_bounds(tx, ty)) continue;
-
-                if (std::abs(dx) == 2 || std::abs(dy) == 2) {
-                    world.set(tx, ty, Block::DomeFrame);
-                } else if (dx == 0 && dy == 0) {
-                    world.set(tx, ty, Block::DomeGlass);
-                }
-            }
-        }
-        if (world.in_bounds(dx0, dy0 - 3)) world.set(dx0, dy0 - 3, Block::Antenna);
-    }
-
-    // === MODULO INICIAL (painel solar) ===
-    if (!g_build_slots.empty()) {
-        int sx = g_build_slots[0].x;
-        int sy = g_build_slots[0].y;
-        world.set(sx, sy, Block::SolarPanel);
-        g_modules.push_back(Module{sx, sy, Block::SolarPanel, 0.0f});
-        g_build_slots[0].assigned_module = Block::SolarPanel;
-    }
-    
-    // === BIODOMO LUNAR (CUPULA GEODESICA GRANDE) ===
-    // Criar biodomo principal ao lado da base existente
-    {
-        int biodome_cx = best_x + 80;  // Deslocado para a direita (mais longe para caber)
+        int biodome_cx = best_x;
         int biodome_cy = surface;
         
         // Nivelar terreno para o biodomo (area maior)
@@ -3199,8 +3088,53 @@ static void generate_base(World& world) {
             }
         }
         
-        // Gerar o biodomo
+        // Gerar o biodomo (piso, anel, modulos, arvore, airlock, luzes)
         generate_biodome(world, biodome_cx, biodome_cy, base_h, g_biodome_cfg);
+        
+        // A nova base ainda nao e uma cupula - remover dome 3D registrado
+        if (!g_domes.empty()) g_domes.pop_back();
+    }
+
+    // === SLOTS DE CONSTRUCAO (ao redor do biodomo) ===
+    auto place_slot = [&](int sx, int sy, const std::string& label) {
+        if (!world.in_bounds(sx, sy)) return;
+        world.set_ground(sx, sy, Block::BuildSlot);
+        world.set(sx, sy, Block::BuildSlot);
+        g_build_slots.push_back({sx, sy, Block::Air, label});
+    };
+
+    int cx = best_x;
+    int cy = surface;
+    int slot_r = g_biodome_cfg.dome_radius + 4;  // Logo fora do raio do biodomo
+
+    // Solar (3 slots - frente do biodomo)
+    for (int i = 0; i < 3; ++i) {
+        int sx = cx - 4 + i * 4;
+        place_slot(sx, cy - slot_r, "Solar " + std::to_string(i + 1));
+    }
+
+    // Agua / Oxigenio (direita do biodomo)
+    place_slot(cx + slot_r, cy - 4, "Water Extractor");
+    place_slot(cx + slot_r, cy + 4, "O2 Generator");
+
+    // Estufas (esquerda do biodomo)
+    place_slot(cx - slot_r, cy - 4, "Greenhouse 1");
+    place_slot(cx - slot_r, cy + 4, "Greenhouse 2");
+
+    // Terraformacao (atras do biodomo)
+    place_slot(cx + 4, cy + slot_r, "CO2 Factory");
+    place_slot(cx - 4, cy + slot_r, "Terraformer");
+
+    // Habitat (frente do biodomo, perto do airlock)
+    place_slot(cx, cy - slot_r - 4, "Habitat");
+
+    // === MODULO INICIAL (painel solar) ===
+    if (!g_build_slots.empty()) {
+        int sx = g_build_slots[0].x;
+        int sy = g_build_slots[0].y;
+        world.set(sx, sy, Block::SolarPanel);
+        g_modules.push_back(Module{sx, sy, Block::SolarPanel, 0.0f});
+        g_build_slots[0].assigned_module = Block::SolarPanel;
     }
     
     world.rebuild_surface_cache();
@@ -3370,7 +3304,7 @@ static bool save_game(const char* path) {
     if (!f) return false;
 
     const char magic[4] = {'T', 'F', '3', 'D'};  // Atualizado para 3D
-    uint32_t version = 6;  // Version 6 - adds fog of war + waypoints
+    uint32_t version = 7;  // Version 7 - adds missions + module levels
     uint32_t w = (uint32_t)g_world->w;
     uint32_t h = (uint32_t)g_world->h;
     uint32_t seed = (uint32_t)g_world->seed;
@@ -3469,6 +3403,37 @@ static bool save_game(const char* path) {
         }
     }
 
+    // Version 7: Missoes e niveis de modulos
+    // Salvar missao principal ativa
+    int32_t active_mission = (int32_t)g_active_main_mission;
+    f.write((const char*)&active_mission, sizeof(active_mission));
+    
+    // Salvar status de cada missao
+    uint32_t mission_count = (uint32_t)g_missions.size();
+    f.write((const char*)&mission_count, sizeof(mission_count));
+    for (const auto& m : g_missions) {
+        int32_t mid = (int32_t)m.id;
+        uint8_t mstatus = (uint8_t)m.status;
+        f.write((const char*)&mid, sizeof(mid));
+        f.write((const char*)&mstatus, sizeof(mstatus));
+    }
+    
+    // Salvar niveis dos modulos
+    uint32_t mod_count = (uint32_t)g_modules.size();
+    f.write((const char*)&mod_count, sizeof(mod_count));
+    for (const auto& m : g_modules) {
+        int32_t mx = m.x;
+        int32_t my = m.y;
+        uint8_t mtype = (uint8_t)m.type;
+        int32_t mlevel = (int32_t)m.level;
+        float mhealth = m.health;
+        f.write((const char*)&mx, sizeof(mx));
+        f.write((const char*)&my, sizeof(my));
+        f.write((const char*)&mtype, sizeof(mtype));
+        f.write((const char*)&mlevel, sizeof(mlevel));
+        f.write((const char*)&mhealth, sizeof(mhealth));
+    }
+
     return (bool)f;
 }
 
@@ -3521,7 +3486,7 @@ static bool load_game(const char* path) {
             f.read((char*)&c, sizeof(c));
             if (i < (uint32_t)kBlockTypeCount) inv[(size_t)i] = (int)c;
         }
-    } else if (version >= 2 && version <= 5) {
+    } else if (version >= 2 && version <= 7) {
         uint32_t inv_count = 0;
         f.read((char*)&inv_count, sizeof(inv_count));
         if (!f || inv_count > 4096) return false;
@@ -3682,7 +3647,7 @@ static bool load_game(const char* path) {
     reset_player_physics_runtime(true);
     g_surface_dirty = true;
     g_victory = false;
-    g_show_build_menu = false;
+    g_module_panel_visible = false;
     rebuild_modules_from_world();
     
     // Version 6: Carregar fog of war e waypoints
@@ -3747,6 +3712,62 @@ static bool load_game(const char* path) {
     
     g_minimap.dirty_full = true;
     g_minimap.world_map_open = false;
+    
+    // Version 7: Carregar missoes e niveis de modulos
+    if (version >= 7) {
+        // Carregar missao principal ativa
+        int32_t active_mission = -1;
+        f.read((char*)&active_mission, sizeof(active_mission));
+        
+        // Inicializar missoes primeiro
+        init_missions();
+        g_active_main_mission = (int)active_mission;
+        
+        // Carregar status de cada missao
+        uint32_t mission_count = 0;
+        f.read((char*)&mission_count, sizeof(mission_count));
+        if (f && mission_count <= 200) {
+            for (uint32_t i = 0; i < mission_count; ++i) {
+                int32_t mid = 0;
+                uint8_t mstatus = 0;
+                f.read((char*)&mid, sizeof(mid));
+                f.read((char*)&mstatus, sizeof(mstatus));
+                Mission* m = find_mission((int)mid);
+                if (m && mstatus <= 2) {
+                    m->status = (MissionStatus)mstatus;
+                }
+            }
+        }
+        
+        // Carregar niveis dos modulos
+        uint32_t mod_count = 0;
+        f.read((char*)&mod_count, sizeof(mod_count));
+        if (f && mod_count <= 1000) {
+            for (uint32_t i = 0; i < mod_count; ++i) {
+                int32_t mx = 0, my = 0;
+                uint8_t mtype = 0;
+                int32_t mlevel = 1;
+                float mhealth = 100.0f;
+                f.read((char*)&mx, sizeof(mx));
+                f.read((char*)&my, sizeof(my));
+                f.read((char*)&mtype, sizeof(mtype));
+                f.read((char*)&mlevel, sizeof(mlevel));
+                f.read((char*)&mhealth, sizeof(mhealth));
+                
+                // Encontrar modulo correspondente e atualizar
+                for (Module& mod : g_modules) {
+                    if (mod.x == mx && mod.y == my && (uint8_t)mod.type == mtype) {
+                        mod.level = std::clamp((int)mlevel, 1, 4);
+                        mod.health = std::clamp(mhealth, 0.0f, 100.0f);
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        // Versao antiga - inicializar missoes do zero
+        init_missions();
+    }
     
     return true;
 }
@@ -3860,11 +3881,13 @@ static void spawn_player_new_game(World& world) {
     g_player.hp = 100;
     g_player.facing_dir = 2; // Olhando para sul
 
-    // Starter kit - some resources to start building
+    // Starter kit - recursos iniciais para sobrevivencia
     g_inventory.fill(0);
     g_inventory[(int)Block::Dirt] = 20;
     g_inventory[(int)Block::Stone] = 10;
     g_inventory[(int)Block::Iron] = 5;
+    g_inventory[(int)Block::Ice] = 10;
+    g_inventory[(int)Block::Copper] = 3;
     g_selected = Block::Dirt;
     
     // Player suit tanks - start full
@@ -3872,16 +3895,19 @@ static void spawn_player_new_game(World& world) {
     g_player_water = 100.0f;
     g_player_food = 100.0f;
     
-    // Base storage - start with some resources from the rocket
-    g_base_energy = 100.0f;   // Solar panel starts generating
-    g_base_water = 30.0f;     // Small water reserve
-    g_base_oxygen = 50.0f;    // Some O2 from the rocket
-    g_base_food = 40.0f;      // Emergency rations
-    g_base_integrity = 100.0f;  // Base starts in perfect condition
+    // Base storage - urgencia para motivar acao rapida
+    g_base_energy = 20.0f;    // Energia critica - precisa painel solar
+    g_base_water = 20.0f;     // Agua limitada
+    g_base_oxygen = 30.0f;    // O2 baixo - urgencia
+    g_base_food = 40.0f;      // Racoes de emergencia
+    g_base_integrity = 100.0f;  // Base em boa condicao
     
     // Clear construction queue
     g_construction_queue.clear();
     g_alerts.clear();
+    
+    // Inicializar sistema de missoes
+    init_missions();
     
     // Sync legacy variables
     g_energy = g_base_energy;
@@ -3907,8 +3933,12 @@ static void spawn_player_new_game(World& world) {
     g_unlocks.habitat_unlocked = false;          // Desbloqueia ao ter estufa
     g_unlocks.terraformer_unlocked = false;      // Desbloqueia no final
     
-    g_show_build_menu = false;
-    g_build_menu_selection = 0;
+    g_module_panel_visible = false;
+    g_module_placement_mode = false;
+    g_notified_affordable.clear();
+    g_alert_o2 = {};
+    g_alert_energy = {};
+    g_alert_water = {};
     
     // Inicializar minimapa e fog of war
     size_t map_size = (size_t)world.w * (size_t)world.h;
@@ -3932,6 +3962,9 @@ static void spawn_player_new_game(World& world) {
             }
         }
     }
+    
+    // Onboarding: mensagem inicial
+    set_toast("Capsula de emergencia. Recursos escassos.", 4.0f);
 }
 
 // Atualizar fog of war baseado na posicao do jogador
@@ -4990,27 +5023,27 @@ static void write_default_terrain_config(const std::string& path) {
     if (!f) return;
     f <<
 "{\n"
-"  \"macro_scale\": 0.00095,\n"
-"  \"ridge_scale\": 0.0038,\n"
+"  \"macro_scale\": 0.00080,\n"
+"  \"ridge_scale\": 0.0028,\n"
 "  \"valley_scale\": 0.00145,\n"
 "  \"detail_scale\": 0.0120,\n"
 "  \"warp_scale\": 0.0024,\n"
-"  \"warp_strength\": 19.0,\n"
+"  \"warp_strength\": 28.0,\n"
 "  \"macro_weight\": 0.50,\n"
-"  \"ridge_weight\": 0.52,\n"
-"  \"valley_weight\": 0.58,\n"
+"  \"ridge_weight\": 0.68,\n"
+"  \"valley_weight\": 0.70,\n"
 "  \"detail_weight\": 0.06,\n"
 "  \"plateau_level\": 0.57,\n"
 "  \"plateau_flatten\": 0.38,\n"
 "  \"min_height\": 2.0,\n"
-"  \"max_height\": 92.0,\n"
-"  \"sea_height\": 14.0,\n"
-"  \"snow_height\": 76.0,\n"
+"  \"max_height\": 140.0,\n"
+"  \"sea_height\": 20.0,\n"
+"  \"snow_height\": 110.0,\n"
 "  \"thermal_erosion_passes\": 5,\n"
 "  \"hydraulic_erosion_passes\": 5,\n"
 "  \"smooth_passes\": 2,\n"
-"  \"erosion_strength\": 0.40,\n"
-"  \"thermal_talus\": 0.022,\n"
+"  \"erosion_strength\": 0.32,\n"
+"  \"thermal_talus\": 0.030,\n"
 "  \"temp_scale\": 0.0016,\n"
 "  \"moisture_scale\": 0.0019,\n"
 "  \"biome_blend\": 0.18,\n"
@@ -5137,28 +5170,28 @@ static void write_default_sky_config(const std::string& path) {
 "  \"nebula_parallax\": 0.016,\n"
 "  \"cloud_alpha\": 0.20,\n"
 "  \"cloud_parallax\": 0.050,\n"
-"  \"planet_radius\": 160.0,\n"
-"  \"planet_distance\": 1220.0,\n"
+"  \"planet_radius\": 220.0,\n"
+"  \"planet_distance\": 1400.0,\n"
 "  \"planet_orbit_speed\": 0.060,\n"
 "  \"planet_parallax\": 0.028,\n"
 "  \"sun_radius\": 52.0,\n"
 "  \"sun_distance\": 820.0,\n"
 "  \"sun_halo_size\": 2.25,\n"
 "  \"bloom_intensity\": 0.45,\n"
-"  \"moon_radius\": 36.0,\n"
-"  \"moon_distance\": 940.0,\n"
+"  \"moon_radius\": 48.0,\n"
+"  \"moon_distance\": 1000.0,\n"
 "  \"moon_orbit_speed\": 0.48,\n"
 "  \"moon_parallax\": 0.040,\n"
-"  \"moon2_radius\": 22.0,\n"
-"  \"moon2_distance\": 1010.0,\n"
+"  \"moon2_radius\": 30.0,\n"
+"  \"moon2_distance\": 1080.0,\n"
 "  \"moon2_orbit_speed\": 0.98,\n"
 "  \"moon2_parallax\": 0.050,\n"
 "  \"atmosphere_horizon_boost\": 0.45,\n"
 "  \"atmosphere_zenith_boost\": 0.24,\n"
 "  \"horizon_fade\": 0.28,\n"
-"  \"fog_start_factor\": 0.34,\n"
-"  \"fog_end_factor\": 0.88,\n"
-"  \"fog_distance_bonus\": 36.0,\n"
+"  \"fog_start_factor\": 0.55,\n"
+"  \"fog_end_factor\": 0.95,\n"
+"  \"fog_distance_bonus\": 140.0,\n"
 "  \"eclipse_frequency_days\": 8.0,\n"
 "  \"eclipse_strength\": 0.50\n"
 "}\n";
@@ -5228,7 +5261,7 @@ static void apply_sky_config_overrides(const std::string& text, SkyConfig& cfg) 
     cfg.horizon_fade = std::clamp(cfg.horizon_fade, 0.0f, 1.0f);
     cfg.fog_start_factor = std::clamp(cfg.fog_start_factor, 0.1f, 0.9f);
     cfg.fog_end_factor = std::clamp(cfg.fog_end_factor, cfg.fog_start_factor + 0.05f, 1.3f);
-    cfg.fog_distance_bonus = std::clamp(cfg.fog_distance_bonus, 0.0f, 160.0f);
+    cfg.fog_distance_bonus = std::clamp(cfg.fog_distance_bonus, 0.0f, 300.0f);
     cfg.eclipse_frequency_days = std::clamp(cfg.eclipse_frequency_days, 0.5f, 40.0f);
     cfg.eclipse_strength = std::clamp(cfg.eclipse_strength, 0.0f, 1.0f);
 }
@@ -5355,12 +5388,12 @@ static void apply_camera_config_overrides(const std::string& text, CameraConfig&
     setf("debug_ray_length", cfg.debug_ray_length);
 
     cfg.spawn_distance = std::clamp(cfg.spawn_distance, 1.6f, 25.0f);
-    cfg.spawn_pitch = std::clamp(cfg.spawn_pitch, 8.0f, 88.0f);
+    cfg.spawn_pitch = std::clamp(cfg.spawn_pitch, -45.0f, 88.0f);
     while (cfg.spawn_yaw < 0.0f) cfg.spawn_yaw += 360.0f;
     while (cfg.spawn_yaw >= 360.0f) cfg.spawn_yaw -= 360.0f;
 
-    cfg.open_pitch = std::clamp(cfg.open_pitch, 8.0f, 88.0f);
-    cfg.semi_pitch = std::clamp(cfg.semi_pitch, cfg.open_pitch, 88.0f);
+    cfg.open_pitch = std::clamp(cfg.open_pitch, -45.0f, 88.0f);
+    cfg.semi_pitch = std::clamp(cfg.semi_pitch, -45.0f, 88.0f);
     cfg.cave_pitch = std::clamp(cfg.cave_pitch, cfg.semi_pitch, 88.0f);
     cfg.emergency_pitch = std::clamp(cfg.emergency_pitch, cfg.cave_pitch, 89.0f);
 
@@ -6565,36 +6598,36 @@ static ModuleStats get_module_stats(Block b) {
     return s;
 }
 
-// Module build costs (updated with new resources)
+// Module build costs — balanceados para progressao gradual
 static CraftCost get_module_cost(Block b) {
     CraftCost c{};
     switch (b) {
         case Block::SolarPanel:       
-            c.iron = 30; c.copper = 10; 
+            c.iron = 8; c.copper = 3; 
             break;
         case Block::EnergyGenerator:
-            c.iron = 40; c.crystal = 20; c.copper = 25;
+            c.iron = 25; c.crystal = 10; c.copper = 15;
             break;
         case Block::OxygenGenerator:  
-            c.ice = 50; c.iron = 50; c.copper = 20; 
+            c.ice = 15; c.iron = 12; c.copper = 5; 
             break;
         case Block::WaterExtractor:   
-            c.ice = 30; c.metal = 20; c.copper = 15; 
+            c.ice = 10; c.iron = 8; c.copper = 4; 
             break;
         case Block::Greenhouse:       
-            c.organic = 40; c.iron = 25; c.ice = 25; 
+            c.organic = 15; c.iron = 10; c.ice = 8; 
             break;
         case Block::Workshop:
-            c.iron = 60; c.components = 30; c.copper = 40;
+            c.iron = 35; c.components = 15; c.copper = 20;
             break;
         case Block::CO2Factory:       
-            c.iron = 60; c.coal = 50; c.copper = 30; 
+            c.iron = 40; c.coal = 30; c.copper = 20; 
             break;
         case Block::Habitat:          
-            c.stone = 80; c.iron = 60; c.copper = 40; c.metal = 30; 
+            c.stone = 50; c.iron = 35; c.copper = 25; c.metal = 15; 
             break;
         case Block::TerraformerBeacon: 
-            c.iron = 100; c.crystal = 50; c.components = 40; c.copper = 60; 
+            c.iron = 60; c.crystal = 30; c.components = 25; c.copper = 35; 
             break;
         default: break;
     }
@@ -6606,6 +6639,106 @@ static bool can_afford(const CraftCost& c);
 
 // Forward declaration - defined later in file
 static void spend_cost(const CraftCost& c);
+
+// ============= SISTEMA DE UPGRADES =============
+static constexpr int kMaxModuleLevel = 4;
+
+// Multiplicadores de producao por nivel
+static float get_production_multiplier(int level) {
+    switch (level) {
+        case 1: return 1.0f;
+        case 2: return 1.6f;
+        case 3: return 2.4f;
+        case 4: return 3.5f;
+        default: return 1.0f;
+    }
+}
+
+// Multiplicadores de consumo por nivel
+static float get_consumption_multiplier(int level) {
+    switch (level) {
+        case 1: return 1.0f;
+        case 2: return 1.3f;
+        case 3: return 1.6f;
+        case 4: return 2.0f;
+        default: return 1.0f;
+    }
+}
+
+// Multiplicador de custo para upgrade
+static float get_upgrade_cost_multiplier(int target_level) {
+    switch (target_level) {
+        case 2: return 1.5f;
+        case 3: return 2.5f;
+        case 4: return 4.0f;
+        default: return 1.0f;
+    }
+}
+
+// Custo para fazer upgrade de um modulo
+static CraftCost get_upgrade_cost(Block type, int target_level) {
+    CraftCost base = get_module_cost(type);
+    float mult = get_upgrade_cost_multiplier(target_level);
+    CraftCost c{};
+    c.stone = (int)(base.stone * mult);
+    c.iron = (int)(base.iron * mult);
+    c.coal = (int)(base.coal * mult);
+    c.wood = (int)(base.wood * mult);
+    c.copper = (int)(base.copper * mult);
+    c.ice = (int)(base.ice * mult);
+    c.crystal = (int)(base.crystal * mult);
+    c.metal = (int)(base.metal * mult);
+    c.organic = (int)(base.organic * mult);
+    c.components = (int)(base.components * mult);
+    return c;
+}
+
+// Nomes por nivel para cada tipo de modulo
+static const char* get_module_level_name(Block type, int level) {
+    switch (type) {
+        case Block::SolarPanel:
+        case Block::EnergyGenerator:
+            switch (level) {
+                case 1: return "Solar";
+                case 2: return "Hibrido";
+                case 3: return "Nuclear";
+                case 4: return "Fusao";
+                default: return "?";
+            }
+        case Block::OxygenGenerator:
+            switch (level) {
+                case 1: return "Basico";
+                case 2: return "Filtros";
+                case 3: return "Atmosferico";
+                case 4: return "Excedente";
+                default: return "?";
+            }
+        case Block::WaterExtractor:
+            switch (level) {
+                case 1: return "Derretimento";
+                case 2: return "Reciclagem";
+                case 3: return "Atmosferico";
+                case 4: return "Puro";
+                default: return "?";
+            }
+        case Block::Greenhouse:
+            switch (level) {
+                case 1: return "Canteiro";
+                case 2: return "Horta";
+                case 3: return "Fazenda";
+                case 4: return "Bio-dome";
+                default: return "?";
+            }
+        default:
+            switch (level) {
+                case 1: return "Lv1";
+                case 2: return "Lv2";
+                case 3: return "Lv3";
+                case 4: return "Lv4";
+                default: return "?";
+            }
+    }
+}
 
 static std::string module_cost_string(const CraftCost& c) {
     std::string s;
@@ -6659,11 +6792,37 @@ static const char* status_string(ModuleStatus s) {
     }
 }
 
+// Gera string detalhada do que falta para um custo
+static std::string missing_resources_string(const CraftCost& c) {
+    std::string s = "Falta: ";
+    bool any = false;
+    auto check = [&](const char* name, int need, int have) {
+        if (need <= 0 || have >= need) return;
+        if (any) s += ", ";
+        s += name;
+        s += " x" + std::to_string(need - have);
+        any = true;
+    };
+    check("Pedra", c.stone, g_inventory[(int)Block::Stone]);
+    check("Ferro", c.iron, g_inventory[(int)Block::Iron]);
+    check("Carvao", c.coal, g_inventory[(int)Block::Coal]);
+    check("Madeira", c.wood, g_inventory[(int)Block::Wood]);
+    check("Cobre", c.copper, g_inventory[(int)Block::Copper]);
+    check("Gelo", c.ice, g_inventory[(int)Block::Ice]);
+    check("Cristal", c.crystal, g_inventory[(int)Block::Crystal]);
+    check("Metal", c.metal, g_inventory[(int)Block::Metal]);
+    check("Organico", c.organic, g_inventory[(int)Block::Organic]);
+    check("Comp", c.components, g_inventory[(int)Block::Components]);
+    return any ? s : "Recursos insuficientes!";
+}
+
 // Start construction of a module
 static bool start_construction(Block module_type, int slot_index) {
     CraftCost cost = get_module_cost(module_type);
     if (!can_afford(cost)) {
-        add_alert("Recursos insuficientes!", 1.0f, 0.3f, 0.3f);
+        std::string msg = missing_resources_string(cost);
+        add_alert(msg, 1.0f, 0.3f, 0.3f);
+        g_screen_flash_red = 0.15f;
         return false;
     }
     
@@ -6777,19 +6936,9 @@ static std::string unlock_progress_string(Block b) {
     return s;
 }
 
+// Unificado: mesmos custos que get_module_cost() para evitar confusao
 static CraftCost module_cost(Block b) {
-    CraftCost c{};
-    switch (b) {
-        case Block::SolarPanel:       c.iron = 3; c.stone = 2; break;
-        case Block::WaterExtractor:   c.iron = 4; c.stone = 4; c.copper = 2; break;
-        case Block::OxygenGenerator:  c.iron = 5; c.coal = 3; c.copper = 2; break;
-        case Block::Greenhouse:       c.iron = 6; c.wood = 4; c.copper = 3; c.stone = 4; break;
-        case Block::CO2Factory:       c.iron = 8; c.coal = 6; c.copper = 4; c.stone = 6; break;
-        case Block::Habitat:          c.iron = 10; c.stone = 12; c.copper = 6; c.wood = 4; break;
-        case Block::TerraformerBeacon: c.iron = 15; c.coal = 10; c.copper = 10; c.stone = 10; break;
-        default: break;
-    }
-    return c;
+    return get_module_cost(b);
 }
 
 static bool can_afford(const CraftCost& c) {
@@ -6950,20 +7099,38 @@ static void on_pickup_item(Block item, float x, float z) {
 
     check_unlocks();
 
-    if (!had_solar && g_unlocks.solar_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Painel Solar - Tab para construir");
-    if (!had_water && g_unlocks.water_extractor_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Extrator de Agua - Tab para construir");
-    if (!had_o2 && g_unlocks.o2_generator_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Gerador de O2 - Tab para construir");
-    if (!had_greenhouse && g_unlocks.greenhouse_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Estufa - Tab para construir");
-    if (!had_co2 && g_unlocks.co2_factory_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Fabrica de CO2 - Comece a aquecer!");
-    if (!had_habitat && g_unlocks.habitat_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Habitat - Lar doce lar");
-    if (!had_terraform && g_unlocks.terraformer_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Terraformador - Transforme o planeta!");
+    // Notificacao de desbloqueio + pulsar martelo
+    auto notify_unlock = [](const char* name) {
+        std::string sub = std::string(name) + " - Clique no martelo!";
+        show_unlock_popup("NOVO MODULO!", sub);
+        g_build_hammer_pulse = 5.0f;
+    };
+    if (!had_solar && g_unlocks.solar_unlocked) notify_unlock("Painel Solar");
+    if (!had_water && g_unlocks.water_extractor_unlocked) notify_unlock("Extrator de Agua");
+    if (!had_o2 && g_unlocks.o2_generator_unlocked) notify_unlock("Gerador de O2");
+    if (!had_greenhouse && g_unlocks.greenhouse_unlocked) notify_unlock("Estufa");
+    if (!had_co2 && g_unlocks.co2_factory_unlocked) notify_unlock("Fabrica de CO2");
+    if (!had_habitat && g_unlocks.habitat_unlocked) notify_unlock("Habitat");
+    if (!had_terraform && g_unlocks.terraformer_unlocked) notify_unlock("Terraformador");
+
+    // === NOTIFICACAO DE "VOCE JA PODE CONSTRUIR" (verifica a cada chamada, 1x por modulo) ===
+    {
+        const Block priority_modules[] = {
+            Block::OxygenGenerator, Block::SolarPanel, Block::EnergyGenerator,
+            Block::WaterExtractor, Block::Greenhouse, Block::Workshop,
+            Block::CO2Factory, Block::Habitat, Block::TerraformerBeacon
+        };
+        for (Block bt : priority_modules) {
+            if (!is_unlocked(bt)) continue;
+            if (g_notified_affordable.count((int)bt)) continue; // ja notificado
+            if (can_afford(get_module_cost(bt))) {
+                ModuleStats ms = get_module_stats(bt);
+                set_toast(std::string("Voce pode construir: ") + ms.name + "!", 3.0f);
+                g_build_hammer_pulse = 5.0f;
+                g_notified_affordable[(int)bt] = true;
+            }
+        }
+    }
 }
 
 static void update_item_drops(float dt) {
@@ -7470,6 +7637,148 @@ static void melt_ice_around(World& world, int cx, int cy, int radius) {
 
 static void update_shooting_stars(float dt, float day_phase);
 
+// ============= ATUALIZACAO DE MISSOES =============
+static void update_missions(float dt) {
+    // === Verificar conclusao da missao principal ativa ===
+    if (g_active_main_mission >= 0) {
+        Mission* m = find_mission(g_active_main_mission);
+        if (m && m->status == MissionStatus::Active) {
+            bool completed = true;
+
+            // Verificar modulo construido
+            if (m->target_module != Block::Air) {
+                if (count_modules_of_type(m->target_module) < m->target_count) {
+                    completed = false;
+                }
+            }
+
+            // Verificar recurso 1 coletado (usa inventario atual)
+            if (m->target_resource != Block::Air) {
+                if (g_inventory[(int)m->target_resource] < m->target_resource_amount) {
+                    completed = false;
+                }
+            }
+
+            // Verificar recurso 2 coletado
+            if (m->target_resource2 != Block::Air) {
+                if (g_inventory[(int)m->target_resource2] < m->target_resource2_amount) {
+                    completed = false;
+                }
+            }
+
+            if (completed) {
+                m->status = MissionStatus::Completed;
+
+                // Feedback visual
+                g_screen_flash_green = 0.30f;
+                g_unlock_popup_text = "Missao Completa!";
+                g_unlock_popup_subtitle = m->title;
+                g_unlock_popup_timer = 3.0f;
+
+                // Ativar proxima missao
+                if (m->next_mission_id >= 0) {
+                    Mission* next = find_mission(m->next_mission_id);
+                    if (next && next->status == MissionStatus::Locked) {
+                        next->status = MissionStatus::Active;
+                        g_active_main_mission = next->id;
+                        set_toast(next->title, 3.0f);
+                    }
+                } else {
+                    g_active_main_mission = -1;
+                }
+            }
+        }
+    }
+
+    // === Verificar emergencias ===
+    // Limpar emergencias resolvidas
+    g_active_emergencies.erase(
+        std::remove_if(g_active_emergencies.begin(), g_active_emergencies.end(),
+            [](int id) {
+                Mission* m = find_mission(id);
+                if (!m) return true;
+                // Emergencia resolvida quando o modulo foi construido
+                if (m->target_module != Block::Air && count_modules_of_type(m->target_module) > 0) {
+                    m->status = MissionStatus::Completed;
+                    return true;
+                }
+                return false;
+            }),
+        g_active_emergencies.end());
+
+    // Ativar novas emergencias se necessario
+    bool has_o2_gen = count_modules_of_type(Block::OxygenGenerator) > 0;
+    bool has_solar = count_modules_of_type(Block::SolarPanel) > 0;
+    bool has_water = count_modules_of_type(Block::WaterExtractor) > 0;
+
+    auto activate_emergency = [&](int id) {
+        Mission* m = find_mission(id);
+        if (!m) return;
+        if (m->status == MissionStatus::Completed) return;
+        // Nao ativar se ja esta ativa
+        for (int eid : g_active_emergencies) {
+            if (eid == id) return;
+        }
+        m->status = MissionStatus::Active;
+        g_active_emergencies.push_back(id);
+        g_screen_flash_red = 0.25f;
+        add_alert(m->title, 1.0f, 0.2f, 0.2f, 5.0f);
+    };
+
+    if (g_base_oxygen < 10.0f && !has_o2_gen) {
+        activate_emergency(100);
+    }
+    if (g_base_energy < 5.0f && !has_solar) {
+        activate_emergency(101);
+    }
+    if (g_base_water < 10.0f && !has_water) {
+        activate_emergency(102);
+    }
+}
+
+// === Sistema de alertas graduais por recurso ===
+static void check_resource_alert(float value, float max_value, ResourceAlertState& state,
+                                  const char* resource_name, const char* suggestion, float game_time) {
+    float pct = (max_value > 0.0f) ? (value / max_value) * 100.0f : 0.0f;
+    int level = 0;
+    if (pct < 10.0f) level = 3;       // Critico
+    else if (pct < 25.0f) level = 2;  // Alerta
+    else if (pct < 40.0f) level = 1;  // Atencao
+    
+    // Cooldowns por nivel (em segundos de game time)
+    float cooldowns[] = {0.0f, 60.0f, 30.0f, 15.0f};
+    
+    if (level > 0 && level > state.last_level) {
+        // Nivel subiu — alertar imediatamente
+        float since = game_time - state.last_alert_time;
+        if (since > cooldowns[level] || state.last_alert_time < 0.0f) {
+            if (level == 3) {
+                char buf[80]; snprintf(buf, sizeof(buf), "%s CRITICO!", resource_name);
+                add_alert(buf, 1.0f, 0.2f, 0.2f, 4.0f, cooldowns[level]);
+                if (suggestion[0]) set_toast(suggestion, 3.0f);
+                g_build_hammer_pulse = std::max(g_build_hammer_pulse, 5.0f);
+            } else if (level == 2) {
+                char buf[80]; snprintf(buf, sizeof(buf), "%s baixo (%.0f%%)", resource_name, pct);
+                add_alert(buf, 1.0f, 0.7f, 0.2f, 3.0f, cooldowns[level]);
+                g_build_hammer_pulse = std::max(g_build_hammer_pulse, 3.0f);
+            }
+            // Nivel 1 (Atencao): sem mensagem, so indicador visual nas barras
+            state.last_alert_time = game_time;
+        }
+    } else if (level > 0 && level == state.last_level) {
+        // Mesmo nivel — respeitar cooldown
+        float since = game_time - state.last_alert_time;
+        if (since > cooldowns[level] && level >= 3) {
+            char buf[80]; snprintf(buf, sizeof(buf), "%s CRITICO!", resource_name);
+            add_alert(buf, 1.0f, 0.2f, 0.2f, 4.0f, cooldowns[level]);
+            if (suggestion[0]) set_toast(suggestion, 3.0f);
+            g_build_hammer_pulse = std::max(g_build_hammer_pulse, 5.0f);
+            state.last_alert_time = game_time;
+        }
+    }
+    state.last_level = level;
+}
+
 static void update_modules(World& world, float dt) {
     g_day_time += dt;
 
@@ -7555,6 +7864,7 @@ static void update_modules(World& world, float dt) {
     }
     
     // Count ACTIVE modules (damaged modules don't produce)
+    // Producao acumulada considerando nivel de cada modulo
     int solar_count = 0;
     int energy_gen_count = 0;
     int water_count = 0;
@@ -7565,29 +7875,80 @@ static void update_modules(World& world, float dt) {
     int habitat_count = 0;
     int beacon_count = 0;
     
+    // Multiplicadores de producao/consumo acumulados por tipo
+    float solar_prod_mult = 0.0f;
+    float energy_gen_prod_mult = 0.0f;
+    float water_prod_mult = 0.0f;
+    float water_cons_mult = 0.0f;
+    float o2_prod_mult = 0.0f;
+    float o2_cons_mult = 0.0f;
+    float greenhouse_prod_mult = 0.0f;
+    float greenhouse_cons_mult = 0.0f;
+    float workshop_prod_mult = 0.0f;
+    float workshop_cons_mult = 0.0f;
+    float co2_prod_mult = 0.0f;
+    float co2_cons_mult = 0.0f;
+    float habitat_cons_mult = 0.0f;
+    float beacon_cons_mult = 0.0f;
+    
     for (const Module& m : g_modules) {
         // Skip damaged modules
         if (m.status == ModuleStatus::Damaged) continue;
         
+        float pm = get_production_multiplier(m.level);
+        float cm = get_consumption_multiplier(m.level);
+        
         switch (m.type) {
-            case Block::SolarPanel: solar_count++; break;
-            case Block::EnergyGenerator: energy_gen_count++; break;
-            case Block::WaterExtractor: water_count++; break;
-            case Block::OxygenGenerator: o2_count++; break;
-            case Block::Greenhouse: greenhouse_count++; break;
-            case Block::Workshop: workshop_count++; break;
-            case Block::CO2Factory: co2_factory_count++; break;
-            case Block::Habitat: habitat_count++; break;
-            case Block::TerraformerBeacon: beacon_count++; break;
+            case Block::SolarPanel:
+                solar_count++;
+                solar_prod_mult += pm;
+                break;
+            case Block::EnergyGenerator:
+                energy_gen_count++;
+                energy_gen_prod_mult += pm;
+                break;
+            case Block::WaterExtractor:
+                water_count++;
+                water_prod_mult += pm;
+                water_cons_mult += cm;
+                break;
+            case Block::OxygenGenerator:
+                o2_count++;
+                o2_prod_mult += pm;
+                o2_cons_mult += cm;
+                break;
+            case Block::Greenhouse:
+                greenhouse_count++;
+                greenhouse_prod_mult += pm;
+                greenhouse_cons_mult += cm;
+                break;
+            case Block::Workshop:
+                workshop_count++;
+                workshop_prod_mult += pm;
+                workshop_cons_mult += cm;
+                break;
+            case Block::CO2Factory:
+                co2_factory_count++;
+                co2_prod_mult += pm;
+                co2_cons_mult += cm;
+                break;
+            case Block::Habitat:
+                habitat_count++;
+                habitat_cons_mult += cm;
+                break;
+            case Block::TerraformerBeacon:
+                beacon_count++;
+                beacon_cons_mult += cm;
+                break;
             default: break;
         }
     }
 
     // ========== BASE CONSTANT CONSUMPTION ==========
-    // The base always consumes resources (per minute converted to per second)
-    float base_o2_consumption = 1.0f / 60.0f * dt;    // -1 O2/min
-    float base_energy_consumption = 2.0f / 60.0f * dt; // -2 Energy/min
-    float base_water_consumption = 1.0f / 60.0f * dt;  // -1 Water/min
+    // Consumo passivo reduzido para dar mais tempo ao jogador no inicio
+    float base_o2_consumption = 0.5f / 60.0f * dt;     // -0.5 O2/min (era -1)
+    float base_energy_consumption = 1.0f / 60.0f * dt;  // -1 Energy/min (era -2)
+    float base_water_consumption = 0.5f / 60.0f * dt;   // -0.5 Water/min (era -1)
     
     g_base_oxygen = std::max(0.0f, g_base_oxygen - base_o2_consumption);
     g_base_energy = std::max(0.0f, g_base_energy - base_energy_consumption);
@@ -7600,127 +7961,117 @@ static void update_modules(World& world, float dt) {
         g_base_integrity = std::max(0.0f, g_base_integrity - integrity_decay);
     }
 
-    // ========== SOLAR PANELS ==========
-    // Generate energy for the BASE (rate per minute: +3/panel)
+    // ========== SOLAR PANELS (com upgrade) ==========
+    // Generate energy for the BASE (rate per minute: +3/panel * level_mult)
     float solar_efficiency = 0.7f + 0.3f * clamp01(g_atmosphere / 50.0f);
-    float solar_rate = 3.0f / 60.0f;  // Per second
-    float energy_produced = (float)solar_count * solar_rate * daylight * solar_efficiency * dt;
+    float solar_rate = 3.0f / 60.0f;  // Per second base
+    float energy_produced = solar_prod_mult * solar_rate * daylight * solar_efficiency * dt;
     g_base_energy = std::clamp(g_base_energy + energy_produced, 0.0f, kBaseEnergyMax);
 
-    // ========== ENERGY GENERATORS ==========
-    // Main power source (+8 energy/min)
+    // ========== ENERGY GENERATORS (com upgrade) ==========
     if (energy_gen_count > 0) {
-        float gen_rate = 8.0f / 60.0f;  // Per second
-        float gen_produced = (float)energy_gen_count * gen_rate * dt;
+        float gen_rate = 8.0f / 60.0f;  // Per second base
+        float gen_produced = energy_gen_prod_mult * gen_rate * dt;
         g_base_energy = std::clamp(g_base_energy + gen_produced, 0.0f, kBaseEnergyMax);
     }
 
-    // ========== WATER EXTRACTORS ==========
-    // Extract water (+1.5/min, costs -0.8 energy/min)
+    // ========== WATER EXTRACTORS (com upgrade) ==========
     if (water_count > 0) {
-        float e_cost = (0.8f / 60.0f) * (float)water_count * dt;
-        float water_rate = 1.5f / 60.0f;  // Per second
+        float e_cost = (0.8f / 60.0f) * water_cons_mult * dt;
+        float water_rate = 1.5f / 60.0f;  // Per second base
         
         if (g_base_energy >= e_cost) {
             g_base_energy -= e_cost;
             float temp_bonus = clamp01((g_temperature + 60.0f) / 80.0f);
-            float water_produced = (float)water_count * water_rate * (0.5f + 0.5f * temp_bonus) * dt;
+            float water_produced = water_prod_mult * water_rate * (0.5f + 0.5f * temp_bonus) * dt;
             g_base_water = std::clamp(g_base_water + water_produced, 0.0f, kBaseWaterMax);
         } else {
-            add_alert("Purificador parado - Sem energia!", 1.0f, 0.5f, 0.2f);
+            add_alert("Purificador parado - Sem energia!", 1.0f, 0.5f, 0.2f, 3.0f, 30.0f);
         }
     }
 
-    // ========== OXYGEN GENERATORS ==========
-    // Produce O2 (+2/min, costs -1 energy/min)
+    // ========== OXYGEN GENERATORS (com upgrade) ==========
     if (o2_count > 0) {
-        float e_cost = (1.0f / 60.0f) * (float)o2_count * dt;
-        float o2_rate = 2.0f / 60.0f;  // Per second
+        float e_cost = (1.0f / 60.0f) * o2_cons_mult * dt;
+        float o2_rate = 2.0f / 60.0f;  // Per second base
         
         if (g_base_energy >= e_cost) {
             g_base_energy -= e_cost;
-            float o2_produced = (float)o2_count * o2_rate * dt;
+            float o2_produced = o2_prod_mult * o2_rate * dt;
             g_base_oxygen = std::clamp(g_base_oxygen + o2_produced, 0.0f, kBaseOxygenMax);
             g_atmosphere = std::clamp(g_atmosphere + o2_produced * 0.1f, 0.0f, 100.0f);
         } else {
-            add_alert("Gerador O2 parado - Sem energia!", 1.0f, 0.5f, 0.2f);
+            add_alert("Gerador O2 parado - Sem energia!", 1.0f, 0.5f, 0.2f, 3.0f, 30.0f);
         }
     }
 
-    // ========== GREENHOUSES ==========
-    // Produce food (+1/min, costs -0.5 energy/min, needs water)
+    // ========== GREENHOUSES (com upgrade) ==========
     if (greenhouse_count > 0) {
-        float e_cost = (0.5f / 60.0f) * (float)greenhouse_count * dt;
-        float w_cost = (0.3f / 60.0f) * (float)greenhouse_count * dt;
-        float food_rate = 1.0f / 60.0f;  // Per second
+        float e_cost = (0.5f / 60.0f) * greenhouse_cons_mult * dt;
+        float w_cost = (0.3f / 60.0f) * greenhouse_cons_mult * dt;
+        float food_rate = 1.0f / 60.0f;  // Per second base
         
         if (g_base_water <= 0.0f) {
-            add_alert("Estufa parada - Sem agua!", 0.2f, 0.6f, 1.0f);
+            add_alert("Estufa parada - Sem agua!", 0.2f, 0.6f, 1.0f, 3.0f, 30.0f);
         } else if (g_base_energy >= e_cost && g_base_water >= w_cost) {
             g_base_energy -= e_cost;
             g_base_water -= w_cost;
-            float food_produced = (float)greenhouse_count * food_rate * dt;
+            float food_produced = greenhouse_prod_mult * food_rate * dt;
             g_base_food = std::clamp(g_base_food + food_produced, 0.0f, kBaseFoodMax);
             g_base_oxygen = std::clamp(g_base_oxygen + food_produced * 0.2f, 0.0f, kBaseOxygenMax);
         } else {
-            add_alert("Estufa parada - Sem energia!", 1.0f, 0.5f, 0.2f);
+            add_alert("Estufa parada - Sem energia!", 1.0f, 0.5f, 0.2f, 3.0f, 30.0f);
         }
     }
 
-    // ========== WORKSHOP ==========
-    // Repairs base integrity (+2/min, costs -1.5 energy/min)
+    // ========== WORKSHOP (com upgrade) ==========
     if (workshop_count > 0) {
-        float e_cost = (1.5f / 60.0f) * (float)workshop_count * dt;
-        float repair_rate = 2.0f / 60.0f;  // Per second
-        float module_repair_rate = 5.0f / 60.0f;  // 5% health per minute per workshop
+        float e_cost = (1.5f / 60.0f) * workshop_cons_mult * dt;
+        float repair_rate = 2.0f / 60.0f;  // Per second base
+        float module_repair_rate = 5.0f / 60.0f;  // 5% health per minute base
         
         if (g_base_energy >= e_cost) {
             g_base_energy -= e_cost;
             
-            // Repair base integrity
-            float repair = (float)workshop_count * repair_rate * dt;
+            float repair = workshop_prod_mult * repair_rate * dt;
             g_base_integrity = std::clamp(g_base_integrity + repair, 0.0f, kBaseIntegrityMax);
             
-            // Repair damaged modules
             for (Module& m : g_modules) {
                 if (m.health < 100.0f) {
-                    m.health = std::min(100.0f, m.health + module_repair_rate * (float)workshop_count * dt);
+                    m.health = std::min(100.0f, m.health + module_repair_rate * workshop_prod_mult * dt);
                 }
             }
         } else {
-            add_alert("Oficina parada - Sem energia!", 1.0f, 0.5f, 0.2f);
+            add_alert("Oficina parada - Sem energia!", 1.0f, 0.5f, 0.2f, 3.0f, 30.0f);
         }
     }
 
-    // ========== CO2 FACTORIES ==========
-    // Release CO2 to warm the planet (costs -2 energy/min)
+    // ========== CO2 FACTORIES (com upgrade) ==========
     if (co2_factory_count > 0) {
-        float e_cost = (2.0f / 60.0f) * (float)co2_factory_count * dt;
+        float e_cost = (2.0f / 60.0f) * co2_cons_mult * dt;
         
         if (g_base_energy >= e_cost) {
             g_base_energy -= e_cost;
             
-            float co2_rate = 0.5f / 60.0f;  // Per second
-            float co2_produce = (float)co2_factory_count * co2_rate * dt;
+            float co2_rate = 0.5f / 60.0f;  // Per second base
+            float co2_produce = co2_prod_mult * co2_rate * dt;
             g_co2_level = std::clamp(g_co2_level + co2_produce, 0.0f, 100.0f);
             
-            float warming_rate = 0.2f * (float)co2_factory_count * (1.0f - g_temperature / 50.0f);
+            float warming_rate = 0.2f * co2_prod_mult * (1.0f - g_temperature / 50.0f);
             g_temperature = std::clamp(g_temperature + warming_rate * dt / 60.0f, -60.0f, 40.0f);
             
             g_atmosphere = std::clamp(g_atmosphere + co2_produce * 0.5f, 0.0f, 100.0f);
         } else {
-            add_alert("Fabrica CO2 parada - Sem energia!", 1.0f, 0.5f, 0.2f);
+            add_alert("Fabrica CO2 parada - Sem energia!", 1.0f, 0.5f, 0.2f, 3.0f, 30.0f);
         }
     }
 
-    // ========== HABITATS ==========
-    // Provide shelter (minimal consumption -0.3 energy/min)
+    // ========== HABITATS (com upgrade) ==========
     if (habitat_count > 0) {
-        float e_cost = (0.3f / 60.0f) * (float)habitat_count * dt;
+        float e_cost = (0.3f / 60.0f) * habitat_cons_mult * dt;
         if (g_base_energy >= e_cost) {
             g_base_energy -= e_cost;
-            // Small passive O2 recycling
-            g_base_oxygen = std::clamp(g_base_oxygen + 0.3f * (float)habitat_count * dt / 60.0f, 0.0f, kBaseOxygenMax);
+            g_base_oxygen = std::clamp(g_base_oxygen + 0.3f * habitat_cons_mult * dt / 60.0f, 0.0f, kBaseOxygenMax);
         }
     }
 
@@ -7742,7 +8093,7 @@ static void update_modules(World& world, float dt) {
                     melt_ice_around(world, m.x, m.y, 8);
                 }
             } else {
-                add_alert("Terraformador parado - Recursos!", 0.8f, 0.3f, 0.8f);
+                add_alert("Terraformador parado - Recursos!", 0.8f, 0.3f, 0.8f, 3.0f, 30.0f);
             }
         }
     }
@@ -7796,26 +8147,21 @@ static void update_modules(World& world, float dt) {
             }
         }
         
-        // Can't recharge if base O2 too low!
-        if (g_base_oxygen < 10.0f && g_player_oxygen < 50.0f) {
-            add_alert("Oxigenio da base muito baixo!", 1.0f, 0.3f, 0.3f);
-        }
+        // Can't recharge if base O2 too low! (alerta gradual cuida disso agora)
     }
 
-    // ========== FAILURE CONSEQUENCES ==========
-    
-    // Oxygen = 0 -> Can't recharge player
-    if (g_base_oxygen <= 0.0f) {
-        add_alert("O2 ZERADO - Nao pode recarregar!", 1.0f, 0.2f, 0.2f);
-    } else if (g_base_oxygen < 20.0f) {
-        add_alert("O2 BAIXO", 1.0f, 0.6f, 0.2f);
-    }
-    
-    // Energy = 0 -> Modules shut down
-    if (g_base_energy <= 0.0f) {
-        add_alert("ENERGIA CRITICA - Modulos desligados!", 1.0f, 0.8f, 0.2f);
-    } else if (g_base_energy < 20.0f) {
-        add_alert("Energia baixa", 1.0f, 0.8f, 0.4f);
+    // ========== ALERTAS GRADUAIS DE RECURSOS ==========
+    // Sugestoes inteligentes: se modulo ja existe, sugerir upgrade; se nao existe, sugerir construir
+    {
+        bool has_o2 = count_modules_of_type(Block::OxygenGenerator) > 0;
+        bool has_solar = count_modules_of_type(Block::SolarPanel) > 0;
+        bool has_water = count_modules_of_type(Block::WaterExtractor) > 0;
+        const char* o2_sug = has_o2 ? "Upgrade ou construa mais geradores!" : "Construa Gerador de O2!";
+        const char* en_sug = has_solar ? "Upgrade ou construa mais paineis!" : "Construa Painel Solar!";
+        const char* wa_sug = has_water ? "Upgrade ou construa mais extratores!" : "Construa Extrator de Agua!";
+        check_resource_alert(g_base_oxygen, kBaseOxygenMax, g_alert_o2, "Oxigenio", o2_sug, g_day_time);
+        check_resource_alert(g_base_energy, kBaseEnergyMax, g_alert_energy, "Energia", en_sug, g_day_time);
+        check_resource_alert(g_base_water, kBaseWaterMax, g_alert_water, "Agua", wa_sug, g_day_time);
     }
     
     // Check for damaged modules
@@ -7824,12 +8170,12 @@ static void update_modules(World& world, float dt) {
         if (m.status == ModuleStatus::Damaged) damaged_count++;
     }
     if (damaged_count > 0) {
-        add_alert("Modulos danificados: " + std::to_string(damaged_count) + " - Construa Oficina!", 1.0f, 0.5f, 0.2f);
+        add_alert("Modulos danificados: " + std::to_string(damaged_count), 1.0f, 0.5f, 0.2f, 3.0f, 45.0f);
     }
     
     // Integrity = 0 -> Base collapse (severe damage)
     if (g_base_integrity <= 0.0f) {
-        add_alert("BASE EM COLAPSO!", 1.0f, 0.0f, 0.0f);
+        add_alert("BASE EM COLAPSO!", 1.0f, 0.0f, 0.0f, 4.0f, 15.0f);
         // Leak resources rapidly
         g_base_oxygen = std::max(0.0f, g_base_oxygen - 5.0f * dt);
         g_base_water = std::max(0.0f, g_base_water - 3.0f * dt);
@@ -7838,7 +8184,7 @@ static void update_modules(World& world, float dt) {
             g_player.hp = std::max(0, g_player.hp - 1);
         }
     } else if (g_base_integrity < 30.0f) {
-        add_alert("Integridade critica - Construa Oficina!", 1.0f, 0.5f, 0.3f);
+        add_alert("Integridade critica!", 1.0f, 0.5f, 0.3f, 3.0f, 30.0f);
     }
 
     // ========== NATURAL PROCESSES ==========
@@ -7933,8 +8279,266 @@ static void render_cube_outline_3d(float x, float y, float z, float size, float 
     glEnd();
 }
 
+// ============= MODELOS 3D PARA MODULOS =============
+// Cada modulo tem um modelo unico composto de multiplos cubos.
+// Chamada em vez de render_cube_3d quando o bloco e um modulo.
+static void render_cube_3d(float x, float y, float z, float size, float r, float g, float b, float a, bool outline);
+
+static void render_module_model(float x, float base_y, float z, Block type, float light_r, float light_g, float light_b) {
+    // Funcao auxiliar para desenhar um box com face shading
+    auto box = [&](float cx, float cy, float cz, float sx, float sy, float sz, float r, float g, float b) {
+        float hx = sx * 0.5f, hy = sy * 0.5f, hz = sz * 0.5f;
+        // Top face (brightest)
+        glColor4f(r * light_r, g * light_g, b * light_b, 1.0f);
+        glVertex3f(cx - hx, cy + hy, cz - hz); glVertex3f(cx + hx, cy + hy, cz - hz);
+        glVertex3f(cx + hx, cy + hy, cz + hz); glVertex3f(cx - hx, cy + hy, cz + hz);
+        // Bottom face (darkest)
+        glColor4f(r * light_r * 0.45f, g * light_g * 0.45f, b * light_b * 0.45f, 1.0f);
+        glVertex3f(cx - hx, cy - hy, cz + hz); glVertex3f(cx + hx, cy - hy, cz + hz);
+        glVertex3f(cx + hx, cy - hy, cz - hz); glVertex3f(cx - hx, cy - hy, cz - hz);
+        // Front face
+        glColor4f(r * light_r * 0.78f, g * light_g * 0.78f, b * light_b * 0.78f, 1.0f);
+        glVertex3f(cx - hx, cy - hy, cz + hz); glVertex3f(cx + hx, cy - hy, cz + hz);
+        glVertex3f(cx + hx, cy + hy, cz + hz); glVertex3f(cx - hx, cy + hy, cz + hz);
+        // Back face
+        glColor4f(r * light_r * 0.62f, g * light_g * 0.62f, b * light_b * 0.62f, 1.0f);
+        glVertex3f(cx + hx, cy - hy, cz - hz); glVertex3f(cx - hx, cy - hy, cz - hz);
+        glVertex3f(cx - hx, cy + hy, cz - hz); glVertex3f(cx + hx, cy + hy, cz - hz);
+        // Right face
+        glColor4f(r * light_r * 0.70f, g * light_g * 0.70f, b * light_b * 0.70f, 1.0f);
+        glVertex3f(cx + hx, cy - hy, cz + hz); glVertex3f(cx + hx, cy - hy, cz - hz);
+        glVertex3f(cx + hx, cy + hy, cz - hz); glVertex3f(cx + hx, cy + hy, cz + hz);
+        // Left face
+        glColor4f(r * light_r * 0.70f, g * light_g * 0.70f, b * light_b * 0.70f, 1.0f);
+        glVertex3f(cx - hx, cy - hy, cz - hz); glVertex3f(cx - hx, cy - hy, cz + hz);
+        glVertex3f(cx - hx, cy + hy, cz + hz); glVertex3f(cx - hx, cy + hy, cz - hz);
+    };
+    
+    glDisable(GL_TEXTURE_2D);
+    glBegin(GL_QUADS);
+    
+    switch (type) {
+    case Block::SolarPanel: {
+        // Base metalica (pilar fino)
+        box(x, base_y + 0.20f, z, 0.20f, 0.40f, 0.20f, 0.50f, 0.50f, 0.55f);
+        // Painel solar (largo, fino, inclinado — representado como plano)
+        box(x, base_y + 0.50f, z, 0.90f, 0.06f, 0.70f, 0.10f, 0.20f, 0.55f);
+        // Celulas solares (linhas no painel)
+        box(x - 0.20f, base_y + 0.54f, z, 0.18f, 0.02f, 0.60f, 0.15f, 0.30f, 0.70f);
+        box(x + 0.20f, base_y + 0.54f, z, 0.18f, 0.02f, 0.60f, 0.15f, 0.30f, 0.70f);
+        break;
+    }
+    case Block::EnergyGenerator: {
+        // Base grossa (gerador)
+        box(x, base_y + 0.25f, z, 0.70f, 0.50f, 0.60f, 0.60f, 0.55f, 0.20f);
+        // Chamine / saida
+        box(x + 0.15f, base_y + 0.60f, z, 0.20f, 0.30f, 0.20f, 0.40f, 0.40f, 0.42f);
+        // Faixa de alerta amarela
+        box(x, base_y + 0.15f, z, 0.72f, 0.06f, 0.62f, 0.95f, 0.80f, 0.15f);
+        // Porta / painel frontal
+        box(x, base_y + 0.30f, z + 0.31f, 0.25f, 0.25f, 0.02f, 0.30f, 0.30f, 0.32f);
+        break;
+    }
+    case Block::OxygenGenerator: {
+        // Tanque cilindrico (caixa arredondada)
+        box(x, base_y + 0.30f, z, 0.50f, 0.60f, 0.50f, 0.70f, 0.72f, 0.75f);
+        // Topo abobadado
+        box(x, base_y + 0.65f, z, 0.35f, 0.12f, 0.35f, 0.75f, 0.78f, 0.80f);
+        // Saida de O2 (tubo verde no topo)
+        box(x, base_y + 0.78f, z, 0.12f, 0.14f, 0.12f, 0.20f, 0.90f, 0.35f);
+        // Painel de controle
+        box(x, base_y + 0.25f, z + 0.26f, 0.20f, 0.15f, 0.02f, 0.15f, 0.60f, 0.20f);
+        // Faixa verde (indicador)
+        box(x, base_y + 0.05f, z, 0.52f, 0.04f, 0.52f, 0.18f, 0.85f, 0.40f);
+        break;
+    }
+    case Block::WaterExtractor: {
+        // Base da bomba
+        box(x, base_y + 0.20f, z, 0.60f, 0.40f, 0.50f, 0.35f, 0.45f, 0.60f);
+        // Tubo vertical
+        box(x - 0.20f, base_y + 0.50f, z, 0.12f, 0.35f, 0.12f, 0.45f, 0.55f, 0.70f);
+        // Tanque de agua
+        box(x + 0.15f, base_y + 0.45f, z, 0.30f, 0.25f, 0.30f, 0.20f, 0.50f, 0.85f);
+        // Tampa
+        box(x + 0.15f, base_y + 0.60f, z, 0.32f, 0.04f, 0.32f, 0.30f, 0.55f, 0.70f);
+        break;
+    }
+    case Block::Greenhouse: {
+        // Base de terra
+        box(x, base_y + 0.08f, z, 0.80f, 0.16f, 0.70f, 0.35f, 0.25f, 0.15f);
+        // Estrutura de vidro (estufa transparente)
+        box(x, base_y + 0.35f, z, 0.75f, 0.40f, 0.65f, 0.50f, 0.80f, 0.50f);
+        // Teto curvo (representado como barra)
+        box(x, base_y + 0.58f, z, 0.70f, 0.06f, 0.60f, 0.55f, 0.85f, 0.55f);
+        // Plantas verdes dentro
+        box(x - 0.15f, base_y + 0.20f, z, 0.15f, 0.18f, 0.15f, 0.25f, 0.75f, 0.20f);
+        box(x + 0.10f, base_y + 0.22f, z + 0.10f, 0.12f, 0.22f, 0.12f, 0.30f, 0.85f, 0.25f);
+        break;
+    }
+    case Block::Workshop: {
+        // Base robusta
+        box(x, base_y + 0.25f, z, 0.75f, 0.50f, 0.65f, 0.50f, 0.35f, 0.22f);
+        // Teto / cobertura
+        box(x, base_y + 0.55f, z, 0.80f, 0.08f, 0.70f, 0.45f, 0.32f, 0.20f);
+        // Bigorna / mesa de trabalho
+        box(x + 0.10f, base_y + 0.35f, z + 0.25f, 0.22f, 0.15f, 0.15f, 0.40f, 0.40f, 0.45f);
+        // Ferramentas (vertical)
+        box(x - 0.25f, base_y + 0.40f, z - 0.20f, 0.06f, 0.30f, 0.06f, 0.60f, 0.55f, 0.50f);
+        break;
+    }
+    case Block::CO2Factory: {
+        // Base industrial
+        box(x, base_y + 0.20f, z, 0.65f, 0.40f, 0.55f, 0.55f, 0.40f, 0.25f);
+        // Chamine 1 (alta)
+        box(x - 0.18f, base_y + 0.55f, z - 0.10f, 0.14f, 0.50f, 0.14f, 0.45f, 0.35f, 0.28f);
+        // Chamine 2 (mais curta)
+        box(x + 0.15f, base_y + 0.45f, z + 0.05f, 0.12f, 0.35f, 0.12f, 0.50f, 0.38f, 0.25f);
+        // Fumaca (topo da chamine — bloco translucido)
+        box(x - 0.18f, base_y + 0.85f, z - 0.10f, 0.18f, 0.10f, 0.18f, 0.70f, 0.65f, 0.60f);
+        // Tubulacao
+        box(x, base_y + 0.30f, z + 0.28f, 0.45f, 0.08f, 0.08f, 0.40f, 0.35f, 0.30f);
+        break;
+    }
+    case Block::Habitat: {
+        // Base (fundacao)
+        box(x, base_y + 0.10f, z, 0.85f, 0.20f, 0.80f, 0.80f, 0.80f, 0.85f);
+        // Cupula / corpo principal
+        box(x, base_y + 0.40f, z, 0.70f, 0.40f, 0.65f, 0.85f, 0.85f, 0.90f);
+        // Topo arredondado
+        box(x, base_y + 0.65f, z, 0.50f, 0.12f, 0.45f, 0.88f, 0.88f, 0.92f);
+        // Janela frontal (azul)
+        box(x, base_y + 0.40f, z + 0.33f, 0.25f, 0.20f, 0.02f, 0.20f, 0.45f, 0.80f);
+        // Porta (escura)
+        box(x + 0.30f, base_y + 0.25f, z, 0.06f, 0.30f, 0.20f, 0.30f, 0.30f, 0.35f);
+        break;
+    }
+    case Block::TerraformerBeacon: {
+        // Base hexagonal (quad approximation)
+        box(x, base_y + 0.12f, z, 0.55f, 0.24f, 0.55f, 0.45f, 0.25f, 0.55f);
+        // Coluna central
+        box(x, base_y + 0.45f, z, 0.18f, 0.50f, 0.18f, 0.55f, 0.30f, 0.65f);
+        // Anel de energia (no meio)
+        box(x, base_y + 0.50f, z, 0.40f, 0.06f, 0.40f, 0.80f, 0.25f, 0.90f);
+        // Cristal no topo (brilhante)
+        float glow = 0.7f + 0.3f * std::sin(g_day_time * 4.0f);
+        box(x, base_y + 0.78f, z, 0.12f, 0.18f, 0.12f, 0.90f * glow, 0.40f * glow, 1.0f * glow);
+        break;
+    }
+    default:
+        // Fallback: cubo simples
+        box(x, base_y + 0.5f, z, 1.0f, 1.0f, 1.0f, light_r, light_g, light_b);
+        break;
+    }
+    
+    glEnd();
+}
+
+// ============= ICONES 2D PARA MODULOS (HUD/Menu) =============
+static void draw_module_icon(float cx, float cy, float size, Block type) {
+    // Desenha icone simplificado do modulo usando GL_QUADS
+    auto quad = [](float x, float y, float w, float h, float r, float g, float b, float a = 1.0f) {
+        render_quad(x, y, w, h, r, g, b, a);
+    };
+    
+    float s = size; // tamanho total do icone
+    float x0 = cx - s * 0.5f;
+    float y0 = cy - s * 0.5f;
+    
+    switch (type) {
+    case Block::SolarPanel:
+        // Pilar
+        quad(x0 + s * 0.45f, y0 + s * 0.50f, s * 0.10f, s * 0.30f, 0.50f, 0.50f, 0.55f);
+        // Painel
+        quad(x0 + s * 0.10f, y0 + s * 0.15f, s * 0.80f, s * 0.30f, 0.10f, 0.22f, 0.55f);
+        // Celulas
+        quad(x0 + s * 0.18f, y0 + s * 0.22f, s * 0.25f, s * 0.16f, 0.15f, 0.32f, 0.70f);
+        quad(x0 + s * 0.55f, y0 + s * 0.22f, s * 0.25f, s * 0.16f, 0.15f, 0.32f, 0.70f);
+        break;
+    case Block::EnergyGenerator:
+        // Corpo
+        quad(x0 + s * 0.12f, y0 + s * 0.30f, s * 0.75f, s * 0.50f, 0.60f, 0.55f, 0.22f);
+        // Chamine
+        quad(x0 + s * 0.55f, y0 + s * 0.10f, s * 0.18f, s * 0.25f, 0.42f, 0.42f, 0.45f);
+        // Faixa amarela
+        quad(x0 + s * 0.12f, y0 + s * 0.70f, s * 0.75f, s * 0.06f, 0.95f, 0.80f, 0.15f);
+        break;
+    case Block::OxygenGenerator:
+        // Tanque
+        quad(x0 + s * 0.20f, y0 + s * 0.22f, s * 0.60f, s * 0.55f, 0.70f, 0.72f, 0.75f);
+        // Topo
+        quad(x0 + s * 0.28f, y0 + s * 0.12f, s * 0.44f, s * 0.14f, 0.75f, 0.78f, 0.80f);
+        // Saida O2 (verde)
+        quad(x0 + s * 0.40f, y0 + s * 0.05f, s * 0.20f, s * 0.12f, 0.20f, 0.90f, 0.35f);
+        // Faixa verde
+        quad(x0 + s * 0.20f, y0 + s * 0.72f, s * 0.60f, s * 0.05f, 0.18f, 0.85f, 0.40f);
+        break;
+    case Block::WaterExtractor:
+        // Base
+        quad(x0 + s * 0.15f, y0 + s * 0.40f, s * 0.70f, s * 0.40f, 0.35f, 0.48f, 0.62f);
+        // Tubo vertical
+        quad(x0 + s * 0.20f, y0 + s * 0.15f, s * 0.12f, s * 0.30f, 0.45f, 0.55f, 0.72f);
+        // Tanque de agua
+        quad(x0 + s * 0.50f, y0 + s * 0.22f, s * 0.28f, s * 0.25f, 0.20f, 0.50f, 0.85f);
+        break;
+    case Block::Greenhouse:
+        // Base terra
+        quad(x0 + s * 0.08f, y0 + s * 0.70f, s * 0.84f, s * 0.16f, 0.40f, 0.28f, 0.15f);
+        // Corpo transparente
+        quad(x0 + s * 0.12f, y0 + s * 0.25f, s * 0.76f, s * 0.48f, 0.45f, 0.78f, 0.48f);
+        // Teto
+        quad(x0 + s * 0.15f, y0 + s * 0.18f, s * 0.70f, s * 0.10f, 0.55f, 0.85f, 0.55f);
+        // Plantas
+        quad(x0 + s * 0.25f, y0 + s * 0.48f, s * 0.14f, s * 0.20f, 0.25f, 0.75f, 0.22f);
+        quad(x0 + s * 0.55f, y0 + s * 0.45f, s * 0.12f, s * 0.23f, 0.30f, 0.82f, 0.28f);
+        break;
+    case Block::Workshop:
+        // Corpo
+        quad(x0 + s * 0.10f, y0 + s * 0.28f, s * 0.80f, s * 0.50f, 0.52f, 0.38f, 0.24f);
+        // Teto
+        quad(x0 + s * 0.06f, y0 + s * 0.20f, s * 0.88f, s * 0.10f, 0.46f, 0.34f, 0.22f);
+        // Bigorna
+        quad(x0 + s * 0.50f, y0 + s * 0.45f, s * 0.20f, s * 0.15f, 0.42f, 0.42f, 0.48f);
+        // Ferramenta
+        quad(x0 + s * 0.22f, y0 + s * 0.30f, s * 0.06f, s * 0.35f, 0.62f, 0.58f, 0.52f);
+        break;
+    case Block::CO2Factory:
+        // Base
+        quad(x0 + s * 0.12f, y0 + s * 0.38f, s * 0.76f, s * 0.42f, 0.55f, 0.42f, 0.28f);
+        // Chamine 1
+        quad(x0 + s * 0.22f, y0 + s * 0.08f, s * 0.14f, s * 0.38f, 0.48f, 0.38f, 0.30f);
+        // Chamine 2
+        quad(x0 + s * 0.58f, y0 + s * 0.18f, s * 0.12f, s * 0.25f, 0.52f, 0.40f, 0.28f);
+        // Fumaca
+        quad(x0 + s * 0.18f, y0 + s * 0.02f, s * 0.22f, s * 0.10f, 0.70f, 0.65f, 0.60f, 0.6f);
+        break;
+    case Block::Habitat:
+        // Fundacao
+        quad(x0 + s * 0.06f, y0 + s * 0.68f, s * 0.88f, s * 0.18f, 0.82f, 0.82f, 0.87f);
+        // Corpo
+        quad(x0 + s * 0.12f, y0 + s * 0.28f, s * 0.76f, s * 0.42f, 0.86f, 0.86f, 0.92f);
+        // Topo
+        quad(x0 + s * 0.22f, y0 + s * 0.18f, s * 0.56f, s * 0.14f, 0.88f, 0.88f, 0.94f);
+        // Janela
+        quad(x0 + s * 0.35f, y0 + s * 0.38f, s * 0.30f, s * 0.18f, 0.22f, 0.48f, 0.82f);
+        break;
+    case Block::TerraformerBeacon:
+        // Base
+        quad(x0 + s * 0.18f, y0 + s * 0.65f, s * 0.64f, s * 0.22f, 0.48f, 0.28f, 0.58f);
+        // Coluna
+        quad(x0 + s * 0.38f, y0 + s * 0.20f, s * 0.24f, s * 0.50f, 0.58f, 0.32f, 0.68f);
+        // Anel
+        quad(x0 + s * 0.25f, y0 + s * 0.40f, s * 0.50f, s * 0.08f, 0.82f, 0.28f, 0.92f);
+        // Cristal no topo
+        quad(x0 + s * 0.40f, y0 + s * 0.10f, s * 0.20f, s * 0.15f, 0.92f, 0.45f, 1.0f);
+        break;
+    default:
+        quad(x0 + s * 0.1f, y0 + s * 0.1f, s * 0.8f, s * 0.8f, 0.5f, 0.5f, 0.5f);
+        break;
+    }
+}
+
 // Renderizar um cubo no espaco 3D com iluminacao simples (Minicraft style)
-static void render_cube_3d(float x, float y, float z, float size, float r, float g, float b, float a = 1.0f, bool outline = false) {
+static void render_cube_3d(float x, float y, float z, float size, float r, float g, float b, float a, bool outline) {
     float half = size * 0.5f;
     
     // Cores com sombreamento por face (iluminacao fake - Minicraft tem 3 niveis)
@@ -8653,7 +9257,7 @@ static SkyPalette compute_sky_palette(float day_phase, float atmos_factor) {
 static void render_sky_gradient_dome(float cam_x, float cam_z, const SkyPalette& p) {
     constexpr int kRings = 18;
     constexpr int kSegs = 64;
-    constexpr float kRadius = 1850.0f;
+    constexpr float kRadius = 6000.0f;
     constexpr float kBaseY = -120.0f;
 
     glDisable(GL_TEXTURE_2D);
@@ -8955,13 +9559,63 @@ static void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_ph
         planet_az += (sun_dir.x >= 0.0f) ? -0.95f : 0.95f;
         planet_pos = body_from_spherical(planet_az, planet_el, g_sky_cfg.planet_distance, g_sky_cfg.planet_parallax);
     }
-    render_lit_sphere(planet_pos, g_sky_cfg.planet_radius, sun_dir, g_camera.position,
-                      0.20f, 0.28f, 0.42f, 0.98f,
-                      0.22f, 0.90f, 0.18f,
-                      0.010f, 0.22f, 20, 28);
+    // Planeta gasoso principal (estilo Jupiter): faixas horizontais com cores variadas
+    {
+        Vec3 ldir = vec3_normalize(sun_dir);
+        float pr = g_sky_cfg.planet_radius;
+        int lat_seg = 28;
+        int lon_seg = 36;
+        for (int lat = 0; lat < lat_seg; ++lat) {
+            float v0 = -0.5f + (float)lat / (float)lat_seg;
+            float v1 = -0.5f + (float)(lat + 1) / (float)lat_seg;
+            float p0 = v0 * kPi;
+            float p1 = v1 * kPi;
+            float y0 = std::sin(p0);
+            float y1 = std::sin(p1);
+            float r0 = std::cos(p0);
+            float r1 = std::cos(p1);
+            
+            // Faixas de gas: cor varia por latitude
+            float band_t = v0 * 2.0f + 0.5f; // 0..1 de polo a polo
+            float band_wave = std::sin(band_t * 14.0f) * 0.5f + 0.5f;
+            float band_wave2 = std::sin(band_t * 7.3f + 1.2f) * 0.5f + 0.5f;
+            // Cores base do gas: tons de laranja, marrom, bege, caramelo
+            float br = lerp(0.70f, 0.88f, band_wave) * lerp(0.85f, 1.0f, band_wave2);
+            float bg = lerp(0.38f, 0.58f, band_wave) * lerp(0.80f, 1.0f, band_wave2);
+            float bb = lerp(0.18f, 0.35f, band_wave * 0.6f);
+            
+            glBegin(GL_QUAD_STRIP);
+            for (int lon = 0; lon <= lon_seg; ++lon) {
+                float u = (float)lon / (float)lon_seg * 2.0f * kPi;
+                float cu = std::cos(u);
+                float su = std::sin(u);
+                
+                auto emit_gas = [&](float rr, float yy) {
+                    Vec3 n = vec3_normalize({cu * rr, yy, su * rr});
+                    Vec3 p = vec3_add(planet_pos, vec3_scale(n, pr));
+                    float ndl = std::max(0.0f, vec3_dot(n, ldir));
+                    // Turbulencia no gas
+                    float turb = perlin(p.x * 0.008f + 200.0f, p.z * 0.008f + 300.0f) * 0.15f;
+                    float storm = perlin(p.x * 0.025f + 500.0f, p.z * 0.020f + 700.0f);
+                    float storm_spot = smoothstep01(0.72f, 0.88f, storm) * 0.25f;
+                    float lit = std::max(0.0f, 0.18f + ndl * 0.82f + turb);
+                    float cr = clamp01((br + turb - storm_spot * 0.3f) * lit);
+                    float cg = clamp01((bg + turb * 0.5f - storm_spot * 0.15f) * lit);
+                    float cb = clamp01((bb + storm_spot * 0.2f) * lit);
+                    glColor4f(cr, cg, cb, 0.98f);
+                    glVertex3f(p.x, p.y, p.z);
+                };
+                emit_gas(r1, y1);
+                emit_gas(r0, y0);
+            }
+            glEnd();
+        }
+    }
+    // Brilho atmosferico do planeta gasoso
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    render_billboard_disc(planet_pos, g_sky_cfg.planet_radius * 1.45f, 0.46f, 0.60f, 0.90f, night_alpha * 0.16f, 34);
+    render_billboard_disc(planet_pos, g_sky_cfg.planet_radius * 1.35f, 0.90f, 0.60f, 0.30f, night_alpha * 0.12f, 34);
+    render_billboard_disc(planet_pos, g_sky_cfg.planet_radius * 1.65f, 0.80f, 0.50f, 0.25f, night_alpha * 0.06f, 34);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     float moon_phase = sky_days * std::max(0.0f, g_sky_cfg.moon_orbit_speed) * 0.08f;
@@ -8991,15 +9645,17 @@ static void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_ph
     avoid_sun_cross(moon1_pos, 0.84f, (sun_dir.x >= 0.0f) ? -0.65f : 0.65f);
     avoid_sun_cross(moon2_pos, 0.84f, (sun_dir.x >= 0.0f) ? 0.75f : -0.75f);
 
-    float moon_alpha = 0.35f + night_alpha * 0.65f;
+    float moon_alpha = 0.45f + night_alpha * 0.55f;
+    // Lua 1: avermelhada/ferrosa (tipo Marte) — crateras visíveis
     render_lit_sphere(moon1_pos, g_sky_cfg.moon_radius, sun_dir, g_camera.position,
-                      0.64f, 0.58f, 0.54f, moon_alpha,
-                      0.12f, 0.95f, 0.10f,
-                      0.030f, 0.30f, 16, 22);
+                      0.78f, 0.45f, 0.32f, moon_alpha,
+                      0.15f, 0.90f, 0.08f,
+                      0.040f, 0.35f, 18, 24);
+    // Lua 2: azulada/gelada (tipo Europa) — suave e brilhante
     render_lit_sphere(moon2_pos, g_sky_cfg.moon2_radius, sun_dir, g_camera.position,
-                      0.58f, 0.68f, 0.82f, moon_alpha * 0.92f,
-                      0.12f, 0.95f, 0.14f,
-                      0.045f, 0.24f, 14, 20);
+                      0.55f, 0.72f, 0.92f, moon_alpha * 0.95f,
+                      0.18f, 0.88f, 0.22f,
+                      0.055f, 0.20f, 16, 22);
 
     float eclipse_cycle = 0.5f + 0.5f * std::sin((g_day_time / (kDayLength * g_sky_cfg.eclipse_frequency_days)) * 2.0f * kPi);
     float sun_align = vec3_dot(vec3_normalize(vec3_sub(moon1_pos, camera_ref)), sun_dir);
@@ -9441,7 +10097,7 @@ static void render_world(HDC hdc, int win_w, int win_h) {
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     float aspect = (float)win_w / (float)win_h;
-    apply_perspective(74.0f, aspect, 0.1f, 2200.0f);
+    apply_perspective(74.0f, aspect, 0.1f, 10000.0f);
     
     // Atualizar camera (target + colisao) para o frame atual
     update_camera_for_frame();
@@ -9473,10 +10129,15 @@ static void render_world(HDC hdc, int win_w, int win_h) {
     float rpy = get_player_render_y();
     int player_tile_x = world_to_tile(rpos.x);
     int player_tile_z = world_to_tile(rpos.y);  // Y do 2D = Z no 3D
-    int view_radius = (int)std::clamp(g_camera.distance * 3.8f + 55.0f, 110.0f, 200.0f);
-    int wall_radius = std::clamp(view_radius - 45, 80, view_radius);
-    int obj_radius = std::clamp(view_radius - 30, 90, view_radius);
+    // LOD: full detail ate lod1, half detail ate lod2, quarter detail ate view_radius
+    int view_radius = (int)std::clamp(g_camera.distance * 6.0f + 100.0f, 180.0f, 1200.0f);
+    int lod1_radius = std::min(view_radius, 250);   // full detail
+    int lod2_radius = std::min(view_radius, 500);   // skip every other tile
+    int wall_radius = std::clamp(view_radius - 4, 160, view_radius);
+    int obj_radius = std::clamp(view_radius - 40, 120, view_radius);
     int view_radius2 = view_radius * view_radius;
+    int lod1_radius2 = lod1_radius * lod1_radius;
+    int lod2_radius2 = lod2_radius * lod2_radius;
     int wall_radius2 = wall_radius * wall_radius;
     int obj_radius2 = obj_radius * obj_radius;
 
@@ -9533,6 +10194,15 @@ static void render_world(HDC hdc, int win_w, int win_h) {
 
     // === RENDERIZACAO 3D DO MUNDO ===
     
+    // Frustum culling: calcular direcao forward da camera para descartar tiles atras
+    float cam_fwd_x = g_camera.target.x - g_camera.position.x;
+    float cam_fwd_z = g_camera.target.z - g_camera.position.z;
+    float cam_fwd_len = std::sqrt(cam_fwd_x * cam_fwd_x + cam_fwd_z * cam_fwd_z);
+    if (cam_fwd_len > 0.01f) { cam_fwd_x /= cam_fwd_len; cam_fwd_z /= cam_fwd_len; }
+    else { cam_fwd_x = 0.0f; cam_fwd_z = 1.0f; }
+    // Cone de visao: cos(FOV/2 + margem) — tiles fora desse cone sao descartados
+    constexpr float kFrustumCosHalf = -0.30f; // ~107 graus = generoso para nao ter pop-in
+    
     int start_x = std::max(0, player_tile_x - view_radius);
     int end_x = std::min(g_world->w - 1, player_tile_x + view_radius);
     int start_z = std::max(0, player_tile_z - view_radius);
@@ -9560,6 +10230,26 @@ static void render_world(HDC hdc, int win_w, int win_h) {
                 int ddz = tz - player_tile_z;
                 int dist2 = ddx * ddx + ddz * ddz;
                 if (dist2 > view_radius2) continue; // culling circular
+                
+                // Frustum culling para tiles distantes (so LOD1+)
+                if (dist2 > lod1_radius2) {
+                    float dx_f = (float)ddx;
+                    float dz_f = (float)ddz;
+                    float d_len = std::sqrt((float)dist2);
+                    float dot = (dx_f * cam_fwd_x + dz_f * cam_fwd_z) / d_len;
+                    if (dot < kFrustumCosHalf) continue; // atras da camera
+                }
+                
+                // LOD: pular tiles na distancia para manter performance
+                int lod_step = 1;
+                if (dist2 > lod2_radius2) {
+                    lod_step = 4;
+                    if ((tx & 3) != 0 || (tz & 3) != 0) continue;
+                } else if (dist2 > lod1_radius2) {
+                    lod_step = 2;
+                    if ((tx & 1) != 0 || (tz & 1) != 0) continue;
+                }
+                float tile_scale = (float)lod_step;
 
                 float base_y = (float)g_world->height_at(tx, tz) * kHeightScale;
 
@@ -9587,39 +10277,41 @@ static void render_world(HDC hdc, int win_w, int win_h) {
                     }
                     a *= camera_occluder_alpha_for_tile(tx, tz);
 
-                    // Edge blending entre terrenos adjacentes (transicao visual suave).
-                    float neigh_r = 0.0f, neigh_g = 0.0f, neigh_b = 0.0f;
-                    int neigh_count = 0;
-                    int diff_count = 0;
-                    const int nx[4] = {1, -1, 0, 0};
-                    const int nz[4] = {0, 0, 1, -1};
-                    for (int ni = 0; ni < 4; ++ni) {
-                        int sx = tx + nx[ni];
-                        int sz = tz + nz[ni];
-                        if (!g_world->in_bounds(sx, sz)) continue;
-                        Block sb = surface_block_at(*g_world, sx, sz);
-                        BlockTex sbtex = block_tex(sb);
-                        float sr = 1.0f, sg = 1.0f, sbb = 1.0f;
-                        if (sbtex.uses_tint || sbtex.transparent) {
-                            float cr, cg, cb, ca;
-                            block_color(sb, sz, g_world->h, cr, cg, cb, ca);
-                            if (sbtex.uses_tint) { sr = cr; sg = cg; sbb = cb; }
+                    // Edge blending entre terrenos adjacentes (transicao visual suave) — so no LOD0.
+                    if (lod_step == 1) {
+                        float neigh_r = 0.0f, neigh_g = 0.0f, neigh_b = 0.0f;
+                        int neigh_count = 0;
+                        int diff_count = 0;
+                        const int nx[4] = {1, -1, 0, 0};
+                        const int nz[4] = {0, 0, 1, -1};
+                        for (int ni = 0; ni < 4; ++ni) {
+                            int sx = tx + nx[ni];
+                            int sz = tz + nz[ni];
+                            if (!g_world->in_bounds(sx, sz)) continue;
+                            Block sb = surface_block_at(*g_world, sx, sz);
+                            BlockTex sbtex = block_tex(sb);
+                            float sr = 1.0f, sg = 1.0f, sbb = 1.0f;
+                            if (sbtex.uses_tint || sbtex.transparent) {
+                                float cr, cg, cb, ca;
+                                block_color(sb, sz, g_world->h, cr, cg, cb, ca);
+                                if (sbtex.uses_tint) { sr = cr; sg = cg; sbb = cb; }
+                            }
+                            neigh_r += sr;
+                            neigh_g += sg;
+                            neigh_b += sbb;
+                            neigh_count++;
+                            if (sb != surface) diff_count++;
                         }
-                        neigh_r += sr;
-                        neigh_g += sg;
-                        neigh_b += sbb;
-                        neigh_count++;
-                        if (sb != surface) diff_count++;
-                    }
-                    if (neigh_count > 0 && diff_count > 0) {
-                        float inv = 1.0f / (float)neigh_count;
-                        neigh_r *= inv;
-                        neigh_g *= inv;
-                        neigh_b *= inv;
-                        float edge_blend = ((float)diff_count / 4.0f) * 0.34f;
-                        tint_r = lerp(tint_r, neigh_r, edge_blend);
-                        tint_g = lerp(tint_g, neigh_g, edge_blend);
-                        tint_b = lerp(tint_b, neigh_b, edge_blend);
+                        if (neigh_count > 0 && diff_count > 0) {
+                            float inv = 1.0f / (float)neigh_count;
+                            neigh_r *= inv;
+                            neigh_g *= inv;
+                            neigh_b *= inv;
+                            float edge_blend = ((float)diff_count / 4.0f) * 0.34f;
+                            tint_r = lerp(tint_r, neigh_r, edge_blend);
+                            tint_g = lerp(tint_g, neigh_g, edge_blend);
+                            tint_b = lerp(tint_b, neigh_b, edge_blend);
+                        }
                     }
 
                     float h_here = base_y;
@@ -9633,7 +10325,7 @@ static void render_world(HDC hdc, int win_w, int win_h) {
                     float dhz = h_s - h_n;
                     float slope = std::sqrt(dhx * dhx + dhz * dhz);
                     float slope_shade = 1.0f - std::clamp(slope * 0.22f, 0.0f, 0.28f);
-                    float alt_shade = 0.90f + 0.10f * clamp01(base_y / 18.0f);
+                    float alt_shade = 0.90f + 0.10f * clamp01(base_y / 40.0f);
                     float shade = slope_shade * alt_shade;
                     tint_r *= shade;
                     tint_g *= shade;
@@ -9661,19 +10353,20 @@ static void render_world(HDC hdc, int win_w, int win_h) {
 
                     if (surface == Block::Water) {
                         float water_y = base_y - 0.18f + 0.05f * std::sin(g_day_time * 2.0f + world_x * 0.5f + world_z * 0.3f);
-                        if (use_textures) render_plane_3d_tex(world_x, water_y, world_z, 1.0f, gtex.top, tint_r, tint_g, tint_b, a);
-                        else render_plane_3d(world_x, water_y, world_z, 1.0f, tint_r, tint_g, tint_b, 0.75f);
+                        if (use_textures) render_plane_3d_tex(world_x, water_y, world_z, tile_scale, gtex.top, tint_r, tint_g, tint_b, a);
+                        else render_plane_3d(world_x, water_y, world_z, tile_scale, tint_r, tint_g, tint_b, 0.75f);
                     } else {
                         float top_y = base_y + kTopEps;
-                        if (use_textures) render_plane_3d_tex(world_x, top_y, world_z, 1.0f, gtex.top, tint_r, tint_g, tint_b, a);
-                        else render_plane_3d(world_x, top_y, world_z, 1.0f, tint_r, tint_g, tint_b, a);
+                        if (use_textures) render_plane_3d_tex(world_x, top_y, world_z, tile_scale, gtex.top, tint_r, tint_g, tint_b, a);
+                        else render_plane_3d(world_x, top_y, world_z, tile_scale, tint_r, tint_g, tint_b, a);
                     }
 
                     // === LATERAIS (paredes) para diferenca de altura ===
-                    bool do_walls = (dist2 <= wall_radius2);
-                    if (!do_walls) {
+                    // LOD distante: so desenha paredes se forem penhascos grandes
+                    bool do_walls = (dist2 <= wall_radius2) && (lod_step <= 2);
+                    if (!do_walls && lod_step <= 2) {
                         float max_drop = std::max(std::max(h_here - h_e, h_here - h_w), std::max(h_here - h_s, h_here - h_n));
-                        if (max_drop > 1.40f) do_walls = true; // manter grandes penhascos visiveis ao longe
+                        if (max_drop > 0.60f) do_walls = true;
                     }
 
                     if (do_walls) {
@@ -9782,8 +10475,11 @@ static void render_world(HDC hdc, int win_w, int win_h) {
                         float water_y = base_y - 0.18f + 0.05f * std::sin(g_day_time * 2.0f + world_x * 0.5f + world_z * 0.3f);
                         if (use_textures) render_plane_3d_tex(world_x, water_y, world_z, 1.0f, tex.top, tint_r, tint_g, tint_b, a);
                         else render_plane_3d(world_x, water_y, world_z, 1.0f, tint_r, tint_g, tint_b, 0.75f);
+                    } else if (is_module(obj)) {
+                        // Modulos usam modelos 3D unicos
+                        render_module_model(world_x, base_y, world_z, obj, tint_r, tint_g, tint_b);
                     } else {
-                        bool use_outline = is_module(obj) || (obj == Block::Crystal || obj == Block::Coal || obj == Block::Iron || obj == Block::Copper);
+                        bool use_outline = (obj == Block::Crystal || obj == Block::Coal || obj == Block::Iron || obj == Block::Copper);
                         float center_y = base_y + 0.5f;
                         if (use_textures) render_cube_3d_tex(world_x, center_y, world_z, 1.0f, tex.top, tex.side, tex.bottom, tint_r, tint_g, tint_b, a, use_outline);
                         else render_cube_3d(world_x, center_y, world_z, 1.0f, tint_r, tint_g, tint_b, a, use_outline);
@@ -9839,6 +10535,77 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         glDisable(GL_TEXTURE_2D);
     }
     
+    // === GROUND SKIRT: 4 faixas FORA dos limites do mapa ===
+    // Renderiza apenas fora do mapa para nunca cobrir o terreno real.
+    {
+        // Amostrar cor media das bordas
+        float edge_h_sum = 0.0f;
+        float edge_r = 0.0f, edge_g = 0.0f, edge_b = 0.0f;
+        int samples = 0;
+        auto sample_edge = [&](int ex, int ez) {
+            if (!g_world->in_bounds(ex, ez)) return;
+            edge_h_sum += (float)g_world->height_at(ex, ez) * kHeightScale;
+            Block eb = surface_block_at(*g_world, ex, ez);
+            float cr, cg, cb, ca;
+            block_color(eb, ez, g_world->h, cr, cg, cb, ca);
+            edge_r += cr; edge_g += cg; edge_b += cb;
+            samples++;
+        };
+        int step = std::max(1, g_world->w / 16);
+        for (int i = 0; i < g_world->w; i += step) {
+            sample_edge(i, 0);
+            sample_edge(i, g_world->h - 1);
+        }
+        step = std::max(1, g_world->h / 16);
+        for (int i = 0; i < g_world->h; i += step) {
+            sample_edge(0, i);
+            sample_edge(g_world->w - 1, i);
+        }
+        
+        float edge_h = 5.0f * kHeightScale;
+        float skirt_r = 0.40f, skirt_g = 0.32f, skirt_b = 0.25f;
+        if (samples > 0) {
+            float inv = 1.0f / (float)samples;
+            edge_h = edge_h_sum * inv * 0.5f; // abaixo da media das bordas
+            skirt_r = edge_r * inv * 0.65f;
+            skirt_g = edge_g * inv * 0.65f;
+            skirt_b = edge_b * inv * 0.65f;
+        }
+        
+        float skirt_ext = 2500.0f;
+        float wx0 = -0.5f;
+        float wx1 = (float)(g_world->w - 1) + 0.5f;
+        float wz0 = -0.5f;
+        float wz1 = (float)(g_world->h - 1) + 0.5f;
+        
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(skirt_r, skirt_g, skirt_b, 1.0f);
+        
+        // 4 faixas FORA do mapa (norte, sul, leste, oeste + cantos)
+        glBegin(GL_QUADS);
+        // Norte (z < wz0)
+        glVertex3f(wx0 - skirt_ext, edge_h, wz0 - skirt_ext);
+        glVertex3f(wx1 + skirt_ext, edge_h, wz0 - skirt_ext);
+        glVertex3f(wx1 + skirt_ext, edge_h, wz0);
+        glVertex3f(wx0 - skirt_ext, edge_h, wz0);
+        // Sul (z > wz1)
+        glVertex3f(wx0 - skirt_ext, edge_h, wz1);
+        glVertex3f(wx1 + skirt_ext, edge_h, wz1);
+        glVertex3f(wx1 + skirt_ext, edge_h, wz1 + skirt_ext);
+        glVertex3f(wx0 - skirt_ext, edge_h, wz1 + skirt_ext);
+        // Oeste (x < wx0, entre wz0 e wz1)
+        glVertex3f(wx0 - skirt_ext, edge_h, wz0);
+        glVertex3f(wx0,             edge_h, wz0);
+        glVertex3f(wx0,             edge_h, wz1);
+        glVertex3f(wx0 - skirt_ext, edge_h, wz1);
+        // Leste (x > wx1, entre wz0 e wz1)
+        glVertex3f(wx1,             edge_h, wz0);
+        glVertex3f(wx1 + skirt_ext, edge_h, wz0);
+        glVertex3f(wx1 + skirt_ext, edge_h, wz1);
+        glVertex3f(wx1,             edge_h, wz1);
+        glEnd();
+    }
+    
     // === RENDERIZAR PLAYER 3D (Estilo Minicraft - Blocky) ===
     {
         float px = rpos.x;
@@ -9851,16 +10618,42 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         bool in_danger = (g_player.hp < 30 || g_player_oxygen < 20.0f);
         float danger_pulse = in_danger ? (0.5f + 0.5f * std::sin(g_player.anim_frame * 8.0f)) : 0.0f;
         
-        // Sombra no chao (maior e mais visivel)
-        glDisable(GL_DEPTH_TEST);
-        render_plane_3d(px, g_player.ground_height + 0.02f, pz, 0.9f, 0.0f, 0.0f, 0.0f, 0.55f);
-        
-        // Circulo de indicador de perigo
-        if (in_danger) {
-            render_plane_3d(px, g_player.ground_height + 0.03f, pz, 1.2f, 
-                kColorDanger[0], kColorDanger[1], kColorDanger[2], danger_pulse * 0.3f);
+        // Sombra circular suave no chao (fade radial, sem quadrado)
+        {
+            glDisable(GL_DEPTH_TEST);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            float shadow_y = g_player.ground_height + 0.02f;
+            float shadow_radius = 0.5f;
+            float shadow_alpha = 0.30f;
+            constexpr int kShadowSegs = 20;
+            
+            glBegin(GL_TRIANGLE_FAN);
+            glColor4f(0.0f, 0.0f, 0.0f, shadow_alpha);
+            glVertex3f(px, shadow_y, pz);
+            glColor4f(0.0f, 0.0f, 0.0f, 0.0f);
+            for (int i = 0; i <= kShadowSegs; ++i) {
+                float angle = (float)i * (2.0f * kPi / (float)kShadowSegs);
+                glVertex3f(px + std::cos(angle) * shadow_radius, shadow_y, pz + std::sin(angle) * shadow_radius);
+            }
+            glEnd();
+            
+            // Indicador de perigo circular (vermelho pulsante)
+            if (in_danger) {
+                float danger_radius = 0.7f;
+                glBegin(GL_TRIANGLE_FAN);
+                glColor4f(kColorDanger[0], kColorDanger[1], kColorDanger[2], danger_pulse * 0.20f);
+                glVertex3f(px, shadow_y + 0.01f, pz);
+                glColor4f(kColorDanger[0], kColorDanger[1], kColorDanger[2], 0.0f);
+                for (int i = 0; i <= kShadowSegs; ++i) {
+                    float angle = (float)i * (2.0f * kPi / (float)kShadowSegs);
+                    glVertex3f(px + std::cos(angle) * danger_radius, shadow_y + 0.01f, pz + std::sin(angle) * danger_radius);
+                }
+                glEnd();
+            }
+            
+            glEnable(GL_DEPTH_TEST);
         }
-        glEnable(GL_DEPTH_TEST);
         
         // Usar rotacao continua para orientar o personagem
         float rot_rad = get_player_render_rotation() * (kPi / 180.0f);
@@ -10090,6 +10883,55 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         draw_tile_outline(g_place_x, g_place_y, y, 1.05f, 0.05f, 0.65f, 1.0f, 0.65f, 2.0f);
     }
 
+    // === GHOST PREVIEW DO MODULO (modo placement) ===
+    if (g_module_placement_mode && g_placement_module != Block::Air && g_has_place_target && 
+        g_world->in_bounds(g_place_x, g_place_y)) {
+        
+        float pulse = 0.5f + 0.5f * std::sin(g_day_time * 4.0f);
+        
+        float gx = (float)g_place_x;
+        float gz = (float)g_place_y;
+        float gy = (float)g_world->height_at(g_place_x, g_place_y) * kHeightScale;
+        
+        // Verificar se posicao e valida
+        Block cur_block = g_world->get(g_place_x, g_place_y);
+        bool valid_pos = !is_base_structure(cur_block) && !is_module(cur_block) &&
+                         (cur_block == Block::Air || cur_block == Block::Water || !is_solid(cur_block));
+        bool has_resources = can_afford(get_module_cost(g_placement_module));
+        
+        float ghost_r, ghost_g, ghost_b, ghost_a;
+        if (!valid_pos) {
+            ghost_r = 1.0f; ghost_g = 0.2f; ghost_b = 0.2f; ghost_a = 0.35f * pulse;
+        } else if (!has_resources) {
+            ghost_r = 1.0f; ghost_g = 0.7f; ghost_b = 0.2f; ghost_a = 0.35f * pulse;
+        } else {
+            ghost_r = 0.3f; ghost_g = 0.9f; ghost_b = 0.5f; ghost_a = 0.40f * pulse;
+        }
+        
+        // Desenhar modelo 3D semi-transparente do modulo como preview
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        
+        // Usar modelo 3D com tint de cor do ghost
+        render_module_model(gx, gy, gz, g_placement_module, ghost_r, ghost_g, ghost_b);
+        
+        // Contorno da area de posicionamento (1x1 no chao)
+        float outline_r = valid_pos ? 0.3f : 1.0f;
+        float outline_g = valid_pos ? 0.9f : 0.3f;
+        float outline_b = valid_pos ? 0.6f : 0.3f;
+        glLineWidth(2.0f);
+        glColor4f(outline_r, outline_g, outline_b, 0.80f);
+        glBegin(GL_LINE_LOOP);
+        glVertex3f(gx - 0.5f, gy + 0.01f, gz - 0.5f);
+        glVertex3f(gx + 0.5f, gy + 0.01f, gz - 0.5f);
+        glVertex3f(gx + 0.5f, gy + 0.01f, gz + 0.5f);
+        glVertex3f(gx - 0.5f, gy + 0.01f, gz + 0.5f);
+        glEnd();
+        
+        glDepthMask(GL_TRUE);
+    }
+
     // === EFEITO DE MINERACAO (cracks) - SEM WIREFRAME ===
     if (g_has_target) {
         float target_x = (float)g_target_x;
@@ -10215,6 +11057,96 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         }
     }
     
+    // === BEACON DE MISSAO (waypoint amarelo para objetivo ativo) ===
+    {
+        Mission* active_m = nullptr;
+        if (!g_active_emergencies.empty()) active_m = find_mission(g_active_emergencies[0]);
+        if (!active_m && g_active_main_mission >= 0) active_m = find_mission(g_active_main_mission);
+
+        if (active_m && active_m->status == MissionStatus::Active) {
+            // Determinar posicao do waypoint
+            float wp_x = 0.0f, wp_z = 0.0f;
+            bool has_wp = false;
+
+            if (active_m->waypoint_slot_index >= 0 && active_m->waypoint_slot_index < (int)g_build_slots.size()) {
+                // Apontar para build slot especifico
+                wp_x = (float)g_build_slots[active_m->waypoint_slot_index].x + 0.5f;
+                wp_z = (float)g_build_slots[active_m->waypoint_slot_index].y + 0.5f;
+                has_wp = true;
+            } else if (active_m->target_module != Block::Air && !g_build_slots.empty()) {
+                // Apontar para primeiro build slot vazio
+                for (const auto& slot : g_build_slots) {
+                    if (slot.assigned_module == Block::Air) {
+                        wp_x = (float)slot.x + 0.5f;
+                        wp_z = (float)slot.y + 0.5f;
+                        has_wp = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!has_wp) {
+                // Fallback: apontar para a base
+                wp_x = (float)g_base_x + 0.5f;
+                wp_z = (float)g_base_y + 0.5f;
+                has_wp = true;
+            }
+
+            if (has_wp) {
+                float dx_wp = g_player.pos.x - wp_x;
+                float dy_wp = g_player.pos.y - wp_z;
+                float dist_wp = std::sqrt(dx_wp * dx_wp + dy_wp * dy_wp);
+
+                if (dist_wp > 3.0f) {
+                    int wp_tx = (int)wp_x;
+                    int wp_tz = (int)wp_z;
+                    float wp_base_h = 0.0f;
+                    if (g_world->in_bounds(wp_tx, wp_tz)) {
+                        wp_base_h = (float)g_world->height_at(wp_tx, wp_tz) * kHeightScale;
+                    }
+                    float wp_top_h = wp_base_h + 8.0f;
+                    bool is_emerg = (active_m->type == MissionType::Emergency);
+                    float wp_pulse = 0.5f + 0.5f * std::sin(g_day_time * (is_emerg ? 6.0f : 2.5f));
+
+                    float wp_r = is_emerg ? 1.0f : 0.95f;
+                    float wp_g = is_emerg ? 0.2f : 0.85f;
+                    float wp_b = is_emerg ? 0.2f : 0.15f;
+                    float wp_alpha = std::clamp(dist_wp / 30.0f, 0.3f, 0.8f) * wp_pulse;
+
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                    glDepthMask(GL_FALSE);
+
+                    // Pilar de luz do waypoint
+                    glBegin(GL_QUAD_STRIP);
+                    for (int i = 0; i <= 16; ++i) {
+                        float t = (float)i / 16.0f;
+                        float y = wp_base_h + t * (wp_top_h - wp_base_h);
+                        float alpha = (1.0f - t * 0.7f) * wp_alpha;
+                        float width = 0.18f * (1.0f - t * 0.4f);
+                        glColor4f(wp_r, wp_g, wp_b, alpha);
+                        glVertex3f(wp_x - width, y, wp_z);
+                        glVertex3f(wp_x + width, y, wp_z);
+                    }
+                    glEnd();
+
+                    // Halo na base
+                    glBegin(GL_TRIANGLE_FAN);
+                    glColor4f(wp_r, wp_g, wp_b, wp_alpha * 0.4f);
+                    glVertex3f(wp_x, wp_base_h + 0.1f, wp_z);
+                    glColor4f(wp_r, wp_g, wp_b, 0.0f);
+                    for (int i = 0; i <= 12; ++i) {
+                        float angle = (float)i * (2.0f * kPi / 12.0f);
+                        glVertex3f(wp_x + std::cos(angle) * 1.2f, wp_base_h + 0.05f, wp_z + std::sin(angle) * 1.2f);
+                    }
+                    glEnd();
+
+                    glDepthMask(GL_TRUE);
+                }
+            }
+        }
+    }
+
     // === RENDERIZAR CUPULAS GEODESICAS 3D ===
     if (!g_domes.empty()) {
         float dome_daylight = compute_daylight(day_phase);
@@ -10326,6 +11258,252 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         }
     }
     
+    // === PAINEL LATERAL DE MODULOS (esquerda da tela) — PRIORIDADE: O2 > Energia > Agua > Comida > Expansao ===
+    if (g_module_panel_visible && g_state == GameState::Playing) {
+        struct ModuleEntry {
+            Block type;
+            const char* icon;
+            float r, g, b;
+        };
+        // Ordem por prioridade de sobrevivencia
+        ModuleEntry all_modules[] = {
+            {Block::OxygenGenerator,  "O2",  0.30f, 0.90f, 0.50f},
+            {Block::SolarPanel,       "SOL", 0.95f, 0.85f, 0.20f},
+            {Block::EnergyGenerator,  "GER", 0.95f, 0.60f, 0.15f},
+            {Block::WaterExtractor,   "H2O", 0.25f, 0.60f, 0.95f},
+            {Block::Greenhouse,       "EST", 0.40f, 0.85f, 0.30f},
+            {Block::Workshop,         "OFC", 0.75f, 0.55f, 0.30f},
+            {Block::CO2Factory,       "CO2", 0.70f, 0.50f, 0.30f},
+            {Block::Habitat,          "HAB", 0.90f, 0.90f, 0.95f},
+            {Block::TerraformerBeacon, "TER", 0.85f, 0.25f, 0.95f},
+        };
+        const int total_modules = 9;
+        
+        // Detectar hover no painel para controlar opacity
+        // Posicionar apos o painel esquerdo de stats (x0=20, bar_w=180, painel stats vai ate ~x0+bar_w+10=210)
+        float panel_x = 210.0f;  // A direita do painel de stats do jogador
+        float panel_y = 50.0f;
+        float btn_size = 52.0f;
+        float btn_gap = 6.0f;
+        float panel_w = btn_size + 16.0f;
+        float panel_h = total_modules * (btn_size + btn_gap) + 40.0f;
+        bool panel_hover = (g_mouse_x >= panel_x && g_mouse_x <= panel_x + panel_w + 230.0f &&
+                           g_mouse_y >= panel_y && g_mouse_y <= panel_y + panel_h);
+        float panel_alpha = panel_hover ? 0.95f : 0.65f;
+        
+        // Fundo do painel
+        render_quad(panel_x, panel_y, panel_w, panel_h, 0.04f, 0.06f, 0.10f, 0.80f * panel_alpha);
+        render_quad(panel_x, panel_y, panel_w, 2.0f, 0.30f, 0.55f, 0.85f, 0.90f * panel_alpha);
+        
+        draw_text(panel_x + 2.0f, panel_y + 14.0f, "CONSTRUIR", 0.70f, 0.80f, 0.95f, 0.90f * panel_alpha);
+        
+        float by = panel_y + 22.0f;
+        
+        for (int i = 0; i < total_modules; ++i) {
+            const ModuleEntry& me = all_modules[i];
+            bool unlocked = is_unlocked(me.type);
+            CraftCost cost = get_module_cost(me.type);
+            bool affordable = unlocked && can_afford(cost);
+            bool is_selected = (g_module_placement_mode && g_placement_module == me.type);
+            bool is_building = false;
+            float build_prog = 0.0f;
+            for (const auto& job : g_construction_queue) {
+                if (job.active && job.module_type == me.type) {
+                    is_building = true;
+                    build_prog = 1.0f - (job.time_remaining / job.total_time);
+                    break;
+                }
+            }
+            
+            // Calcular porcentagem de recursos que o jogador tem
+            float afford_pct = 0.0f;
+            if (unlocked && !affordable) {
+                int total_needed = 0, total_have = 0;
+                auto add_res = [&](int need, Block blk) {
+                    if (need > 0) { total_needed += need; total_have += std::min(g_inventory[(int)blk], need); }
+                };
+                add_res(cost.stone, Block::Stone); add_res(cost.iron, Block::Iron);
+                add_res(cost.coal, Block::Coal); add_res(cost.copper, Block::Copper);
+                add_res(cost.ice, Block::Ice); add_res(cost.crystal, Block::Crystal);
+                add_res(cost.metal, Block::Metal); add_res(cost.organic, Block::Organic);
+                add_res(cost.components, Block::Components); add_res(cost.wood, Block::Wood);
+                if (total_needed > 0) afford_pct = (float)total_have / (float)total_needed;
+            }
+            
+            // Verificar se tem modulos existentes para upgrade
+            int existing_count = count_modules_of_type(me.type);
+            int highest_level = 0;
+            Module* upgrade_target = nullptr;
+            for (Module& m : g_modules) {
+                if (m.type == me.type) {
+                    if (m.level > highest_level) highest_level = m.level;
+                    if (m.level < kMaxModuleLevel && (!upgrade_target || m.level < upgrade_target->level))
+                        upgrade_target = &m;
+                }
+            }
+            
+            float bx = panel_x + 8.0f;
+            bool hover = (g_mouse_x >= bx && g_mouse_x <= bx + btn_size &&
+                          g_mouse_y >= by && g_mouse_y <= by + btn_size);
+            
+            // Clique no botao — seleciona e FECHA painel
+            if (g_mouse_left_clicked && hover && unlocked && !is_building && affordable) {
+                g_module_placement_mode = true;
+                g_placement_module = me.type;
+                g_placement_pulse = 0.0f;
+                g_module_panel_visible = false; // Fecha painel ao selecionar
+                g_mouse_left_clicked = false;
+            } else if (g_mouse_left_clicked && hover && unlocked && !is_building && !affordable) {
+                std::string falta = missing_resources_string(cost);
+                set_toast(falta, 2.5f);
+                g_mouse_left_clicked = false;
+            }
+            
+            // === CORES DO BOTAO POR ESTADO ===
+            float bg_r, bg_g, bg_b, bg_a;
+            if (!unlocked) {
+                // Bloqueado: cinza escuro
+                bg_r = 0.12f; bg_g = 0.12f; bg_b = 0.14f; bg_a = 0.85f * panel_alpha;
+            } else if (is_selected) {
+                float p = 0.7f + 0.3f * std::sin(g_day_time * 3.0f);
+                bg_r = 0.10f * p; bg_g = 0.25f * p; bg_b = 0.50f * p; bg_a = 0.95f;
+            } else if (is_building) {
+                // Em construcao: amarelo escuro
+                bg_r = 0.20f; bg_g = 0.18f; bg_b = 0.05f; bg_a = 0.90f * panel_alpha;
+            } else if (affordable) {
+                // Disponivel: verde brilhante com leve pulso
+                float gp = 0.85f + 0.15f * std::sin(g_day_time * 2.5f);
+                bg_r = 0.08f; bg_g = 0.22f * gp; bg_b = 0.08f; bg_a = 0.92f * panel_alpha;
+            } else if (afford_pct > 0.5f) {
+                // Quase pronto (>50%): amarelo escuro
+                bg_r = 0.18f; bg_g = 0.16f; bg_b = 0.06f; bg_a = 0.88f * panel_alpha;
+            } else {
+                // Desbloqueado mas sem recursos: cinza medio
+                bg_r = 0.10f; bg_g = 0.10f; bg_b = 0.14f; bg_a = 0.82f * panel_alpha;
+            }
+            if (hover && unlocked) { bg_r += 0.06f; bg_g += 0.06f; bg_b += 0.06f; bg_a = 0.95f; }
+            render_quad(bx, by, btn_size, btn_size, bg_r, bg_g, bg_b, bg_a);
+            
+            // Borda por estado
+            if (is_selected) {
+                render_quad(bx, by, btn_size, 2.0f, 0.40f, 0.80f, 1.0f, 1.0f);
+                render_quad(bx, by + btn_size - 2.0f, btn_size, 2.0f, 0.40f, 0.80f, 1.0f, 1.0f);
+                render_quad(bx, by, 2.0f, btn_size, 0.40f, 0.80f, 1.0f, 1.0f);
+                render_quad(bx + btn_size - 2.0f, by, 2.0f, btn_size, 0.40f, 0.80f, 1.0f, 1.0f);
+            } else if (affordable) {
+                float gb = 0.5f + 0.2f * std::sin(g_day_time * 2.0f);
+                render_quad(bx, by, btn_size, 1.5f, 0.20f, gb, 0.30f, 0.85f * panel_alpha);
+                render_quad(bx, by + btn_size - 1.5f, btn_size, 1.5f, 0.20f, gb, 0.30f, 0.85f * panel_alpha);
+            }
+            
+            // Icone grafico do modulo
+            if (unlocked) {
+                draw_module_icon(bx + btn_size * 0.5f, by + btn_size * 0.42f, btn_size * 0.70f, me.type);
+            } else {
+                // Bloqueado: icone escurecido com "?"
+                draw_module_icon(bx + btn_size * 0.5f, by + btn_size * 0.42f, btn_size * 0.55f, me.type);
+                render_quad(bx, by, btn_size, btn_size, 0.0f, 0.0f, 0.0f, 0.55f * panel_alpha); // overlay escuro
+                draw_text(bx + btn_size * 0.5f - 4.0f, by + btn_size * 0.5f + 4.0f, "?", 0.55f, 0.45f, 0.60f, 0.70f * panel_alpha);
+            }
+            
+            // Contagem de modulos existentes
+            if (existing_count > 0) {
+                std::string cnt = "x" + std::to_string(existing_count);
+                draw_text(bx + btn_size - 16.0f, by + 12.0f, cnt, 0.7f, 0.8f, 0.9f, 0.7f * panel_alpha);
+            }
+            
+            // Status abaixo do icone
+            if (!unlocked) {
+                draw_text(bx + 4.0f, by + btn_size - 6.0f, "BLOQ", 0.45f, 0.30f, 0.50f, 0.65f * panel_alpha);
+            } else if (is_building) {
+                render_quad(bx + 2.0f, by + btn_size - 6.0f, (btn_size - 4.0f) * build_prog, 4.0f, 0.90f, 0.75f, 0.20f, 0.90f);
+            } else if (affordable) {
+                draw_text(bx + 4.0f, by + btn_size - 6.0f, "PRONTO", 0.25f, 0.85f, 0.35f, 0.80f * panel_alpha);
+            } else if (afford_pct > 0.0f) {
+                char pct_buf[16]; snprintf(pct_buf, sizeof(pct_buf), "%d%%", (int)(afford_pct * 100.0f));
+                draw_text(bx + 6.0f, by + btn_size - 6.0f, pct_buf, 0.85f, 0.75f, 0.25f, 0.75f * panel_alpha);
+            } else {
+                draw_text(bx + 4.0f, by + btn_size - 6.0f, "$$$", 0.70f, 0.40f, 0.30f, 0.55f * panel_alpha);
+            }
+            
+            // === TOOLTIP expandido ===
+            if (hover && panel_hover) {
+                ModuleStats ms = get_module_stats(me.type);
+                float tt_x = panel_x + panel_w + 6.0f;
+                float tt_y = std::min(by, (float)win_h - 120.0f); // nao sair da tela
+                float tt_w = 230.0f;
+                float tt_h = 72.0f;
+                
+                // Expandir para upgrade info
+                bool show_upgrade = (upgrade_target != nullptr);
+                if (show_upgrade) tt_h += 32.0f;
+                if (!affordable && unlocked) tt_h += 16.0f;
+                
+                render_quad(tt_x, tt_y, tt_w, tt_h, 0.05f, 0.07f, 0.12f, 0.94f);
+                render_quad(tt_x, tt_y, 2.0f, tt_h, 0.30f, 0.55f, 0.85f, 0.90f);
+                
+                // Nome + nivel
+                std::string name_str = ms.name;
+                if (existing_count > 0) name_str += " (x" + std::to_string(existing_count) + " Lv" + std::to_string(highest_level) + ")";
+                draw_text(tt_x + 8.0f, tt_y + 14.0f, name_str, 0.95f, 0.95f, 0.95f, 0.98f);
+                draw_text(tt_x + 8.0f, tt_y + 30.0f, ms.description, 0.60f, 0.65f, 0.75f, 0.85f);
+                
+                // Custo
+                if (unlocked) {
+                    std::string cost_str = module_cost_string(cost);
+                    draw_text(tt_x + 8.0f, tt_y + 46.0f, cost_str,
+                              affordable ? 0.35f : 0.80f, affordable ? 0.75f : 0.45f, affordable ? 0.45f : 0.35f, 0.85f);
+                    if (!affordable) {
+                        draw_text(tt_x + 8.0f, tt_y + 60.0f, missing_resources_string(cost), 0.85f, 0.35f, 0.30f, 0.80f);
+                    }
+                } else {
+                    draw_text(tt_x + 8.0f, tt_y + 46.0f, unlock_progress_string(me.type), 0.65f, 0.50f, 0.70f, 0.80f);
+                }
+                
+                // Info de upgrade
+                if (show_upgrade) {
+                    int next_lv = upgrade_target->level + 1;
+                    CraftCost ucost = get_upgrade_cost(me.type, next_lv);
+                    bool can_up = can_afford(ucost);
+                    const char* lvl_name = get_module_level_name(me.type, next_lv);
+                    std::string up_str = std::string("Upgrade -> ") + lvl_name + " (Lv" + std::to_string(next_lv) + ")";
+                    float uy = tt_y + tt_h - 28.0f;
+                    render_quad(tt_x + 4.0f, uy - 4.0f, tt_w - 8.0f, 24.0f, 
+                               can_up ? 0.08f : 0.10f, can_up ? 0.18f : 0.08f, can_up ? 0.08f : 0.10f, 0.80f);
+                    draw_text(tt_x + 8.0f, uy + 10.0f, up_str, 
+                             can_up ? 0.40f : 0.60f, can_up ? 0.85f : 0.50f, can_up ? 0.50f : 0.45f, 0.90f);
+                    
+                    // Clique no tooltip de upgrade
+                    if (g_mouse_left_clicked && g_mouse_x >= tt_x + 4 && g_mouse_x <= tt_x + tt_w - 4 &&
+                        g_mouse_y >= uy - 4 && g_mouse_y <= uy + 20) {
+                        if (can_up) {
+                            spend_cost(ucost);
+                            upgrade_target->level = next_lv;
+                            g_unlock_popup_text = "UPGRADE!";
+                            g_unlock_popup_subtitle = std::string(ms.name) + " -> " + lvl_name;
+                            g_unlock_popup_timer = 2.5f;
+                            g_screen_flash_green = 0.25f;
+                        } else {
+                            set_toast("Falta: " + module_cost_string(ucost), 2.5f);
+                        }
+                        g_mouse_left_clicked = false;
+                    }
+                }
+            }
+            
+            by += btn_size + btn_gap;
+        }
+        
+        // Instrucao no fundo
+        if (g_module_placement_mode) {
+            draw_text(panel_x + 2.0f, by + 6.0f, "LMB: Colocar", 0.50f, 0.80f, 0.95f, 0.85f);
+            draw_text(panel_x + 2.0f, by + 20.0f, "ESC: Cancelar", 0.70f, 0.55f, 0.50f, 0.75f);
+        } else {
+            draw_text(panel_x + 2.0f, by + 6.0f, "Clique = Construir", 0.50f, 0.60f, 0.70f, 0.60f * panel_alpha);
+            draw_text(panel_x + 2.0f, by + 20.0f, "ESC = Fechar", 0.50f, 0.55f, 0.60f, 0.55f * panel_alpha);
+        }
+    }
+
     // === CROSSHAIR SEGUINDO O MOUSE (Estilo Minicraft) ===
     {
         float cx = (float)g_mouse_x;
@@ -10343,8 +11521,13 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         glVertex2f(cx, cy + cross_size);
         glEnd();
         
-        // Crosshair branco
-        glColor4f(1.0f, 1.0f, 1.0f, 0.9f);
+        // Crosshair: cor muda no modo placement
+        if (g_module_placement_mode) {
+            float p = 0.7f + 0.3f * std::sin(g_day_time * 4.0f);
+            glColor4f(0.3f * p, 0.9f * p, 0.5f * p, 0.95f);
+        } else {
+            glColor4f(1.0f, 1.0f, 1.0f, 0.9f);
+        }
         glLineWidth(cross_thick);
         glBegin(GL_LINES);
         glVertex2f(cx - cross_size, cy);
@@ -10358,6 +11541,12 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         glBegin(GL_POINTS);
         glVertex2f(cx, cy);
         glEnd();
+        
+        // Indicador de modo placement no crosshair
+        if (g_module_placement_mode) {
+            ModuleStats ms = get_module_stats(g_placement_module);
+            draw_text(cx + 16.0f, cy - 4.0f, ms.name, 0.30f, 0.90f, 0.50f, 0.85f);
+        }
     }
 
     // HUD
@@ -10475,37 +11664,48 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         draw_text(x0 + 6.0f, y0 + bar_gap * 4 + 11.0f, jet_label, 
             kColorTextPrimary[0], kColorTextPrimary[1], kColorTextPrimary[2], 0.90f);
         
-        // === LEFT PANEL: BASE STATUS ===
+        // === LEFT PANEL: BASE STATUS (esconder quando longe >100 tiles) ===
         y0 += bar_gap * 5 + 15.0f;
         
-        // At base indicator
-        if (at_base) {
-            render_quad(x0 - 5.0f, y0 - 5.0f, bar_w + 10.0f, 20.0f, 0.15f, 0.35f, 0.20f, 0.80f);
-            draw_text(x0, y0 + 10.0f, "NA BASE - RECARREGANDO", 0.40f, 0.95f, 0.50f, 0.95f);
-            y0 += 22.0f;
+        // dist_to_base ja calculada acima
+        bool show_base_stats = (dist_to_base < 100.0f) || at_base;
+        
+        if (show_base_stats) {
+            // At base indicator
+            if (at_base) {
+                render_quad(x0 - 5.0f, y0 - 5.0f, bar_w + 10.0f, 20.0f, 0.15f, 0.35f, 0.20f, 0.80f);
+                draw_text(x0, y0 + 10.0f, "NA BASE - RECARREGANDO", 0.40f, 0.95f, 0.50f, 0.95f);
+                y0 += 22.0f;
+            } else {
+                draw_text(x0, y0 + 10.0f, "ARMAZENAMENTO DA BASE", 0.70f, 0.75f, 0.85f, 0.85f);
+                y0 += 15.0f;
+            }
+            
+            // Fade based on distance (full at <50, fading 50-100)
+            float base_alpha = dist_to_base < 50.0f ? 1.0f : std::max(0.3f, 1.0f - (dist_to_base - 50.0f) / 50.0f);
+            
+            render_bar(x0, y0, bar_w, bar_h, g_base_energy / kBaseEnergyMax, 0.95f, 0.84f, 0.25f);
+            draw_text(x0 + 6.0f, y0 + 11.0f, "Energia " + std::to_string((int)g_base_energy) + "/" + std::to_string((int)kBaseEnergyMax), 0.90f, 0.90f, 0.90f, 0.90f * base_alpha);
+
+            render_bar(x0, y0 + bar_gap, bar_w, bar_h, g_base_water / kBaseWaterMax, 0.25f, 0.65f, 0.95f);
+            draw_text(x0 + 6.0f, y0 + bar_gap + 11.0f, "Agua " + std::to_string((int)g_base_water) + "/" + std::to_string((int)kBaseWaterMax), 0.90f, 0.90f, 0.90f, 0.90f * base_alpha);
+
+            render_bar(x0, y0 + bar_gap * 2, bar_w, bar_h, g_base_oxygen / kBaseOxygenMax, 0.20f, 0.95f, 0.55f);
+            draw_text(x0 + 6.0f, y0 + bar_gap * 2 + 11.0f, "Oxigenio " + std::to_string((int)g_base_oxygen) + "/" + std::to_string((int)kBaseOxygenMax), 0.90f, 0.90f, 0.90f, 0.90f * base_alpha);
+            
+            render_bar(x0, y0 + bar_gap * 3, bar_w, bar_h, g_base_food / kBaseFoodMax, 0.85f, 0.65f, 0.25f);
+            draw_text(x0 + 6.0f, y0 + bar_gap * 3 + 11.0f, "Comida " + std::to_string((int)g_base_food) + "/" + std::to_string((int)kBaseFoodMax), 0.90f, 0.90f, 0.90f, 0.90f * base_alpha);
+            
+            // Integrity bar with color based on level
+            float int_r = g_base_integrity > 50.0f ? 0.35f : (g_base_integrity > 25.0f ? 0.90f : 0.95f);
+            float int_g = g_base_integrity > 50.0f ? 0.85f : (g_base_integrity > 25.0f ? 0.65f : 0.25f);
+            float int_b = g_base_integrity > 50.0f ? 0.45f : 0.20f;
+            render_bar(x0, y0 + bar_gap * 4, bar_w, bar_h, g_base_integrity / kBaseIntegrityMax, int_r, int_g, int_b);
+            draw_text(x0 + 6.0f, y0 + bar_gap * 4 + 11.0f, "Integ " + std::to_string((int)g_base_integrity) + "/" + std::to_string((int)kBaseIntegrityMax), 0.90f, 0.90f, 0.90f, 0.90f * base_alpha);
         } else {
-            draw_text(x0, y0 + 10.0f, "ARMAZENAMENTO DA BASE", 0.70f, 0.75f, 0.85f, 0.85f);
-            y0 += 15.0f;
+            // Quando longe, mostrar apenas resumo compacto
+            draw_text(x0, y0 + 10.0f, "BASE (longe)", 0.55f, 0.55f, 0.60f, 0.50f);
         }
-        
-        render_bar(x0, y0, bar_w, bar_h, g_base_energy / kBaseEnergyMax, 0.95f, 0.84f, 0.25f);
-        draw_text(x0 + 6.0f, y0 + 11.0f, "Energia " + std::to_string((int)g_base_energy) + "/" + std::to_string((int)kBaseEnergyMax), 0.90f, 0.90f, 0.90f, 0.90f);
-
-        render_bar(x0, y0 + bar_gap, bar_w, bar_h, g_base_water / kBaseWaterMax, 0.25f, 0.65f, 0.95f);
-        draw_text(x0 + 6.0f, y0 + bar_gap + 11.0f, "Agua " + std::to_string((int)g_base_water) + "/" + std::to_string((int)kBaseWaterMax), 0.90f, 0.90f, 0.90f, 0.90f);
-
-        render_bar(x0, y0 + bar_gap * 2, bar_w, bar_h, g_base_oxygen / kBaseOxygenMax, 0.20f, 0.95f, 0.55f);
-        draw_text(x0 + 6.0f, y0 + bar_gap * 2 + 11.0f, "Oxigenio " + std::to_string((int)g_base_oxygen) + "/" + std::to_string((int)kBaseOxygenMax), 0.90f, 0.90f, 0.90f, 0.90f);
-        
-        render_bar(x0, y0 + bar_gap * 3, bar_w, bar_h, g_base_food / kBaseFoodMax, 0.85f, 0.65f, 0.25f);
-        draw_text(x0 + 6.0f, y0 + bar_gap * 3 + 11.0f, "Comida " + std::to_string((int)g_base_food) + "/" + std::to_string((int)kBaseFoodMax), 0.90f, 0.90f, 0.90f, 0.90f);
-        
-        // Integrity bar with color based on level
-        float int_r = g_base_integrity > 50.0f ? 0.35f : (g_base_integrity > 25.0f ? 0.90f : 0.95f);
-        float int_g = g_base_integrity > 50.0f ? 0.85f : (g_base_integrity > 25.0f ? 0.65f : 0.25f);
-        float int_b = g_base_integrity > 50.0f ? 0.45f : 0.20f;
-        render_bar(x0, y0 + bar_gap * 4, bar_w, bar_h, g_base_integrity / kBaseIntegrityMax, int_r, int_g, int_b);
-        draw_text(x0 + 6.0f, y0 + bar_gap * 4 + 11.0f, "Integ " + std::to_string((int)g_base_integrity) + "/" + std::to_string((int)kBaseIntegrityMax), 0.90f, 0.90f, 0.90f, 0.90f);
         
         // === RIGHT PANEL: Terraforming Stats ===
         float rx0 = win_w - bar_w - 30.0f;
@@ -10611,6 +11811,112 @@ static void render_world(HDC hdc, int win_w, int win_h) {
             draw_text(rx0 + bar_w - 22.0f, ry0 + 24.0f, "[H]", 0.55f, 0.75f, 0.95f, 0.70f);
         }
         
+        // === PAINEL DE MISSAO ATIVA ===
+        {
+            // Encontrar missao ativa para exibir (emergencia tem prioridade)
+            Mission* display_mission = nullptr;
+            if (!g_active_emergencies.empty()) {
+                display_mission = find_mission(g_active_emergencies[0]);
+            }
+            if (!display_mission && g_active_main_mission >= 0) {
+                display_mission = find_mission(g_active_main_mission);
+            }
+
+            if (display_mission && display_mission->status == MissionStatus::Active) {
+                ry0 += 36.0f;
+                float mp_x = rx0;
+                float mp_y = ry0;
+                float mp_w = bar_w;
+                float mp_h = 60.0f; // Altura base, expandida se tem recursos
+
+                bool is_emergency = (display_mission->type == MissionType::Emergency);
+                float pulse = is_emergency ? (0.6f + 0.4f * std::sin(g_day_time * 5.0f)) : 1.0f;
+
+                // Calcular progresso de recursos (se aplicavel)
+                std::string progress_line;
+                bool has_progress = false;
+                if (display_mission->target_resource != Block::Air) {
+                    int have = g_inventory[(int)display_mission->target_resource];
+                    int need = display_mission->target_resource_amount;
+                    const char* name = "???";
+                    switch (display_mission->target_resource) {
+                        case Block::Iron: name = "Ferro"; break;
+                        case Block::Ice: name = "Gelo"; break;
+                        case Block::Copper: name = "Cobre"; break;
+                        case Block::Stone: name = "Pedra"; break;
+                        case Block::Coal: name = "Carvao"; break;
+                        case Block::Wood: name = "Madeira"; break;
+                        case Block::Crystal: name = "Cristal"; break;
+                        case Block::Metal: name = "Metal"; break;
+                        case Block::Organic: name = "Organico"; break;
+                        case Block::Components: name = "Comp"; break;
+                        default: break;
+                    }
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "%s:%d/%d", name, std::min(have, need), need);
+                    progress_line = buf;
+                    has_progress = true;
+                }
+                if (display_mission->target_resource2 != Block::Air) {
+                    int have2 = g_inventory[(int)display_mission->target_resource2];
+                    int need2 = display_mission->target_resource2_amount;
+                    const char* name2 = "???";
+                    switch (display_mission->target_resource2) {
+                        case Block::Iron: name2 = "Ferro"; break;
+                        case Block::Ice: name2 = "Gelo"; break;
+                        case Block::Copper: name2 = "Cobre"; break;
+                        case Block::Stone: name2 = "Pedra"; break;
+                        case Block::Coal: name2 = "Carvao"; break;
+                        default: break;
+                    }
+                    char buf2[64];
+                    snprintf(buf2, sizeof(buf2), " %s:%d/%d", name2, std::min(have2, need2), need2);
+                    progress_line += buf2;
+                }
+                // Progresso de modulos
+                if (display_mission->target_module != Block::Air) {
+                    int have_m = count_modules_of_type(display_mission->target_module);
+                    int need_m = display_mission->target_count;
+                    ModuleStats ms = get_module_stats(display_mission->target_module);
+                    char buf3[64];
+                    snprintf(buf3, sizeof(buf3), "%s: %d/%d", ms.name, std::min(have_m, need_m), need_m);
+                    if (!progress_line.empty()) progress_line += " | ";
+                    progress_line += buf3;
+                    has_progress = true;
+                }
+
+                if (has_progress) mp_h += 16.0f;
+
+                // Fundo do painel de missao
+                float bg_r = is_emergency ? 0.25f * pulse : 0.10f;
+                float bg_g = is_emergency ? 0.05f : 0.12f;
+                float bg_b = is_emergency ? 0.05f : 0.20f;
+                render_quad(mp_x - 4.0f, mp_y - 4.0f, mp_w + 8.0f, mp_h, bg_r, bg_g, bg_b, 0.75f);
+
+                // Barra lateral colorida
+                float bar_r = is_emergency ? 1.0f * pulse : 0.95f;
+                float bar_g = is_emergency ? 0.2f * pulse : 0.85f;
+                float bar_b = is_emergency ? 0.2f : 0.20f;
+                render_quad(mp_x - 4.0f, mp_y - 4.0f, 3.0f, mp_h, bar_r, bar_g, bar_b, 0.95f);
+
+                // Tipo da missao
+                const char* type_label = is_emergency ? "EMERGENCIA" : "MISSAO";
+                draw_text(mp_x + 4.0f, mp_y + 12.0f, type_label, bar_r, bar_g, bar_b, 0.95f);
+
+                // Titulo da missao
+                draw_text(mp_x + 4.0f, mp_y + 28.0f, display_mission->title, 0.95f, 0.95f, 0.95f, 0.95f);
+
+                // Descricao curta
+                draw_text(mp_x + 4.0f, mp_y + 42.0f, display_mission->description, 0.70f, 0.70f, 0.70f, 0.80f);
+
+                // Progresso
+                if (has_progress) {
+                    // Cor: verde se completo, amarelo se parcial, vermelho se zero
+                    draw_text(mp_x + 4.0f, mp_y + 56.0f, progress_line.c_str(), 0.95f, 0.85f, 0.30f, 0.90f);
+                }
+            }
+        }
+
         // === MINIMAPA ===
         if (!g_minimap.world_map_open) {
             render_minimap(win_w, win_h);
@@ -10637,11 +11943,15 @@ static void render_world(HDC hdc, int win_w, int win_h) {
                 render_quad(x + 2.0f, y + 2.0f, size - 4.0f, size - 4.0f, 0.25f, 0.25f, 0.30f, 0.90f);
             }
             
-            // Icone do bloco (cubo 3D simples)
+            // Icone do bloco
             float icon_size = size * 0.55f;
             float ix = x + (size - icon_size) * 0.5f + 2.0f;
             float iy = y + (size - icon_size) * 0.4f;
-            if (g_tex_atlas != 0) {
+            
+            if (is_module(block)) {
+                // Modulos: usar icone grafico personalizado
+                draw_module_icon(x + size * 0.5f, y + size * 0.48f, size * 0.72f, block);
+            } else if (g_tex_atlas != 0) {
                 BlockTex bt = block_tex(block);
                 int wf = ((int)std::floor(g_day_time * 4.0f)) & 3;
                 if (bt.is_water) {
@@ -10908,6 +12218,66 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         
         // === MINIMAPA (CANTO INFERIOR ESQUERDO) ===
         render_minimap(win_w, win_h);
+    }
+
+    // === BOTAO DE MARTELO (Build) — canto inferior-esquerdo acima do minimap ===
+    if (g_state == GameState::Playing) {
+        float map_size_hud = g_minimap_cfg.size > 0 ? g_minimap_cfg.size : g_map_cfg.minimap_size;
+        float margin_hud = 8.0f;
+        float map_y_hud = (float)win_h - map_size_hud - margin_hud - 70.0f;
+        
+        float hammer_size = 38.0f;
+        float hammer_x = margin_hud;
+        float hammer_y = map_y_hud - hammer_size - 24.0f;
+        
+        // Detectar hover
+        bool hammer_hover = (g_mouse_x >= (int)hammer_x && g_mouse_x <= (int)(hammer_x + hammer_size) &&
+                            g_mouse_y >= (int)hammer_y && g_mouse_y <= (int)(hammer_y + hammer_size));
+        
+        // Pulse quando modulo novo disponivel
+        float pulse = 0.0f;
+        if (g_build_hammer_pulse > 0.0f) {
+            pulse = 0.3f + 0.3f * std::sin(g_build_hammer_pulse * 6.0f);
+        }
+        
+        // Fundo do botao
+        float bg_r = g_module_panel_visible ? 0.15f : 0.08f;
+        float bg_g = g_module_panel_visible ? 0.35f : 0.12f;
+        float bg_b = g_module_panel_visible ? 0.15f : 0.16f;
+        float bg_a = hammer_hover ? 0.95f : 0.80f;
+        if (pulse > 0.0f) { bg_r += pulse * 0.4f; bg_g += pulse * 0.35f; bg_b += pulse * 0.05f; }
+        render_quad(hammer_x, hammer_y, hammer_size, hammer_size, bg_r, bg_g, bg_b, bg_a);
+        
+        // Borda
+        float bord_r = hammer_hover ? 0.6f : 0.35f;
+        float bord_g = hammer_hover ? 0.8f : 0.50f;
+        float bord_b = hammer_hover ? 0.3f : 0.25f;
+        if (pulse > 0.0f) { bord_r += pulse; bord_g += pulse * 0.8f; }
+        render_quad(hammer_x, hammer_y, hammer_size, 2.0f, bord_r, bord_g, bord_b, bg_a);
+        render_quad(hammer_x, hammer_y + hammer_size - 2.0f, hammer_size, 2.0f, bord_r, bord_g, bord_b, bg_a);
+        render_quad(hammer_x, hammer_y, 2.0f, hammer_size, bord_r, bord_g, bord_b, bg_a);
+        render_quad(hammer_x + hammer_size - 2.0f, hammer_y, 2.0f, hammer_size, bord_r, bord_g, bord_b, bg_a);
+        
+        // Icone de martelo (desenho simples com quads)
+        float cx = hammer_x + hammer_size * 0.5f;
+        float cy = hammer_y + hammer_size * 0.5f;
+        // Cabo (vertical)
+        render_quad(cx - 1.5f, cy - 2.0f, 3.0f, 16.0f, 0.55f, 0.40f, 0.25f, 1.0f);
+        // Cabeca (horizontal)
+        render_quad(cx - 8.0f, cy - 8.0f, 16.0f, 7.0f, 0.70f, 0.72f, 0.75f, 1.0f);
+        
+        // Texto atalho
+        draw_text(hammer_x + hammer_size - 12.0f, hammer_y + hammer_size - 4.0f, "B", 0.5f, 0.6f, 0.5f, 0.6f);
+        
+        // Clique no botao
+        if (hammer_hover && g_mouse_left_clicked) {
+            g_module_panel_visible = !g_module_panel_visible;
+            if (g_module_placement_mode && !g_module_panel_visible) {
+                g_module_placement_mode = false;
+                g_placement_module = Block::Air;
+            }
+        }
+        
     }
 
     // Toast notifications
@@ -11241,219 +12611,27 @@ static void render_world(HDC hdc, int win_w, int win_h) {
         draw_text(win_w * 0.5f - estimate_text_w_px(t2) * 0.5f, win_h * 0.20f, t2, 0.85f, 0.95f, 0.85f, 0.98f);
     }
     
-    // ============= BUILD MENU =============
-    if (g_show_build_menu && g_state == GameState::Playing) {
-        float menu_w = 850.0f;
-        float menu_h = 650.0f;
-        float menu_x = win_w * 0.5f - menu_w * 0.5f;
-        float menu_y = win_h * 0.5f - menu_h * 0.5f;
-        
-        // Background
-        render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, 0.70f);
-        render_quad(menu_x, menu_y, menu_w, menu_h, 0.05f, 0.07f, 0.10f, 0.98f);
-        
-        // Border
-        render_quad(menu_x, menu_y, menu_w, 3.0f, 0.30f, 0.55f, 0.85f, 1.0f);
-        render_quad(menu_x, menu_y + menu_h - 3.0f, menu_w, 3.0f, 0.30f, 0.55f, 0.85f, 1.0f);
-        render_quad(menu_x, menu_y, 3.0f, menu_h, 0.30f, 0.55f, 0.85f, 1.0f);
-        render_quad(menu_x + menu_w - 3.0f, menu_y, 3.0f, menu_h, 0.30f, 0.55f, 0.85f, 1.0f);
-        
-        // Title
-        std::string title = "MENU DE CONSTRUCAO";
-        draw_text(menu_x + menu_w * 0.5f - estimate_text_w_px(title) * 0.5f, menu_y + 25.0f, title, 0.95f, 0.95f, 0.95f, 1.0f);
-        draw_text(menu_x + menu_w * 0.5f - 150.0f, menu_y + 45.0f, "Tab/B: Fechar  |  W/S: Selecionar  |  Enter: Construir", 0.55f, 0.60f, 0.70f, 0.85f);
-        
-        // Module types available
-        Block module_types[] = {
-            Block::SolarPanel,
-            Block::EnergyGenerator,
-            Block::OxygenGenerator,
-            Block::WaterExtractor,
-            Block::Greenhouse,
-            Block::Workshop,
-            Block::CO2Factory,
-            Block::Habitat,
-            Block::TerraformerBeacon,
-        };
-        const int module_count = 9;
-        
-        // Clamp selection
-        if (g_build_menu_selection < 0) g_build_menu_selection = 0;
-        if (g_build_menu_selection >= module_count) g_build_menu_selection = module_count - 1;
-        
-        float list_x = menu_x + 15.0f;
-        float list_y = menu_y + 65.0f;
-        float row_h = 58.0f;
-        float list_w = menu_w - 250.0f;
-        
-        for (int i = 0; i < module_count; ++i) {
-            Block mtype = module_types[i];
-            ModuleStats stats = get_module_stats(mtype);
-            CraftCost cost = get_module_cost(mtype);
-            bool affordable = can_afford(cost);
-            bool selected = (i == g_build_menu_selection);
-            
-            // Check if under construction
-            bool building = false;
-            float build_progress = 0.0f;
-            for (const auto& job : g_construction_queue) {
-                if (job.active && job.module_type == mtype) {
-                    building = true;
-                    build_progress = 1.0f - (job.time_remaining / job.total_time);
-                    break;
-                }
-            }
-            
-            // Count how many of this module we have
-            int count = 0;
-            for (const auto& mod : g_modules) {
-                if (mod.type == mtype) count++;
-            }
-            
-            // Determine status
-            const char* status_str;
-            float stat_r, stat_g, stat_b;
-            if (building) {
-                status_str = "CONSTRUINDO";
-                stat_r = 0.95f; stat_g = 0.75f; stat_b = 0.20f;
-            } else if (affordable) {
-                status_str = "DISPONIVEL";
-                stat_r = 0.30f; stat_g = 0.90f; stat_b = 0.40f;
-            } else {
-                status_str = "BLOQUEADO";
-                stat_r = 0.80f; stat_g = 0.40f; stat_b = 0.35f;
-            }
-            
-            // Row background
-            float bg_alpha = selected ? 0.40f : 0.15f;
-            float bg_r = selected ? 0.12f : 0.08f;
-            float bg_g = selected ? 0.22f : 0.10f;
-            float bg_b = selected ? 0.38f : 0.15f;
-            render_quad(list_x, list_y, list_w, row_h - 3.0f, bg_r, bg_g, bg_b, bg_alpha);
-            
-            // Selection indicator
-            if (selected) {
-                render_quad(list_x, list_y, 4.0f, row_h - 3.0f, 0.35f, 0.75f, 0.95f, 1.0f);
-            }
-            
-            // Build progress bar if building
-            if (building) {
-                render_quad(list_x + 4.0f, list_y + row_h - 8.0f, (list_w - 8.0f) * build_progress, 4.0f, 0.30f, 0.80f, 0.50f, 0.90f);
-            }
-            
-            // Module name and count
-            float name_r = affordable ? 0.95f : 0.60f;
-            float name_g = affordable ? 0.95f : 0.60f;
-            float name_b = affordable ? 0.95f : 0.65f;
-            std::string name_str = std::string(stats.name);
-            if (count > 0) name_str += " [" + std::to_string(count) + " ativo]";
-            draw_text(list_x + 12.0f, list_y + 16.0f, name_str, name_r, name_g, name_b, 1.0f);
-            
-            // Description
-            draw_text(list_x + 12.0f, list_y + 32.0f, stats.description, 0.55f, 0.60f, 0.70f, 0.80f);
-            
-            // Production/Consumption info
-            std::string prod_str;
-            if (stats.energy_production > 0.0f) prod_str += "+" + std::to_string((int)stats.energy_production) + " Energia/min ";
-            if (stats.oxygen_production > 0.0f) prod_str += "+" + std::to_string((int)(stats.oxygen_production*10)/10.0f).substr(0,3) + " O2/min ";
-            if (stats.water_production > 0.0f) prod_str += "+" + std::to_string((int)(stats.water_production*10)/10.0f).substr(0,3) + " Agua/min ";
-            if (stats.food_production > 0.0f) prod_str += "+" + std::to_string((int)(stats.food_production*10)/10.0f).substr(0,3) + " Comida/min ";
-            if (stats.integrity_bonus > 0.0f) prod_str += "+" + std::to_string((int)stats.integrity_bonus) + " Reparo/min ";
-            if (prod_str.empty()) prod_str = "Terraformacao";
-            
-            std::string cons_str;
-            if (stats.energy_consumption > 0.0f) cons_str = "-" + std::to_string((int)(stats.energy_consumption*10)/10.0f).substr(0,3) + " Energia/min";
-            
-            draw_text(list_x + 220.0f, list_y + 16.0f, prod_str, 0.35f, 0.80f, 0.45f, 0.85f);
-            if (!cons_str.empty()) {
-                draw_text(list_x + 220.0f, list_y + 32.0f, cons_str, 0.85f, 0.55f, 0.35f, 0.80f);
-            }
-            
-            // Status
-            draw_text(list_x + list_w - 95.0f, list_y + 16.0f, status_str, stat_r, stat_g, stat_b, 0.95f);
-            
-            // Cost
-            std::string cost_str = module_cost_string(cost);
-            float cost_r = affordable ? 0.50f : 0.75f;
-            float cost_g = affordable ? 0.80f : 0.50f;
-            float cost_b = affordable ? 0.55f : 0.45f;
-            draw_text(list_x + 12.0f, list_y + 46.0f, cost_str, cost_r, cost_g, cost_b, 0.75f);
-            
-            // Construction time
-            std::string time_str = "Tempo: " + std::to_string((int)stats.construction_time) + "s";
-            draw_text(list_x + list_w - 95.0f, list_y + 32.0f, time_str, 0.60f, 0.65f, 0.70f, 0.75f);
-            
-            list_y += row_h;
-        }
-        
-        // === RIGHT SIDE: BASE STATUS ===
-        float status_x = menu_x + menu_w - 225.0f;
-        float status_y = menu_y + 65.0f;
-        
-        render_quad(status_x - 5.0f, status_y - 5.0f, 220.0f, 250.0f, 0.08f, 0.10f, 0.14f, 0.90f);
-        draw_text(status_x + 55.0f, status_y + 12.0f, "STATUS DA BASE", 0.85f, 0.90f, 0.95f, 0.95f);
-        status_y += 30.0f;
-        
-        // Base resources with detailed bars
-        auto draw_status_bar = [&](const char* label, float value, float max_val, float r, float g, float b) {
-            float pct = std::clamp(value / max_val, 0.0f, 1.0f);
-            render_quad(status_x, status_y, 200.0f, 18.0f, 0.12f, 0.12f, 0.18f, 0.85f);
-            render_quad(status_x + 1.0f, status_y + 1.0f, 198.0f * pct, 16.0f, r, g, b, 0.90f);
-            std::string txt = std::string(label) + ": " + std::to_string((int)value) + "/" + std::to_string((int)max_val);
-            draw_text(status_x + 5.0f, status_y + 13.0f, txt, 0.95f, 0.95f, 0.95f, 0.98f);
-            status_y += 24.0f;
-        };
-        
-        draw_status_bar("Energia", g_base_energy, kBaseEnergyMax, 0.95f, 0.80f, 0.20f);
-        draw_status_bar("Agua", g_base_water, kBaseWaterMax, 0.25f, 0.60f, 0.95f);
-        draw_status_bar("Oxigenio", g_base_oxygen, kBaseOxygenMax, 0.25f, 0.90f, 0.50f);
-        draw_status_bar("Comida", g_base_food, kBaseFoodMax, 0.85f, 0.60f, 0.25f);
-        
-        // Integrity bar
-        float int_r = g_base_integrity > 50.0f ? 0.30f : (g_base_integrity > 25.0f ? 0.90f : 0.95f);
-        float int_g = g_base_integrity > 50.0f ? 0.85f : (g_base_integrity > 25.0f ? 0.70f : 0.30f);
-        float int_b = g_base_integrity > 50.0f ? 0.40f : 0.20f;
-        draw_status_bar("Integridade", g_base_integrity, kBaseIntegrityMax, int_r, int_g, int_b);
-        
-        // Consumption info
-        status_y += 10.0f;
-        draw_text(status_x, status_y, "CONSUMO CONSTANTE:", 0.70f, 0.75f, 0.85f, 0.80f);
-        status_y += 18.0f;
-        draw_text(status_x, status_y, "-1 O2/min  -2 Energia/min  -1 Agua/min", 0.85f, 0.55f, 0.45f, 0.75f);
-        
-        // === BOTTOM: INVENTORY ===
-        float bottom_y = menu_y + menu_h - 90.0f;
-        render_quad(menu_x + 10.0f, bottom_y, menu_w - 20.0f, 80.0f, 0.08f, 0.10f, 0.14f, 0.90f);
-        draw_text(menu_x + 20.0f, bottom_y + 15.0f, "SEU INVENTARIO:", 0.80f, 0.85f, 0.95f, 0.92f);
-        
-        std::string res_line1 = 
-            "Pedra: " + std::to_string(g_inventory[(int)Block::Stone]) + 
-            "   Ferro: " + std::to_string(g_inventory[(int)Block::Iron]) + 
-            "   Cobre: " + std::to_string(g_inventory[(int)Block::Copper]) +
-            "   Gelo: " + std::to_string(g_inventory[(int)Block::Ice]);
-        std::string res_line2 = 
-            "Carvao: " + std::to_string(g_inventory[(int)Block::Coal]) + 
-            "   Cristal: " + std::to_string(g_inventory[(int)Block::Crystal]) +
-            "   Metal: " + std::to_string(g_inventory[(int)Block::Metal]) +
-            "   Organico: " + std::to_string(g_inventory[(int)Block::Organic]) +
-            "   Comp: " + std::to_string(g_inventory[(int)Block::Components]);
-        draw_text(menu_x + 20.0f, bottom_y + 38.0f, res_line1, 0.90f, 0.92f, 0.95f, 0.95f);
-        draw_text(menu_x + 20.0f, bottom_y + 58.0f, res_line2, 0.90f, 0.92f, 0.95f, 0.95f);
-    }
+    // (Tab menu removido — painel lateral e o unico menu de construcao)
     
-    // ============= ALERTS DISPLAY =============
-    if (!g_alerts.empty() && g_state == GameState::Playing && !g_show_build_menu) {
-        float alert_y = 150.0f;
+    // ============= ALERTS DISPLAY — CENTRO-INFERIOR, MAX 3 =============
+    if (!g_alerts.empty() && g_state == GameState::Playing) {
+        // Posicionar acima do hotbar (centro-inferior da tela)
+        float alert_base_y = (float)win_h - 130.0f; // acima do hotbar
+        int shown = 0;
         for (const auto& alert : g_alerts) {
+            if (shown >= 3) break; // Maximo 3 alertas visiveis
             float alpha = std::min(1.0f, alert.time_remaining);
-            float alert_w = estimate_text_w_px(alert.message) + 30.0f;
-            float alert_x = win_w - alert_w - 20.0f;
+            // Truncar mensagem em 40 chars
+            std::string msg = alert.message;
+            if (msg.size() > 40) { msg = msg.substr(0, 37) + "..."; }
+            float alert_w = estimate_text_w_px(msg) + 30.0f;
+            float alert_x = win_w * 0.5f - alert_w * 0.5f;
+            float alert_y = alert_base_y - (float)shown * 32.0f;
             
-            render_quad(alert_x, alert_y, alert_w, 28.0f, alert.r * 0.3f, alert.g * 0.3f, alert.b * 0.3f, 0.85f * alpha);
-            render_quad(alert_x, alert_y, 4.0f, 28.0f, alert.r, alert.g, alert.b, alpha);
-            draw_text(alert_x + 15.0f, alert_y + 19.0f, alert.message, alert.r, alert.g, alert.b, alpha);
-            
-            alert_y += 35.0f;
+            render_quad(alert_x, alert_y, alert_w, 26.0f, alert.r * 0.25f, alert.g * 0.25f, alert.b * 0.25f, 0.80f * alpha);
+            render_quad(alert_x, alert_y + 24.0f, alert_w, 2.0f, alert.r, alert.g, alert.b, 0.60f * alpha);
+            draw_text(alert_x + 15.0f, alert_y + 17.0f, msg, alert.r, alert.g, alert.b, alpha);
+            ++shown;
         }
     }
 
@@ -11486,6 +12664,7 @@ static void update_game(float dt, HWND hwnd) {
 
     // Toast timer
     if (g_toast_time > 0.0f) g_toast_time -= dt;
+    if (g_build_hammer_pulse > 0.0f) g_build_hammer_pulse -= dt;
     
     // ============= ATUALIZAR FEEDBACK VISUAL =============
     if (g_screen_flash_red > 0.0f) g_screen_flash_red -= dt * 2.5f;
@@ -11896,125 +13075,29 @@ static void update_game(float dt, HWND hwnd) {
 
     // Playing state
     
-    // ESC fecha menu de construcao ou pausa o jogo
+    // ESC: cancela placement mode / fecha painel / pausa
     if (esc_pressed) {
-        if (g_show_build_menu) {
-            g_show_build_menu = false;  // ESC fecha menu de construcao
+        if (g_module_placement_mode) {
+            g_module_placement_mode = false;
+            g_placement_module = Block::Air;
+            return;
+        }
+        if (g_module_panel_visible) {
+            g_module_panel_visible = false;
             return;
         }
         g_state = GameState::Paused;
         return;
     }
     
-    // Toggle build menu with Tab or B
+    // Toggle painel lateral com Tab ou B
     if (tab_pressed || b_pressed) {
-        g_show_build_menu = !g_show_build_menu;
-        if (g_show_build_menu) {
-            g_build_menu_selection = 0;
-            // Onboarding: dica ao abrir menu de construcao pela primeira vez
-            if (!g_onboarding.shown_first_build_menu) {
-                show_tip("W/S para navegar, Enter para construir, ESC para fechar", g_onboarding.shown_first_build_menu);
-            }
+        if (g_module_placement_mode) {
+            g_module_placement_mode = false;
+            g_placement_module = Block::Air;
         }
+        g_module_panel_visible = !g_module_panel_visible;
         return;
-    }
-    
-    // Build menu navigation and actions
-    if (g_show_build_menu) {
-        static bool prev_w = false, prev_s = false, prev_enter = false;
-        bool w_now = key_down('W') || key_down(VK_UP);
-        bool s_now = key_down('S') || key_down(VK_DOWN);
-        bool enter_now = key_down(VK_RETURN);
-        
-        // Module types list (matches render order)
-        const Block module_types[] = {
-            Block::SolarPanel, Block::EnergyGenerator, Block::OxygenGenerator,
-            Block::WaterExtractor, Block::Greenhouse, Block::Workshop,
-            Block::CO2Factory, Block::Habitat, Block::TerraformerBeacon
-        };
-        const int module_count = 9;
-        
-        // Navigate up (W ou seta para cima)
-        if (w_now && !prev_w) {
-            g_build_menu_selection--;
-            if (g_build_menu_selection < 0) 
-                g_build_menu_selection = module_count - 1;
-            bounce_hotbar_slot(g_build_menu_selection);  // Feedback visual
-        }
-        // Navigate down (S ou seta para baixo)
-        if (s_now && !prev_s) {
-            g_build_menu_selection++;
-            if (g_build_menu_selection >= module_count) 
-                g_build_menu_selection = 0;
-            bounce_hotbar_slot(g_build_menu_selection);  // Feedback visual
-        }
-        // Build action with construction time
-        if (enter_now && !prev_enter && g_build_menu_selection >= 0 && 
-            g_build_menu_selection < module_count) {
-            
-            Block module_type = module_types[g_build_menu_selection];
-            CraftCost cost = get_module_cost(module_type);
-            
-            // Check if already under construction
-            bool already_building = false;
-            for (const auto& job : g_construction_queue) {
-                if (job.active && job.module_type == module_type) {
-                    already_building = true;
-                    break;
-                }
-            }
-            
-            if (already_building) {
-                show_error("Ja em construcao!");
-            } else if (can_afford(cost)) {
-                // Find a free slot for this module (or create at base)
-                int slot_index = -1;
-                
-                // Try to find an empty slot
-                for (int si = 0; si < (int)g_build_slots.size(); ++si) {
-                    if (g_build_slots[si].assigned_module == Block::Air) {
-                        slot_index = si;
-                        break;
-                    }
-                }
-                
-                // If no slot, create a new one near base
-                if (slot_index < 0) {
-                    // Find empty spot near base
-                    for (int dx = -30; dx <= 30; ++dx) {
-                        int tx = g_base_x + dx;
-                        if (tx < 0 || tx >= g_world->w) continue;
-                        int ty = g_base_y - 1;
-                        Block current = g_world->get(tx, ty);
-                        if (current == Block::Air || current == Block::BuildSlot) {
-                            BuildSlotInfo new_slot;
-                            new_slot.x = tx;
-                            new_slot.y = ty;
-                            new_slot.assigned_module = Block::Air;
-                            new_slot.label = "Auto";
-                            g_build_slots.push_back(new_slot);
-                            slot_index = (int)g_build_slots.size() - 1;
-                            break;
-                        }
-                    }
-                }
-                
-                if (slot_index >= 0) {
-                    // Start construction (will take time!)
-                    start_construction(module_type, slot_index);
-                    g_build_slots[slot_index].assigned_module = module_type;
-                } else {
-                    show_error("Sem espaco para construir!");
-                }
-            } else {
-                show_error("Recursos insuficientes!");
-            }
-        }
-        
-        prev_w = w_now;
-        prev_s = s_now;
-        prev_enter = enter_now;
-        return;  // Don't process other inputs while in menu
     }
     
     // Return to base with H
@@ -12043,6 +13126,9 @@ static void update_game(float dt, HWND hwnd) {
 
     // Update modules (energy/water/oxygen production, terraforming)
     update_modules(*g_world, dt);
+
+    // Update missions (progressao e emergencias)
+    update_missions(dt);
 
     // Hotbar selection
     // Resources: 1-6
@@ -12422,6 +13508,93 @@ static void update_game(float dt, HWND hwnd) {
     bool lmb = key_down(VK_LBUTTON);
     bool rmb = key_down(VK_RBUTTON);
 
+    // === MODULE PLACEMENT MODE (clique esquerdo coloca modulo) ===
+    if (g_module_placement_mode && g_placement_module != Block::Air) {
+        // ESC ou clique direito cancela
+        if (key_down(VK_ESCAPE) || (rmb && !g_prev_rmb)) {
+            g_module_placement_mode = false;
+            g_placement_module = Block::Air;
+        }
+        // Clique esquerdo coloca o modulo
+        else if (lmb && !g_prev_lmb && g_has_place_target && g_world->in_bounds(g_place_x, g_place_y)) {
+            Block cur = g_world->get(g_place_x, g_place_y);
+            bool valid_pos = !is_base_structure(cur) && !is_module(cur) &&
+                             (cur == Block::Air || cur == Block::Water || !is_solid(cur));
+            
+            // Verificar que nao sobrepoe o jogador
+            float pl = g_player.pos.x - g_player.w * 0.5f;
+            float pr = g_player.pos.x + g_player.w * 0.5f;
+            float pt = g_player.pos.y - g_player.h * 0.5f;
+            float pb = g_player.pos.y + g_player.h * 0.5f;
+            float tl = tile_min(g_place_x);
+            float tr = tile_max(g_place_x);
+            float tf = tile_min(g_place_y);
+            float tb = tile_max(g_place_y);
+            bool overlaps_player = !(tr <= pl || tl >= pr || tb <= pt || tf >= pb);
+            
+            if (!valid_pos) {
+                show_error("Posicao invalida!");
+            } else if (overlaps_player) {
+                show_error("Muito perto! Afaste-se.");
+            } else if (!is_unlocked(g_placement_module)) {
+                show_error("Modulo nao desbloqueado!");
+            } else {
+                CraftCost cost = get_module_cost(g_placement_module);
+                if (can_afford(cost)) {
+                    // Verificar se ja esta em construcao
+                    bool already_building = false;
+                    for (const auto& job : g_construction_queue) {
+                        if (job.active && job.module_type == g_placement_module) {
+                            already_building = true;
+                            break;
+                        }
+                    }
+                    
+                    if (already_building) {
+                        show_error("Ja em construcao!");
+                    } else {
+                        // Encontrar ou criar um build slot nesta posicao
+                        int slot_index = -1;
+                        for (int si = 0; si < (int)g_build_slots.size(); ++si) {
+                            if (g_build_slots[si].assigned_module == Block::Air &&
+                                g_build_slots[si].x == g_place_x && g_build_slots[si].y == g_place_y) {
+                                slot_index = si;
+                                break;
+                            }
+                        }
+                        // Se nao encontrou slot existente, criar um novo
+                        if (slot_index < 0) {
+                            BuildSlotInfo new_slot;
+                            new_slot.x = g_place_x;
+                            new_slot.y = g_place_y;
+                            new_slot.assigned_module = Block::Air;
+                            new_slot.label = "Placement";
+                            g_build_slots.push_back(new_slot);
+                            slot_index = (int)g_build_slots.size() - 1;
+                        }
+                        
+                        start_construction(g_placement_module, slot_index);
+                        g_build_slots[slot_index].assigned_module = g_placement_module;
+                        
+                        g_screen_flash_green = 0.15f;
+                        g_place_cd = 0.3f;
+                        
+                        // Sair do modo placement apos colocar
+                        g_module_placement_mode = false;
+                        g_placement_module = Block::Air;
+                    }
+                } else {
+                    std::string falta = missing_resources_string(cost);
+                    show_error(falta);
+                }
+            }
+        }
+        
+        g_prev_lmb = lmb;
+        g_prev_rmb = rmb;
+        return;  // No modo placement, nao processa mineracao/colocacao normal
+    }
+
     bool e_key = key_down('E');
     g_prev_e = e_key;
 
@@ -12685,8 +13858,9 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 g_minimap.world_zoom = std::clamp(g_minimap.world_zoom, 
                     g_map_cfg.world_map_zoom_min, g_map_cfg.world_map_zoom_max);
             } else {
-                // Zoom da camera com scroll do mouse
-                g_camera.distance -= (float)delta * 0.005f;
+                // Zoom da camera com scroll do mouse (proporcional a distancia)
+                float zoom_speed = std::max(0.008f, g_camera.distance * 0.06f);
+                g_camera.distance -= (float)delta * zoom_speed * 0.008f;
                 g_camera.distance = std::clamp(g_camera.distance, g_camera.min_distance, g_camera.max_distance);
             }
             return 0;
@@ -12726,9 +13900,9 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 int delta_x = mx - g_last_mouse_x;
                 int delta_y = my - g_last_mouse_y;
                 
-                // Rotacionar camera (mouse direita = camera gira direita)
+                // Rotacionar camera (mouse move camera livremente)
                 g_camera.yaw += delta_x * g_camera.sensitivity;
-                g_camera.pitch -= delta_y * g_camera.sensitivity * 0.5f;
+                g_camera.pitch -= delta_y * g_camera.sensitivity;
                 
                 // Clamp pitch
                 g_camera.pitch = std::clamp(g_camera.pitch, g_camera.min_pitch, g_camera.max_pitch);
