@@ -46,8 +46,17 @@ void render_glow_disc_3d(Vec3 center, float radius, float r, float g, float b_co
 // perdeu o "static" que tinha la (creatures.cpp precisa dele agora pra marca de queimado da
 // pistola de laser - render_cube_3d le como "bloco flutuando", nao decal de chao).
 void render_plane_3d(float x, float y, float z, float size, float r, float g, float b, float a = 1.0f);
-// render_sphere_3d removed (raylib migration): confirmed dead code, zero call sites anywhere
-// in src/ - see the migration plan for details.
+// Esfera solida pequena e barata (capacete/juntas do jogador - "personagem muito quadrado",
+// pedido do jogador) - malha em faixas de latitude/longitude (mesma tecnica de
+// render_geodesic_dome, so a esfera INTEIRA 0..pi em vez de so' o hemisferio superior) com
+// sombreamento simples por altura (mais claro no topo, mais escuro embaixo, mesmo espirito
+// visual das 3 sombras de render_cube_3d) e neblina aplicada 1x no centro (nao por vertice -
+// barato, e a esfera e' pequena o bastante pra nao notar gradiente de neblina dentro dela).
+// scale_y/scale_z (padrao 1.0 = esfera perfeita, mesmo comportamento de antes) deixam
+// esticar em elipsoide - usado pro torso do jogador ("corpo muito quadrado", pedido do
+// jogador: um torso e' mais alto/fundo que largo, nao uma bola perfeita).
+void render_sphere_3d(float x, float y, float z, float radius, float r, float g, float b, float a = 1.0f,
+                       int lat_seg = 6, int lon_seg = 10, float scale_y = 1.0f, float scale_z = 1.0f);
 
 // Cupula decorativa (saia cilindrica/fundacao + hemisferio geodesico por cima) - a malha em
 // si nao tem colisao (e so desenho, nao mexe em World/is_solid); a colisao de verdade e uma
@@ -94,5 +103,12 @@ extern FrameFogParams g_frame_fog;
 // caso do switch (em render_primitives.cpp) e uma copia exata da funcao original
 // correspondente - so a selecao de eixo/sinal virou um parametro.
 enum class WallFace { XPos, XNeg, ZPos, ZNeg };
+// flat=true amostra um UNICO ponto da textura (o centro do tile) nos 4 vertices em vez de
+// esticar o retangulo inteiro - usado pra paredes bem baixas (diferenca de altura pequena
+// entre tiles vizinhos, comum em relevo com ridge forte tipo montanha/neve): esticar a
+// textura inteira numa faixa fina de poucos pixels de altura na tela causa aliasing/shimmer
+// visivel (minificacao sem mipmap) que lia como "chao piscando" - amostrar um ponto so' e'
+// uma cor solida de verdade, sem gradiente nenhum pra "tremer" com o movimento da camera.
 void render_wall_3d_tex(WallFace face, float x, float z, float y0, float y1, Tile tile,
-                         float tint_r, float tint_g, float tint_b, float a, float shade);
+                         float tint_r, float tint_g, float tint_b, float a, float shade,
+                         bool flat = false);

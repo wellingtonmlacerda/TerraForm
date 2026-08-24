@@ -137,6 +137,38 @@ bool scan_for_points_of_interest() {
         }
     }
 
+    // Busca de VULCAO/LAVA num raio bem maior que o resto do scanner. Motivo medido: o
+    // vulcao/lava mais proximo da base fica tipicamente a 150+ tiles, enquanto TODOS os
+    // canais de descoberta do jogo sao menores que isso - o fog-of-war revela raio 15, o
+    // scanner varria 70, o alcance de visao no chao e' ~110. Ou seja: nao existia nenhuma
+    // forma de o jogador saber que ha um vulcao, e' por isso que ele reportou 3x que nao
+    // achava nenhum. Passo de 2 tiles porque um rio de lava tem 3 tiles de largura (nunca
+    // escapa da amostragem) - mantem a varredura barata mesmo com raio 4x maior.
+    {
+        static constexpr int kLavaScanRadius = 340;
+        float lava_r2 = (float)(kLavaScanRadius * kLavaScanRadius);
+        bool found_lava = false; int lava_x = 0, lava_y = 0; float lava_d2 = 0.0f;
+        for (int dy = -kLavaScanRadius; dy <= kLavaScanRadius; dy += 2) {
+            for (int dx = -kLavaScanRadius; dx <= kLavaScanRadius; dx += 2) {
+                float d2 = (float)(dx * dx + dy * dy);
+                if (d2 > lava_r2) continue;
+                if (found_lava && d2 >= lava_d2) continue;
+                int x = px + dx, y = py + dy;
+                if (!g_world->in_bounds(x, y)) continue;
+                // get_ground (nao get): lava vive na camada de solo; a camada de tiles pode
+                // ter sido alterada por mineracao/terraformacao.
+                if (g_world->get_ground(x, y) == Block::Lava) {
+                    found_lava = true; lava_x = x; lava_y = y; lava_d2 = d2;
+                }
+            }
+        }
+        if (found_lava) {
+            add_waypoint(lava_x, lava_y, "Atividade vulcanica");
+            add_alert("Scanner: atividade vulcanica detectada!", 1.0f, 0.5f, 0.1f);
+            return true;
+        }
+    }
+
     if (found_poi) {
         add_waypoint(poi_x, poi_y, "Sinal detectado");
         add_alert("Scanner: sinal de estrutura detectado!", 0.3f, 1.0f, 0.5f);
@@ -257,6 +289,12 @@ static void get_minimap_color(int x, int y, float& r, float& g, float& b) {
 
     // Terreno
     switch (ground) {
+        case Block::Lava:
+            // Lava nao tinha caso nenhum aqui: caia no default e vulcoes/rios de lava
+            // apareciam no mapa com a mesma cor de terra qualquer. Laranja forte pra um
+            // vulcao ja explorado ficar obvio no mapa e o jogador conseguir voltar nele.
+            r = 1.0f; g = 0.42f; b = 0.05f;
+            break;
         case Block::Water:
             r = 0.2f; g = 0.4f; b = 0.8f;
             break;

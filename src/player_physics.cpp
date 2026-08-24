@@ -96,13 +96,11 @@ Vec3 get_weapon_muzzle_pos() {
     float px = rpos.x;
     float pz = rpos.y;
 
-    int surf_tx = world_to_tile(px);
-    int surf_tz = world_to_tile(pz);
-    Block surf = Block::Dirt;
-    if (g_world && g_world->in_bounds(surf_tx, surf_tz)) {
-        surf = surface_block_at(*g_world, surf_tx, surf_tz);
-    }
-    bool swimming = (surf == Block::Water);
+    // Le g_physics.in_water (fonte unica, calculada COM altura na fisica) em vez de re-derivar
+    // "esta na agua" de surface_block_at: aquela re-derivacao e' verdadeira em qualquer
+    // altitude sobre um tile de agua, entao voando sobre o mar a arma (e o corpo, em main.cpp)
+    // era desenhada 0.57 unidades afundada, sem sombra.
+    bool swimming = g_physics.in_water;
     float player_y_offset = swimming ? -0.42f : 0.15f;
     float py = rpy + player_y_offset;
 
@@ -955,6 +953,59 @@ static float slope_speed_multiplier(const Vec3& normal, const Vec2& move_dir, co
     return 1.0f;
 }
 
+// ============= "Esta na agua?" com ALTURA (nao so' "o chao embaixo e' agua") =============
+// probe_ground() preenche result.surface/result.terrain a partir do bloco do topo da COLUNA
+// sempre, inclusive quando nenhum raio acerta (jogador voando bem acima) - ou seja
+// ground.terrain e' Water em QUALQUER altitude sobre um tile de agua. Usar isso como "esta
+// nadando" era o bug "quando tento voar sobre a agua ele do nada aparece dentro dela": voando
+// sobre o mar o jogador entrava em modo natacao (jetpack desligado, gravidade off) e o teto da
+// agua no fim do passo clampava pos_y do voo direto pro nivel do mar.
+
+// Margem (unidades de mundo) acima da superficie que ainda conta como "dentro da agua". Piso
+// real: o probe de chao fica cego a partir de ground_snap + 0.30 + ground_tolerance = 0.56
+// acima da superficie, entao 0.50 mantem o teste dentro do alcance do probe. Teto: tem que
+// ficar bem abaixo de landing_assist_trigger_height (4.0) pra um voo de verdade nunca ser
+// confundido com natacao.
+static constexpr float kWaterEnterMargin = 0.50f;
+
+// Superficie da agua NA COLUNA do jogador. Mar/lagos do nivel do mar sao achatados exatamente
+// em sea_level no world-gen, entao pra eles o topo da coluna E' a superficie; rios/lagos de
+// montanha (flood_fill_lake) ficam ACIMA do nivel do mar e ai quem manda e' o topo da coluna.
+// Usar so' sea_level*kHeightScale (como fazia o antigo water_surface_y) trata um lago de
+// montanha como se a superficie estivesse dezenas de unidades abaixo do proprio fundo dele -
+// no meio de um lago alto isso clampava o jogador pra DENTRO da montanha, preso pra sempre.
+static float water_surface_for(const World& world, const GroundProbeResult& probe) {
+    return std::max((float)world.sea_level * kHeightScale, probe.height);
+}
+
+// Teto de saida pela margem - corpo identico ao antigo bloco "Teto da agua" (sondagem
+// direcional 8 direcoes x 10 tiles, para na primeira posicao seca), so' extraido pra ca pra
+// poder ser usado tanto pelo gate de "esta na agua" quanto pelo clamp, sem sondar 2x.
+static float water_exit_ceiling(const Player& p, const World& world, const PhysicsConfig& cfg,
+                                float water_surface_y) {
+    float ceiling = water_surface_y;
+    static const float kShoreDirs[8][2] = {
+        {1.0f, 0.0f}, {-1.0f, 0.0f}, {0.0f, 1.0f}, {0.0f, -1.0f},
+        {0.7071f, 0.7071f}, {-0.7071f, 0.7071f}, {0.7071f, -0.7071f}, {-0.7071f, -0.7071f}
+    };
+    const float kMaxShoreProbeDist = 10.0f;
+    for (const auto& dir : kShoreDirs) {
+        for (float r = 1.0f; r <= kMaxShoreProbeDist; r += 1.0f) {
+            float sx = p.pos.x + dir[0] * r;
+            float sz = p.pos.y + dir[1] * r;
+            int tx = world_to_tile(sx);
+            int tz = world_to_tile(sz);
+            if (!world.in_bounds(tx, tz)) break;
+            Block ground_b = world.get_ground(tx, tz);
+            if (ground_b == Block::Water || ground_b == Block::Ice || ground_b == Block::Lava) continue;
+            float h = sample_support_height(world, sx, sz, p.w * 0.90f, p.h * 0.90f);
+            if (h > ceiling) ceiling = h;
+            break; // achou chao seco nessa direcao
+        }
+    }
+    return ceiling + cfg.collision_skin;
+}
+
 static void apply_single_physics_step(const PlayerPhysicsInput& input, float fixed_dt) {
     if (!g_world) return;
     Player& p = g_player;
@@ -978,18 +1029,41 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     // no chao (onde "landing"/"snap" tambem disparam todo frame, sem isso o dano repetiria).
     bool was_on_ground = ground.grounded;
     g_physics.ground_normal = ground.normal;
-    g_physics.terrain = ground.terrain;
 
-    TerrainPhysicsProfile terrain = terrain_profile_for(ground.terrain, cfg);
+    // Nadar: dentro de uma coluna de agua liquida, o jogador flutua/nada livremente em vez de
+    // andar no fundo com gravidade normal. O teste agora tem ALTURA (ver water_surface_for/
+    // kWaterEnterMargin acima) - "o chao embaixo e' agua" nao e' "o jogador esta dentro da
+    // agua", e confundir os dois teleportava pra dentro do lago quem estava so' voando.
+    bool over_water = (ground.terrain == TerrainPhysicsType::Water);
+    float water_surface_y = water_surface_for(world, ground);
+    // A sondagem de margem so' importa perto da agua - evita 8x10 amostras por substep pra
+    // quem esta voando a 100 unidades de altura sobre o mar (mesmo resultado, muito mais
+    // barato: longe da agua in_water e' false de qualquer jeito).
+    bool near_water = over_water &&
+                      (g_physics.in_water || p.pos_y <= water_surface_y + kWaterEnterMargin);
+    float water_ceiling = near_water ? water_exit_ceiling(p, world, cfg, water_surface_y)
+                                     : water_surface_y;
+    // Trava de continuidade: quem JA estava nadando mantem o limite alto (o teto da sondagem
+    // de margem) - e' isso que preserva a subida assistida pra sair da agua numa margem alta
+    // ("cai na agua e nao consigo sair"), ja que try_step_climb so' dispara quando a margem
+    // esta a <= step_height (2.0) acima do jogador, e ele precisa poder subir ate lá. Sem a
+    // trava, o limite fixo de superficie+0.50 travaria a subida e margens altas voltariam a
+    // ser parede. A trava vive em g_physics (PhysicsRuntime) e nao num static local de
+    // proposito: um static sobreviveria a respawn/carregar jogo com valor velho (mesmo
+    // footgun de globais obsoletos que ja mordeu este projeto antes).
+    float water_limit = g_physics.in_water ? std::max(water_surface_y, water_ceiling)
+                                           : water_surface_y;
+    bool in_water = over_water && (p.pos_y <= water_limit + kWaterEnterMargin);
+    g_physics.in_water = in_water;
+
+    // Perfil de terreno: voando sobre agua NAO deve pegar o multiplicador de velocidade da
+    // agua (0.42) - sem esta correcao o voo sobre o mar ficava ~58% mais lento que sobre
+    // terra, com o HUD dizendo "Agua", mesmo depois de o teleporte ser corrigido.
+    TerrainPhysicsType effective_terrain =
+        (over_water && !in_water) ? TerrainPhysicsType::Normal : ground.terrain;
+    g_physics.terrain = effective_terrain;
+    TerrainPhysicsProfile terrain = terrain_profile_for(effective_terrain, cfg);
     g_physics.terrain_name = terrain.label;
-
-    // Nadar: dentro de uma coluna de agua liquida, o jogador flutua/nada livremente em vez
-    // de andar no fundo com gravidade normal - sem isso "nadar" seria so andar no leito do
-    // lago (era assim antes desta mudanca). A superficie da agua e sempre o nivel do mar do
-    // mapa inteiro (World::sea_level), nao um valor por coluna - profundidade varia so
-    // porque o fundo (terrain_h) varia por coluna.
-    bool in_water = (ground.terrain == TerrainPhysicsType::Water);
-    float water_surface_y = (float)world.sea_level * kHeightScale;
 
     if (p.on_ground) g_physics.coyote_timer = cfg.coyote_time;
     else g_physics.coyote_timer = std::max(0.0f, g_physics.coyote_timer - fixed_dt);
@@ -1078,7 +1152,12 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
             p.vel_y = std::max(-cfg.terminal_velocity, p.vel_y);
         }
 
-        if (landing_burst_fired_now) {
+        // Poeira de pouso NAO sobre agua: antes da correcao do gate de agua, este ramo nem
+        // rodava sobre o mar (in_water curto-circuitava tudo). Agora a queda sobre agua e' uma
+        // queda de verdade, entao a rajada dispara - mas uma nuvem de POEIRA marrom estourando
+        // na superficie do lago fica errada. A rajada/chama continua (freia a queda), so' o
+        // efeito de poeira e' suprimido.
+        if (landing_burst_fired_now && ground.terrain != TerrainPhysicsType::Water) {
             const float kLandingDustDuration = 1.1f; // deve bater com main.cpp (render)
             g_physics.landing_dust_timer = kLandingDustDuration;
             g_physics.landing_dust_pos = {p.pos.x, ground.height, p.pos.y};
@@ -1188,38 +1267,18 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     // cfg.step_height (que resolve saliencias pequenas, ver try_step_climb) virava parede
     // intransponivel (bug reportado varias vezes - "cai na agua e nao consigo sair").
     //
-    // Sondagem DIRECIONAL (nao mais um anel de raios fixos): o heightmap e quantizado em
-    // unidades inteiras e a suavizacao/erosao pode gerar margens em "degraus" - trechos
-    // planos de varios tiles de largura bem no nivel do mar antes de subir de vez. Um anel
-    // de raios fixos (ate 3.0 tiles) podia cair inteiro dentro de um desses trechos ainda
-    // molhados, sem nenhuma amostra tocando chao seco de verdade. Aqui, pra cada direcao,
-    // anda 1 tile de cada vez ate 10 tiles de distancia, checando o TIPO de chao
-    // (world.get_ground) a cada passo - para na primeira posicao seca (nao Water/Ice/Lava)
-    // e usa a altura dali, cobrindo qualquer degrau de ate 10 tiles de largura em vez de so
-    // 3.
-    bool still_in_water = (post_ground.terrain == TerrainPhysicsType::Water);
+    // A sondagem direcional de margem (8 direcoes x 10 tiles, para na primeira posicao seca)
+    // agora vive em water_exit_ceiling() la' em cima, calculada 1x no inicio do passo e
+    // reusada aqui - o jogador andou no maximo max_speed*fixed_dt na horizontal desde entao
+    // (bem menos que 1 tile, a granularidade da sondagem), entao reusar e' exato e evita
+    // sondar 2x por substep.
+    //
+    // GATE: agora e' `in_water` (com altura), nao mais so' "post_ground.terrain == Water".
+    // Aquele teste era verdadeiro em QUALQUER altitude sobre agua e este clamp teleportava
+    // pra dentro do lago quem estava so' voando por cima - o bug reportado.
+    bool still_in_water = in_water && (post_ground.terrain == TerrainPhysicsType::Water);
     if (still_in_water) {
-        float ceiling = water_surface_y;
-        static const float kShoreDirs[8][2] = {
-            {1.0f, 0.0f}, {-1.0f, 0.0f}, {0.0f, 1.0f}, {0.0f, -1.0f},
-            {0.7071f, 0.7071f}, {-0.7071f, 0.7071f}, {0.7071f, -0.7071f}, {-0.7071f, -0.7071f}
-        };
-        const float kMaxShoreProbeDist = 10.0f;
-        for (const auto& dir : kShoreDirs) {
-            for (float r = 1.0f; r <= kMaxShoreProbeDist; r += 1.0f) {
-                float sx = p.pos.x + dir[0] * r;
-                float sz = p.pos.y + dir[1] * r;
-                int tx = world_to_tile(sx);
-                int tz = world_to_tile(sz);
-                if (!world.in_bounds(tx, tz)) break;
-                Block ground_b = world.get_ground(tx, tz);
-                if (ground_b == Block::Water || ground_b == Block::Ice || ground_b == Block::Lava) continue;
-                float h = sample_support_height(world, sx, sz, p.w * 0.90f, p.h * 0.90f);
-                if (h > ceiling) ceiling = h;
-                break; // achou chao seco nessa direcao - nao precisa ir mais longe nela
-            }
-        }
-        ceiling += cfg.collision_skin;
+        float ceiling = water_ceiling;
         if (p.pos_y > ceiling) {
             p.pos_y = ceiling;
             if (p.vel_y > 0.0f) p.vel_y = 0.0f;

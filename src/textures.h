@@ -63,6 +63,16 @@ enum class Tile : int {
     Crack6,
     Crack7,
     Crack8,
+    // Lava (4 frames animados) - arte propria, nao mais o tile de AGUA reaproveitado com
+    // tint laranja. O reuso lia como "agua laranja com ondinhas" e o jogador reclamou que
+    // "a lava nao parece incandescente": lava de verdade e' crosta escura QUEBRADA com
+    // rachaduras brilhantes por dentro, nao uma superficie clara uniforme. Acrescentados no
+    // FIM do enum de proposito - o resto do codigo faz aritmetica de indice em cima de
+    // Water0..3 e Crack1..8, mexer na ordem quebraria aquilo.
+    Lava0,
+    Lava1,
+    Lava2,
+    Lava3,
 };
 
 struct UvRect {

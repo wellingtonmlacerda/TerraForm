@@ -75,8 +75,11 @@ void World::gen() {
     // Block::Lava - precisa sobreviver alem do escopo do bloco que o gera.
     std::vector<std::pair<int, int>> volcano_centers;
     static constexpr float kVolcanoCraterRadius = 9.0f;
-    // So o piso baixo da cratera vira Lava (nao a borda/parede rochosa inteira dos 9 tiles).
-    static constexpr float kVolcanoLavaRadius = 5.0f;
+    // Piso da cratera vira Lava. Precisa cobrir a cratera INTEIRA (kVolcanoCraterRadius=9),
+    // nao so' 5: medido na geracao real, o anel r=5..9 caia no ramo seguinte do Passo 5 e,
+    // quando o piso da cratera ficava perto/abaixo do nivel do mar, era pintado de AGUA -
+    // o vulcao virava um pontinho de lava cercado de agua achatada.
+    static constexpr float kVolcanoLavaRadius = 9.0f;
     // Chamines vulcanicas pequenas (pedido do jogador: "coloque lava e pequenas chamines
     // vulcanicas em certos biomas") - diferentes dos vulcoes grandes acima (raio 42,
     // erguem o terreno): sao so' um pontinho de lava (raio ~1.5) cravado num bioma rochoso,
@@ -171,7 +174,7 @@ void World::gen() {
     // ridge bem alto, espacados pra nao empilhar 2 vulcoes vizinhos. Puramente cosmetico -
     // sem lava simulada, so um bloco Lava estatico no fundo da cratera (ver Passo 5/blocks.cpp).
     {
-        struct SeedCandidate { int x, y; float score; };
+        struct SeedCandidate { int x, y; float score; float boost_mult = 1.0f; };
         std::vector<SeedCandidate> candidates;
         for (int y = 2; y < h - 2; ++y) {
             for (int x = 2; x < w - 2; ++x) {
@@ -206,17 +209,93 @@ void World::gen() {
         // os volcano_seed_count vulcoes pelo mapa inteiro sem 2 ficarem colados.
         const float kVolcanoMinSpacing2 = 150.0f * 150.0f;
         std::vector<SeedCandidate> volcanoes;
+        // Distribuicao ESPACIAL por celulas, nao "os N mais altos". Medido instrumentando a
+        // geracao de verdade: os 7 vulcoes naturais sairam TODOS entre x=2370..3007 e
+        // y=4..404 (canto nordeste), a 1118-1594 tiles do centro do mapa - o jogador nunca
+        // ia topar com nenhum. Causa raiz: hn e' clampado em 1.0 (clamp01 no Passo 1) em
+        // areas amplas de montanha, entao centenas de candidatos empatam com score
+        // EXATAMENTE 1.0; std::sort nao e' estavel, o desempate virou a ordem de varredura
+        // (row-major, y crescente) e a busca gulosa consumiu as 7 vagas no primeiro macico
+        // que encontrou. Dividir o mapa em celulas e permitir no maximo 1 vulcao por celula
+        // forca espalhamento independente de empate de score.
+        const int kVolcanoGridCols = 4;
+        const int kVolcanoGridRows = 3;
+        std::vector<uint8_t> grid_used((size_t)kVolcanoGridCols * (size_t)kVolcanoGridRows, 0);
+        auto grid_slot_of = [&](int x, int y) -> size_t {
+            int gx = std::clamp(x * kVolcanoGridCols / std::max(1, w), 0, kVolcanoGridCols - 1);
+            int gy = std::clamp(y * kVolcanoGridRows / std::max(1, h), 0, kVolcanoGridRows - 1);
+            return (size_t)gy * (size_t)kVolcanoGridCols + (size_t)gx;
+        };
         for (const auto& c : candidates) {
             if ((int)volcanoes.size() >= volcano_count) break;
+            // Borda: um cone de raio 42 carimbado a 4 tiles da borda do mapa fica cortado pela
+            // metade (3 dos 7 vulcoes medidos sairam com y=4/y=10, meio truncados).
+            if (c.x < 60 || c.x >= w - 60 || c.y < 60 || c.y >= h - 60) continue;
+            size_t slot = grid_slot_of(c.x, c.y);
+            if (grid_used[slot]) continue;
             bool far_enough = true;
             for (const auto& v : volcanoes) {
                 float dx = (float)(c.x - v.x), dy = (float)(c.y - v.y);
                 if (dx * dx + dy * dy < kVolcanoMinSpacing2) { far_enough = false; break; }
             }
-            if (far_enough) volcanoes.push_back(c);
+            if (!far_enough) continue;
+            grid_used[slot] = 1;
+            volcanoes.push_back(c);
         }
 
-        const float kVolcanoRadius = 42.0f;
+        // Garantia INCONDICIONAL: 1 vulcao PERTO da base, em terreno seco e alto, pra o
+        // jogador achar um sem depender de sorte de seed nem de caminhar 1000 tiles.
+        //
+        // Historico (medido instrumentando a geracao real, nao suposicao): a versao anterior
+        // carimbava numa posicao FIXA (w/2+200, h/2-70) = 212 tiles do centro. Naquele ponto
+        // o terreno era uma bacia costeira: o vulcao saiu com o piso da cratera em altura 10
+        // (ABAIXO do nivel do mar 20), com mar entre ele e a base, os 3 riachos de lava
+        // morreram em 9-10 passos ("chegou no nivel do mar") e o anel r=5..9 da cratera foi
+        // pintado de AGUA. Ou seja: existia, mas era um poco alagado do outro lado do mar.
+        //
+        // Agora procura o melhor ponto num ANEL ao redor do centro do mapa (a base sempre
+        // nasce a <= ~70x45 do centro, ver generate_base()):
+        //  - raio 85..115: longe do achatamento da base (flatten dy -30..25 / dx -40..40, e o
+        //    pad raio 20) mas DENTRO do alcance de visao do jogo (view_radius chega a 110+ no
+        //    chao), entao da' pra ver o cone do lado de fora da base.
+        //  - exige terreno bem acima do nivel do mar (hn > sea_hn + 0.10) pra nao repetir o
+        //    vulcao-lagoa: assim a cratera fica acima do mar e os riachos de lava tem desnivel
+        //    de sobra pra escorrer de verdade.
+        //  - escolhe o ponto mais ALTO do anel que satisfaca isso (encosta natural ajuda o
+        //    cone a parecer parte do relevo em vez de um cone solto no plano).
+        {
+            int ccx = w / 2, ccy = h / 2;
+            float sea_hn_guard = (float)(sea_h - min_h_i) / (float)(max_h_i - min_h_i) + 0.10f;
+            int best_x = -1, best_y = -1;
+            float best_h = -1.0f;
+            for (int rr = 85; rr <= 115; rr += 5) {
+                // 24 direcoes por anel - amostragem suficiente pra achar a melhor encosta sem
+                // varrer a area toda.
+                for (int a = 0; a < 24; ++a) {
+                    float ang = (float)a * (2.0f * 3.14159265f / 24.0f);
+                    int cx2 = ccx + (int)std::lround(std::cos(ang) * (float)rr);
+                    int cy2 = ccy + (int)std::lround(std::sin(ang) * (float)rr);
+                    if (cx2 < 60 || cx2 >= w - 60 || cy2 < 60 || cy2 >= h - 60) continue;
+                    float hn_here = heights[index_of(cx2, cy2)];
+                    if (hn_here <= sea_hn_guard) continue; // seco e acima do mar, nao bacia
+                    if (hn_here > best_h) { best_h = hn_here; best_x = cx2; best_y = cy2; }
+                }
+            }
+            if (best_x >= 0) {
+                // boost 1.5 (nao 2.2): em terreno ja elevado, 2.2 estourava o teto de altura e
+                // era o unico vulcao com inclinacao acima do talus da erosao termica (0.021),
+                // por isso o unico que perdia altura na erosao. 1.5 num ponto alto da' um cone
+                // bem visivel que a erosao nem toca.
+                volcanoes.push_back({best_x, best_y, 1.0f, 1.5f});
+            }
+        }
+
+        // Raio 42 -> 30: o cone de 42 tiles com ~20 unidades de altura tinha uma inclinacao
+        // muito mansa (grade ~0.5), lia como "morro largo" e nao como vulcao - o jogador
+        // reclamou que "nao ta muito com cara de uma". Mais estreito na mesma altura = a
+        // silhueta conica classica. Ainda abaixo do talus da erosao termica na maioria dos
+        // casos, entao a erosao continua praticamente nao mexendo nele.
+        const float kVolcanoRadius = 30.0f;
         const float kVolcanoHeightBoost = 0.30f;
         for (const auto& v : volcanoes) {
             volcano_centers.push_back({v.x, v.y});
@@ -228,7 +307,7 @@ void World::gen() {
                     float dx = (float)(x - v.x), dy = (float)(y - v.y);
                     float dist = std::sqrt(dx * dx + dy * dy);
 
-                    float cone = smoothstep01(kVolcanoRadius, 0.0f, dist) * kVolcanoHeightBoost;
+                    float cone = smoothstep01(kVolcanoRadius, 0.0f, dist) * kVolcanoHeightBoost * v.boost_mult;
 
                     float crater_t = clamp01(1.0f - dist / kVolcanoCraterRadius);
                     float v_crater_core = smoothstep01(0.55f, 0.90f, crater_t);
@@ -236,7 +315,7 @@ void World::gen() {
 
                     size_t i = index_of(x, y);
                     heights[i] = clamp01(heights[i] + cone -
-                                          v_crater_core * (kVolcanoHeightBoost + 0.12f) +
+                                          v_crater_core * (kVolcanoHeightBoost * v.boost_mult + 0.12f) +
                                           v_crater_rim * 0.08f);
                 }
             }
@@ -498,10 +577,15 @@ void World::gen() {
         const int kNx8L[8] = {1, -1, 0, 0, 1, 1, -1, -1};
         const int kNy8L[8] = {0, 0, 1, -1, 1, -1, 1, -1};
         float sea_hn = (float)(sea_h - min_h_i) / (float)(max_h_i - min_h_i);
-        // 3 riachos de lava por vulcao, saindo em direcoes bem separadas da borda da
-        // cratera (kVolcanoCraterRadius=9) - nao precisa de trigonometria, offsets fixos
-        // ja dao angulos bem espalhados ao redor do cone.
-        const int kFlowStartOffsets[3][2] = { {20, 0}, {-14, 14}, {-14, -14} };
+        // 6 riachos de lava por vulcao (era 3), saindo da borda da cratera em direcoes bem
+        // espalhadas - mais riachos = muito mais chance de o jogador cruzar com um, e o cone
+        // fica visualmente "sangrando" lava de varios lados em vez de ter um risquinho so.
+        // Raio 12: fica logo fora da cratera (kVolcanoCraterRadius=9) e bem dentro do cone
+        // (kVolcanoRadius=42), na parte mais inclinada da encosta - e' onde o steepest-descent
+        // tem desnivel de sobra pra correr longe morro abaixo.
+        const int kFlowStartOffsets[6][2] = {
+            {12, 0}, {-12, 0}, {0, 12}, {0, -12}, {9, 9}, {-9, -9}
+        };
 
         for (const auto& vc : volcano_centers) {
             for (const auto& off : kFlowStartOffsets) {
@@ -509,12 +593,20 @@ void World::gen() {
                 int cy = vc.second + off[1];
                 if (cx < 2 || cx >= w - 2 || cy < 2 || cy >= h - 2) continue;
 
-                for (int step = 0; step < 60; ++step) {
+                // 60 -> 220 passos: medido na geracao real, varios riachos batiam no teto de
+                // 60 ainda descendo (bail=0), ou seja o comprimento estava sendo cortado pelo
+                // limite e nao pelo relevo. Lava escorrendo montanha abaixo por 200 tiles e'
+                // exatamente o "lava escorrendo" que o jogador pediu.
+                for (int step = 0; step < 220; ++step) {
                     size_t ci = index_of(cx, cy);
                     if (river_map[ci]) break; // nao invade rio/lago/mar ja tracado
 
-                    for (int oy = -1; oy <= 1; ++oy) {
-                        for (int ox = -1; ox <= 1; ++ox) {
+                    // Largura do riacho: 3x3 (raio 1) no comeco, afinando pra 1 tile depois de
+                    // uns 60 passos - perto do vulcao e' um rio de lava largo, longe vira um
+                    // fio, como lava de verdade esfriando/estreitando.
+                    int flow_r = (step < 60) ? 1 : 0;
+                    for (int oy = -flow_r; oy <= flow_r; ++oy) {
+                        for (int ox = -flow_r; ox <= flow_r; ++ox) {
                             int nx2 = cx + ox, ny2 = cy + oy;
                             if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
                             size_t ni = index_of(nx2, ny2);
@@ -532,7 +624,30 @@ void World::gen() {
                         float nh = heights[index_of(nx2, ny2)];
                         if (nh < best_h) { best_h = nh; best_nx = nx2; best_ny = ny2; }
                     }
-                    if (best_nx < 0) break; // poco local - lava para e forma uma piscina pequena
+                    if (best_nx < 0) {
+                        // Poco local (nenhum vizinho mais baixo). Antes: "break" imediato - e'
+                        // por isso que a maioria dos riachos medidos morria em 10-40 passos
+                        // (bail=3, muito antes do limite de passos). Erosao/suavizacao deixam o
+                        // terreno cheio de minimos locais rasos de 1 unidade; lava de verdade
+                        // enche o pocinho e transborda. Aqui: procura num raio 3 o vizinho mais
+                        // baixo (mesmo que na mesma altura) pra "transbordar" e seguir descendo,
+                        // e so' desiste se estiver mesmo numa bacia fechada.
+                        float spill_h = heights[ci] + 0.0001f;
+                        for (int oy = -3; oy <= 3 && best_nx < 0; ++oy) {
+                            for (int ox = -3; ox <= 3; ++ox) {
+                                if (ox == 0 && oy == 0) continue;
+                                int nx2 = cx + ox, ny2 = cy + oy;
+                                if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
+                                size_t ni2 = index_of(nx2, ny2);
+                                if (lava_flow_map[ni2] || river_map[ni2]) continue; // nao volta por onde veio
+                                if (heights[ni2] <= spill_h) {
+                                    best_nx = nx2; best_ny = ny2;
+                                    break;
+                                }
+                            }
+                        }
+                        if (best_nx < 0) break; // bacia fechada de verdade - vira piscina de lava
+                    }
                     cx = best_nx;
                     cy = best_ny;
                 }

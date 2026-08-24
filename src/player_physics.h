@@ -112,6 +112,14 @@ struct PhysicsRuntime {
     TerrainPhysicsType terrain = TerrainPhysicsType::Normal;
     std::string terrain_name = "Normal";
     bool submerged = false; // Cabeca abaixo da superficie da agua (dreno extra de O2 do traje)
+    // Fonte UNICA da verdade de "o jogador esta dentro da agua" (nadando), calculada COM
+    // altura em apply_single_physics_step - diferente de "o chao embaixo e' agua", que e'
+    // verdade em qualquer altitude sobre um tile de agua (probe_ground le o topo da coluna sem
+    // olhar altitude). Quem desenha/mira deve ler ISTO, nunca re-derivar via surface_block_at:
+    // era exatamente essa re-derivacao que desenhava o jogador afundado 0.57 e sem sombra
+    // enquanto ele voava por cima da agua. Tambem serve de trava de continuidade da subida
+    // assistida pra sair da agua (ver water_exit_ceiling).
+    bool in_water = false;
     Vec3 ground_normal = {0.0f, 1.0f, 0.0f};
     Vec2 collision_normal = {0.0f, 0.0f};
 

@@ -558,6 +558,12 @@ void update_mining_and_placement(float dt) {
     // mao; g_has_target fica false esse frame, o que ja e' o comportamento certo pro HUD/R-F-G).
     if (g_selected == Block::LaserPistol) {
         try_fire_laser_pistol(ray_o, ray_d, dt);
+        // Sem isso, o "return" abaixo pulava update_item_drops() (coleta por proximidade,
+        // la' embaixo no fim desta funcao) inteiro - com a arma equipada, os drops no chao
+        // simplesmente nunca eram coletados (bug real reportado pelo jogador). Mineracao/
+        // construcao/mira de bloco continuam puladas de proposito (nao faz sentido mirar um
+        // bloco com a arma na mao) - so' a coleta de item precisa continuar rodando.
+        update_item_drops(dt);
         return;
     }
 

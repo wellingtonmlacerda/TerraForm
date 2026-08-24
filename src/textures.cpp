@@ -285,6 +285,41 @@ static void tile_generate_all(std::vector<uint8_t>& atlas) {
         }
     }
 
+    // Lava (4 frames) - crosta escura rachada com veios incandescentes.
+    // O tile e' desenhado em tons NEUTROS (cinza) porque block_color(Lava) multiplica por um
+    // tint laranja depois (uses_tint), igual todo o resto do atlas: valor BAIXO = crosta
+    // escura/fria, valor ALTO = veio brilhante/derretido. A rachadura anda de frame em frame,
+    // dando a impressao de crosta se movendo sobre a lava.
+    for (int f = 0; f < 4; ++f) {
+        Tile tf = (Tile)((int)Tile::Lava0 + f);
+        // Base bem escura = crosta solidificada (contraste alto com os veios abaixo, e' isso
+        // que faz ler como "algo derretido por dentro" em vez de tinta laranja lisa).
+        tile_noise(atlas, tf, c8(66, 66, 66), 16, 0x90u + (uint32_t)f);
+        for (int y = 0; y < kAtlasTileSize; ++y) {
+            for (int x = 0; x < kAtlasTileSize; ++x) {
+                // Duas familias de rachaduras cruzadas, deslocadas por frame - onde elas
+                // passam, a "lava por baixo" aparece (valor alto).
+                int a1 = (x + y * 2 + f * 3) % 11;
+                int a2 = (x * 2 - y + f * 2 + 32) % 13;
+                uint32_t n = noise2_u32(x, y, 0x90u + (uint32_t)f);
+                if (a1 == 0 || a2 == 0) {
+                    // Nucleo do veio: quase branco (vira amarelo-branco depois do tint) -
+                    // e' o pixel que da a sensacao de calor.
+                    tile_set_px(atlas, tf, x, y, c8(255, 250, 240));
+                } else if (a1 == 1 || a2 == 1) {
+                    // Beirada do veio, um degrau abaixo (transicao crosta -> derretido).
+                    tile_set_px(atlas, tf, x, y, c8(190, 170, 150));
+                } else if ((n % 17u) == 0u) {
+                    // Brasas isoladas na crosta.
+                    tile_set_px(atlas, tf, x, y, c8(150, 120, 100));
+                } else if ((n % 7u) == 0u) {
+                    // Manchas ainda mais frias/escuras - quebra a uniformidade da crosta.
+                    tile_set_px(atlas, tf, x, y, c8(42, 42, 44));
+                }
+            }
+        }
+    }
+
     // Gelo / neve (tendem a ficar neutros, com leve detalhe)
     tile_noise(atlas, Tile::Ice, c8(210, 238, 255, 235), 10, 0x40u);
     for (int y = 0; y < kAtlasTileSize; ++y) {
@@ -429,9 +464,12 @@ BlockTex block_tex(Block b) {
         case Block::Stone: t = {Tile::Stone, Tile::Stone, Tile::Stone, false, false, false}; break;
         case Block::Sand:  t = {Tile::Sand, Tile::Sand, Tile::Sand, false, false, false}; break;
         case Block::Water: t = {Tile::Water0, Tile::Water0, Tile::Water0, true, true, true}; break;
-        // Reaproveita literalmente o mesmo tile animado da agua (Water0..3) - so o tint em
-        // block_color() abaixo muda de azul pra laranja/vermelho, sem tile novo no atlas.
-        case Block::Lava:  t = {Tile::Water0, Tile::Water0, Tile::Water0, true, true, true}; break;
+        // Arte propria (Lava0..3), nao mais o tile da AGUA com tint laranja - ver comentario
+        // no enum Tile (textures.h). is_water fica FALSE de proposito: aquele flag forcava o
+        // tile Water0+frame de volta e afundava o desenho 0.18 como se fosse agua; a animacao
+        // da lava e' feita com seu proprio contador de frame no loop de terreno (main.cpp).
+        // transparent=false: lava e' opaca (antes vinha com alpha 0.92 do ramo da agua).
+        case Block::Lava:  t = {Tile::Lava0, Tile::Lava0, Tile::Lava0, true, false, false}; break;
         case Block::Ice:   t = {Tile::Ice, Tile::Ice, Tile::Ice, false, true, false}; break;
         case Block::Snow:  t = {Tile::Snow, Tile::Snow, Tile::Snow, false, false, false}; break;
         case Block::Wood:  t = {Tile::WoodTop, Tile::WoodSide, Tile::WoodTop, false, false, false}; break;

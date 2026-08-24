@@ -20,6 +20,15 @@ static constexpr int kWorldHeight = 1536;
 // heightmap/erosion/biome generator) is the one method converted to an out-of-line
 // definition, declared here and defined in world.cpp — see the comment there for details;
 // its body is unchanged from the original.
+// Definido em terrain_mesh.cpp - World::set/set_ground/set_height (abaixo) chamam isso pra
+// invalidar o chunk de malha cacheada dono do tile (ver terrain_mesh.h). Declarado aqui (nao
+// incluindo terrain_mesh.h, que dependeria de World e criaria inclusao circular) - mesmo
+// padrao de declaracao solta ja usado no projeto pra evitar dependencia cruzada de headers.
+// Precisa vir ANTES de "struct World": os metodos inline abaixo chamam esta funcao livre, e
+// lookup de nome de funcao livre (sem ADL, so' recebe ints) segue a ordem normal de
+// declaracao no arquivo mesmo dentro de um corpo de metodo inline de classe.
+void terrain_mesh_mark_dirty(int tile_x, int tile_y);
+
 struct World {
     // Empilhamento de blocos construidos (torres/paredes) - aditivo sobre o modelo de
     // heightmap+objeto-unico existente, ver plano salvo em
@@ -65,6 +74,7 @@ struct World {
     void set(int x, int y, Block b) {
         if (!in_bounds(x, y)) return;
         tiles[(size_t)y * (size_t)w + (size_t)x] = b;
+        terrain_mesh_mark_dirty(x, y);
     }
 
     Block get_ground(int x, int y) const {
@@ -75,6 +85,7 @@ struct World {
     void set_ground(int x, int y, Block b) {
         if (!in_bounds(x, y)) return;
         ground[(size_t)y * (size_t)w + (size_t)x] = b;
+        terrain_mesh_mark_dirty(x, y);
     }
 
     int16_t height_at(int x, int y) const {
@@ -85,6 +96,7 @@ struct World {
     void set_height(int x, int y, int16_t v) {
         if (!in_bounds(x, y)) return;
         heightmap[(size_t)y * (size_t)w + (size_t)x] = v;
+        terrain_mesh_mark_dirty(x, y);
     }
 
     // ---- Pilha de blocos construidos (empilhamento) ----

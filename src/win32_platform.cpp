@@ -12,6 +12,7 @@
 #include "font.h"
 #include "audio.h"
 #include "lighting.h"
+#include "terrain_mesh.h"
 
 // ============= Platform Layer (raylib main loop) =============
 // Migrated from Win32 (WindowProc/WinMain/WGL context setup) to raylib's InitWindow()/
@@ -178,6 +179,7 @@ int main() {
     delete g_world;
     g_world = nullptr;
 
+    terrain_mesh_shutdown();
     shutdown_game_audio();
     CloseWindow();
     return 0;

@@ -250,8 +250,50 @@ void render_cube_3d(float x, float y, float z, float size, float r, float g, flo
     }
 }
 
-// render_sphere_3d removed (raylib migration): confirmed dead code before removal (zero call
-// sites anywhere in src/, only a stale comment referenced it).
+// Esfera solida pequena (capacete/juntas do jogador) - ver comentario completo no header.
+void render_sphere_3d(float x, float y, float z, float radius, float r, float g, float b, float a,
+                       int lat_seg, int lon_seg, float scale_y, float scale_z) {
+    rlSetTexture(0);
+
+    float fog_r = r, fog_g = g, fog_b = b;
+    apply_frame_fog(x, y, z, fog_r, fog_g, fog_b);
+    r = fog_r; g = fog_g; b = fog_b;
+
+    for (int lat = 0; lat < lat_seg; ++lat) {
+        float v0 = (float)lat / (float)lat_seg;
+        float v1 = (float)(lat + 1) / (float)lat_seg;
+        float p0 = v0 * kPi;
+        float p1 = v1 * kPi;
+        // y vai de +radius (topo, p=0) a -radius (fundo, p=pi) - cos(p) comeca em 1 e desce.
+        float y0 = std::cos(p0), y1 = std::cos(p1);
+        float rad0 = std::sin(p0), rad1 = std::sin(p1);
+        // Sombra simples por altura (mesmo espirito das 3 sombras de render_cube_3d): topo
+        // claro, fundo escuro - nao precisa de normal por vertice pra uma esfera tao pequena.
+        float shade0 = 0.62f + 0.38f * (y0 * 0.5f + 0.5f);
+        float shade1 = 0.62f + 0.38f * (y1 * 0.5f + 0.5f);
+
+        rlBegin(RL_QUADS);
+        for (int lon = 0; lon < lon_seg; ++lon) {
+            float u0 = (float)lon / (float)lon_seg * 2.0f * kPi;
+            float u1 = (float)(lon + 1) / (float)lon_seg * 2.0f * kPi;
+            float cu0 = std::cos(u0), su0 = std::sin(u0);
+            float cu1 = std::cos(u1), su1 = std::sin(u1);
+
+            Vec3 v00{x + cu0 * rad0 * radius, y + y0 * radius * scale_y, z + su0 * rad0 * radius * scale_z};
+            Vec3 v10{x + cu1 * rad0 * radius, y + y0 * radius * scale_y, z + su1 * rad0 * radius * scale_z};
+            Vec3 v11{x + cu1 * rad1 * radius, y + y1 * radius * scale_y, z + su1 * rad1 * radius * scale_z};
+            Vec3 v01{x + cu0 * rad1 * radius, y + y1 * radius * scale_y, z + su0 * rad1 * radius * scale_z};
+
+            rlColor4f(r * shade0, g * shade0, b * shade0, a);
+            rlVertex3f(v00.x, v00.y, v00.z);
+            rlVertex3f(v10.x, v10.y, v10.z);
+            rlColor4f(r * shade1, g * shade1, b * shade1, a);
+            rlVertex3f(v11.x, v11.y, v11.z);
+            rlVertex3f(v01.x, v01.y, v01.z);
+        }
+        rlEnd();
+    }
+}
 
 // Hemisferio decorativo (domo geodesico) - ver comentario completo em render_primitives.h.
 // Malha em faixas de latitude/longitude (mesma estrutura de render_lit_sphere em sky.cpp,
@@ -469,10 +511,20 @@ void render_geodesic_dome(Vec3 base_center, float radius, float r, float g, floa
 // da mesma logica de switch por face, so trocando glBegin/glVertex3f/glColor4f/glTexCoord2f/
 // glEnd por rlBegin(RL_QUADS)/rlVertex3f/rlColor4f/rlTexCoord2f/rlEnd.
 void render_wall_3d_tex(WallFace face, float x, float z, float y0, float y1, Tile tile,
-                         float tint_r, float tint_g, float tint_b, float a, float shade) {
+                         float tint_r, float tint_g, float tint_b, float a, float shade,
+                         bool flat) {
     if (y1 <= y0) return;
     constexpr float half = 0.5f;
     UvRect uv = atlas_uv(tile);
+    if (flat) {
+        // Colapsa o retangulo pro seu proprio centro - os 4 rlTexCoord2f abaixo (u0,v0/u1,v0/
+        // u1,v1/u0,v1) todos caem no MESMO texel, entao a face inteira vira uma cor solida
+        // (sem gradiente de textura nenhum pra "tremer" numa faixa fina de poucos pixels).
+        float cu = (uv.u0 + uv.u1) * 0.5f;
+        float cv = (uv.v0 + uv.v1) * 0.5f;
+        uv.u0 = uv.u1 = cu;
+        uv.v0 = uv.v1 = cv;
+    }
 
     float r = tint_r * shade, g = tint_g * shade, b = tint_b * shade;
     apply_frame_fog(x, (y0 + y1) * 0.5f, z, r, g, b);

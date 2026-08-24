@@ -27,6 +27,7 @@
 #include "objectives.h"           // objectives_victory_celebration_remaining (player objectives feature)
 #include "creatures.h"            // update_creatures/render_creatures/try_craft_laser_pistol call site
 #include "audio.h"                // play_meteor_impact_sound
+#include "terrain_mesh.h"         // terrain_mesh_render_far/terrain_mesh_mark_dirty - cache de terreno distante
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -336,6 +337,26 @@ static bool g_prev_p = false; // Fabricar Pistola de Laser (ver try_craft_laser_
 float g_place_cd = 0.0f;
 static float g_drown_accum = 0.0f;
 
+// --- DIAGNOSTICO TEMPORARIO (remover depois de identificar a causa do voo infinito +
+// piscar do chao reportado de novo) --- ver uso em render_world()/perto do render_hud().
+static int g_debug_view_radius = 0;
+static int g_debug_wall_radius = 0;
+static int g_debug_wall_draws = 0;
+static int g_debug_far_chunks_drawn = 0;
+
+// Escala adaptativa de raio de visao (0.40..1.0): o diagnostico acima confirmou a causa raiz
+// real do "voo infinito"/travamento reportado varias vezes nesta sessao - nao e' um bug de
+// fisica nem um valor especifico de terreno errado, e' que o loop de terreno (por tile, sem
+// culling de verdade) fica caro demais quando o relevo e' muito acidentado (o jogador pediu
+// terreno mais dramatico/montanhoso varias vezes - cada versao mais bonita tambem desenha
+// mais paredes). Em vez de ficar cortando view_radius/ajustando ruido de terreno as cegas
+// toda vez que isso volta a acontecer (ja fizemos isso 2x), esta escala reage ao FPS real em
+// tempo real: se o frame rate cai, o raio de visao encolhe sozinho ate' sustentar de novo (e
+// volta a crescer quando sobra FPS) - protege contra QUALQUER futura mudanca de terreno que
+// fique pesada demais, nao so' a de agora.
+static float g_render_quality = 1.0f;
+static float g_render_quality_timer = 0.0f;
+
 // Mining progress (estilo Minicraft/Minecraft: segurar para quebrar). All five lost
 // "static" here: building_interaction.cpp's update_mining_and_placement() needs external
 // linkage to read/write them from another translation unit - same pattern as g_prev_lmb
@@ -390,6 +411,11 @@ struct FallingMeteor {
     float duration = 1.6f;
 };
 static std::vector<FallingMeteor> g_meteors;
+
+// Chamado por save_load.cpp::load_game() - ver o comentario da declaracao la'. Um meteoro em
+// voo foi mirado no mundo/base ANTIGOS; deixa-lo cair depois de carregar outro save escavaria
+// a cratera (agora raio ~10) num ponto arbitrario do mundo novo.
+void clear_falling_meteors() { g_meteors.clear(); }
 
 // ModuleStatus enum + Module struct + g_modules moved to modules_building.h/.cpp
 // (verbatim) - same stage as above. modules_building.h (included above) supplies the
@@ -1063,6 +1089,23 @@ void render_world(int win_w, int win_h) {
     // esse jeito de desenhar. Reduzido pra 380 (~450mil tiles no pior caso) - ainda bem mais
     // longe que o teto original de 340 de antes desta sessao, so' que sustentavel.
     int view_radius = (int)std::clamp(g_camera.distance * 3.8f + 55.0f + altitude_bonus, 110.0f, 380.0f);
+
+    // Escala adaptativa (ver g_render_quality acima): checa o FPS real a cada 0.5s (nao todo
+    // frame - GetFPS() ja e' uma media do raylib, checar com mais frequencia so reagiria a
+    // ruido) e ajusta a escala com passos pequenos + zona morta entre os limiares de descida
+    // e subida (24 vs 50) pra nao ficar oscilando o raio de visao pra frente e pra tras.
+    g_render_quality_timer += GetFrameTime();
+    if (g_render_quality_timer >= 0.5f) {
+        g_render_quality_timer = 0.0f;
+        int fps_now = GetFPS();
+        if (fps_now > 0 && fps_now < 24) {
+            g_render_quality = std::max(0.40f, g_render_quality - 0.10f);
+        } else if (fps_now > 50) {
+            g_render_quality = std::min(1.0f, g_render_quality + 0.05f);
+        }
+    }
+    view_radius = std::max(90, (int)((float)view_radius * g_render_quality));
+
     // Paredes/objetos (4 desenhos extras por tile pras paredes, +1 pro objeto) sao a parte
     // mais cara do loop - cortar o raio deles pra 80% do raio do terreno (em vez de igual,
     // como ficou depois do pedido "sem pop" nesta sessao) da uma folga real de performance
@@ -1072,8 +1115,28 @@ void render_world(int win_w, int win_h) {
     int wall_radius = (int)((float)view_radius * 0.80f);
     int obj_radius = wall_radius;
     int view_radius2 = view_radius * view_radius;
+
+    // --- DIAGNOSTICO TEMPORARIO (remover depois) ---
+    // Jogador reportou voo infinito + piscar do chao de novo, mesmo depois do ajuste de
+    // smooth_passes/detail_weight - precisa medir de verdade em vez de ajustar as cegas de
+    // novo: quantas paredes estao sendo desenhadas por frame (cada diferenca de altura entre
+    // tiles vizinhos, por menor que seja, desenha uma) e o FPS real na hora do bug.
+    g_debug_view_radius = view_radius;
+    g_debug_wall_radius = wall_radius;
+    g_debug_wall_draws = 0;
     int wall_radius2 = wall_radius * wall_radius;
     int obj_radius2 = obj_radius * obj_radius;
+
+    // Terreno CACHEADO (ver terrain_mesh.h) cobre tudo ALEM disso, como Mesh reconstruida so
+    // quando muda em vez de redesenhada em modo imediato todo frame - e' o que elimina o
+    // custo medido (34 mil quads de parede/frame) que causava o travamento reportado. Dentro
+    // de near_radius continua tudo em modo imediato exatamente como sempre foi (fidelidade
+    // total - agua animada, brilho de sol, blend com o cursor de mineracao) - 60 tiles ainda
+    // e' bem maior que qualquer alcance de interacao (mineracao ~4, pistola ~35). Reduzido de
+    // 90 pra 60 depois de medir ao vivo que so' a regiao "perto" ja desenhava 22 mil paredes
+    // em modo imediato num trecho de terreno bem acidentado - 60 corta esse pior caso bastante
+    // sem encostar no alcance de nenhuma interacao.
+    int near_radius = std::min(view_radius, 60);
     // Zona de fade (ultimos 25% do wall_radius) - alem de wall_radius nao desenha nada
     // (economia real); dentro da zona, o alpha cai linearmente ate 0 na borda.
     float wall_fade_start = (float)wall_radius * 0.75f;
@@ -1199,6 +1262,19 @@ void render_world(int win_w, int win_h) {
         constexpr float side_shade = 0.72f;
         constexpr float dark_shade = 0.52f;
         constexpr float kTopEps = 0.01f;
+        // Diferencas de altura de 1 unidade de heightmap (0.25 mundo) entre tiles vizinhos sao
+        // ruido de terreno normal (mais comum em relevo dramatico/com ridge forte, tipo
+        // montanha/neve) - SEMPRE precisam de uma parede pra fechar a lacuna entre os topos
+        // dos 2 tiles vizinhos (uma tentativa anterior so' PULAVA a parede pra diferencas
+        // pequenas - isso sim deixava uma fresta de verdade visivel, lendo como "grade/
+        // buraquinhos no chao", bug reportado). O que causava o "piscando" original nao era a
+        // parede existir, e' ela vir com TEXTURA esticada numa faixa fina de poucos pixels na
+        // tela - isso alias/treme (minificacao sem mipmap) conforme a camera se move. Por
+        // isso: parede SEMPRE (fecha a lacuna), mas so' com textura esticada quando a
+        // diferenca e' grande o bastante pra realmente parecer um penhasco de verdade -
+        // diferencas pequenas usam render_wall_3d_tex(..., flat=true) (1 amostra de cor solida,
+        // sem gradiente pra tremer).
+        constexpr float kFlatWallThreshold = 1.2f;
 
         for (int tz = start_z; tz <= end_z; ++tz) {
             for (int tx = start_x; tx <= end_x; ++tx) {
@@ -1215,11 +1291,27 @@ void render_world(int win_w, int win_h) {
                 float world_x = (float)tx;
                 float world_z = (float)tz;
 
-                // === SOLO (top) ===
-                {
+                // === SOLO (top) === (so em modo imediato pra tiles cujo CHUNK terrain_mesh
+                // considera "perto" - usa a MESMA funcao que terrain_mesh_render_far() usa
+                // pra escolher os chunks "longe" cobertos pela malha cacheada, garantindo que
+                // nenhum tile seja desenhado nos 2 caminhos ao mesmo tempo. Um corte por
+                // dist2 <= near_radius2 aqui, diferente do criterio por-centro-de-chunk do
+                // outro lado, causava sobreposicao perto da fronteira - 2 geometrias na
+                // mesma posicao/altura brigando no z-buffer (bug real: "o chao voltou a
+                // piscar").
+                if (!terrain_mesh_tile_is_far(tx, tz, player_tile_x, player_tile_z, near_radius)) {
                     BlockTex gtex = block_tex(surface);
                     if (gtex.is_water) {
                         gtex.top = (Tile)((int)Tile::Water0 + water_frame);
+                        gtex.side = gtex.top;
+                        gtex.bottom = gtex.top;
+                    }
+                    // Lava tem seu proprio ciclo de animacao (nao entra mais no ramo is_water
+                    // da agua) - mais lento que a agua, lava escorre devagar.
+                    bool is_lava = (surface == Block::Lava);
+                    if (is_lava) {
+                        int lava_frame = ((int)std::floor(g_day_time * 2.2f)) & 3;
+                        gtex.top = (Tile)((int)Tile::Lava0 + lava_frame);
                         gtex.side = gtex.top;
                         gtex.bottom = gtex.top;
                     }
@@ -1285,22 +1377,37 @@ void render_world(int win_w, int win_h) {
                     tint_g *= shade;
                     tint_b *= shade;
                     
+                    // Lava e' EMISSIVA: emite a propria luz, entao nao escurece com
+                    // inclinacao/altitude nem com a noite (o jogador reclamou que "no escuro
+                    // ela deveria ser luminosa, pois e' lava" - antes ela recebia o mesmo
+                    // escurecimento de qualquer chao e a noite virava um vermelho apagado).
+                    // Refaz o tint do zero, sem shade, e ainda sobe o brilho.
+                    if (is_lava) {
+                        float cr, cg, cb, ca;
+                        block_color(surface, tz, g_world->h, cr, cg, cb, ca);
+                        // Pulso lento de brilho: da a sensacao de massa derretida se movendo.
+                        float pulse = 0.88f + 0.12f * std::sin(g_day_time * 1.7f + world_x * 0.35f + world_z * 0.27f);
+                        tint_r = std::min(1.0f, cr * 1.35f * pulse);
+                        tint_g = std::min(1.0f, cg * 1.25f * pulse);
+                        tint_b = std::min(1.0f, cb * 1.20f * pulse);
+                    }
+
                     // === ILUMINACAO 2D (RTX FAKE) ===
-                    if (g_lighting.enabled) {
+                    if (g_lighting.enabled && !is_lava) {
                         float light_r, light_g, light_b;
                         sample_lightmap((float)tx, (float)tz, light_r, light_g, light_b);
-                        
+
                         // Escurecimento por profundidade
                         float depth_factor = compute_depth_factor(base_y, rpy);
                         light_r *= depth_factor;
                         light_g *= depth_factor;
                         light_b *= depth_factor;
-                        
+
                         // Aplicar iluminacao
                         tint_r *= light_r;
                         tint_g *= light_g;
                         tint_b *= light_b;
-                        
+
                         // Color grading
                         apply_color_grading(tint_r, tint_g, tint_b);
                     }
@@ -1332,6 +1439,92 @@ void render_world(int win_w, int win_h) {
                         float top_y = base_y + kTopEps;
                         if (use_textures) render_plane_3d_tex(world_x, top_y, world_z, 1.0f, gtex.top, tint_r, tint_g, tint_b, a);
                         else render_plane_3d(world_x, top_y, world_z, 1.0f, tint_r, tint_g, tint_b, a);
+
+                        // === BRILHO / FUMACA / BRASAS DA LAVA ===
+                        // Pedido do jogador: "nao tem fumaca saindo, a lava nao parece
+                        // incandescente, no escuro deveria ser luminosa". O tile emissivo (ver
+                        // is_lava acima) resolve a cor; aqui vem o volume: um halo aditivo
+                        // (que acende de verdade a noite), fumaca subindo e brasas voando.
+                        // Tudo deterministico por tile (hash da coordenada) - sem sistema de
+                        // particulas novo e sem tremer de frame em frame.
+                        if (is_lava) {
+                            float lh = std::sin(world_x * 12.9898f + world_z * 78.233f) * 43758.5453f;
+                            lh -= std::floor(lh);
+
+                            rlSetTexture(0);
+                            rlSetBlendMode(RL_BLEND_ADDITIVE);
+                            rlDisableDepthMask();
+
+                            // Halo de calor rente ao chao - o que faz a lava "acender" no escuro.
+                            float glow_pulse = 0.70f + 0.30f * std::sin(g_day_time * 2.1f + lh * 6.28f);
+                            render_glow_disc_3d({world_x, top_y + 0.04f, world_z}, 0.95f,
+                                                 1.0f, 0.45f, 0.10f, 0.34f * glow_pulse, 10);
+
+                            // Brasas: pontinhos subindo devagar, em ~1/6 dos tiles (senao vira
+                            // um enxame). Sobem e desaparecem ciclicamente.
+                            if (lh > 0.83f) {
+                                float ember_t = std::fmod(g_day_time * 0.55f + lh * 3.1f, 1.0f);
+                                float ember_y = top_y + 0.15f + ember_t * 1.9f;
+                                float ember_a = (1.0f - ember_t) * 0.85f;
+                                float sway = std::sin(g_day_time * 1.6f + lh * 9.0f) * 0.16f;
+                                render_cube_3d(world_x + sway, ember_y, world_z + sway * 0.6f,
+                                               0.10f, 1.0f, 0.62f, 0.16f, ember_a, false);
+                            }
+
+                            rlEnableDepthMask();
+                            rlSetBlendMode(RL_BLEND_ALPHA);
+
+                            // === FUMACA: so' na CRATERA e na PONTA do rio de lava ===
+                            // Pedido do jogador: "a fumaca deve ficar apenas no pico do vulcao
+                            // e nao no rio de lava, mas pode ficar no fim do rio de lava".
+                            // Antes qualquer tile de lava sorteado por hash fumava, o que
+                            // enfumacava o rio inteiro. Aqui a decisao e' GEOMETRICA (nao ha
+                            // lista de crateras disponivel na renderizacao - volcano_centers e'
+                            // local da geracao): conta vizinhos de lava e classifica o tile.
+                            //  - Cratera/poca grande: quase todo o bloco 7x7 em volta e' lava
+                            //    (a cratera e' um disco de raio 9). E' o "pico do vulcao".
+                            //  - Meio do rio: faixa estreita - poucos vizinhos no 7x7, mas o rio
+                            //    CONTINUA (2+ vizinhos imediatos). Nao fuma.
+                            //  - Ponta do rio: o fluxo morre ali, so' tem lava de um lado
+                            //    (<= 1 vizinho imediato). Fuma (lava esfriando na ponta).
+                            int lava_ring = 0;   // lava no bloco 7x7 (tamanho do corpo de lava)
+                            int lava_adj = 0;    // lava nos 8 vizinhos imediatos (continuidade)
+                            for (int oz = -3; oz <= 3; ++oz) {
+                                for (int ox = -3; ox <= 3; ++ox) {
+                                    if (ox == 0 && oz == 0) continue;
+                                    int sx2 = tx + ox, sz2 = tz + oz;
+                                    if (!g_world->in_bounds(sx2, sz2)) continue;
+                                    if (g_world->get_ground(sx2, sz2) != Block::Lava) continue;
+                                    lava_ring++;
+                                    if (ox >= -1 && ox <= 1 && oz >= -1 && oz <= 1) lava_adj++;
+                                }
+                            }
+                            bool crater_like = (lava_ring >= 40); // 7x7 tem 48 vizinhos
+                            bool flow_tip = (lava_adj <= 1);
+                            // Na cratera, so' ~1/5 dos tiles emitem (senao seriam centenas de
+                            // colunas no mesmo lugar); na ponta do rio emitem sempre, ja que
+                            // existe no maximo uma ponta por riacho.
+                            bool emit_smoke = (crater_like && lh < 0.20f) || flow_tip;
+                            if (emit_smoke) {
+                                // Pluma da cratera e' bem mais alta/grossa (e' o pico do
+                                // vulcao, tem que dar pra ver de longe); a da ponta do rio e'
+                                // um fiozinho baixo de lava esfriando.
+                                float plume = crater_like ? 1.0f : 0.45f;
+                                int puffs = crater_like ? 5 : 3;
+                                for (int sp = 0; sp < puffs; ++sp) {
+                                    float st = std::fmod(g_day_time * 0.28f + lh * 5.0f + (float)sp * (1.0f / (float)puffs), 1.0f);
+                                    float sy = top_y + 0.5f + st * (5.0f + 7.0f * plume);
+                                    float ssway = std::sin(g_day_time * 0.7f + lh * 12.0f + st * 3.0f) * (0.5f + st * 1.4f);
+                                    float ssize = (0.34f + st * 0.85f) * (0.7f + 0.8f * plume);
+                                    float sa = (1.0f - st) * 0.30f;
+                                    float sg = 0.30f + st * 0.16f; // esfria de escuro pra cinza claro
+                                    render_cube_3d(world_x + ssway, sy, world_z + ssway * 0.5f,
+                                                   ssize, sg, sg * 0.94f, sg * 0.92f, sa, false);
+                                }
+                            }
+
+                            if (use_textures) rlSetTexture(g_tex_atlas);
+                        }
                     }
 
                     // === LATERAIS (paredes) para diferenca de altura ===
@@ -1351,11 +1544,17 @@ void render_world(int win_w, int win_h) {
                     }
 
                     if (do_walls) {
+                        bool wall_e = h_e < h_here;
+                        bool wall_w = h_w < h_here;
+                        bool wall_s = h_s < h_here;
+                        bool wall_n = h_n < h_here;
+                        // DIAGNOSTICO TEMPORARIO - ver declaracao/limpeza no topo do arquivo.
+                        g_debug_wall_draws += wall_e + wall_w + wall_s + wall_n;
                         if (use_textures) {
-                            if (h_e < h_here) render_wall_3d_tex(WallFace::XPos, world_x, world_z, h_e, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, side_shade);
-                            if (h_w < h_here) render_wall_3d_tex(WallFace::XNeg, world_x, world_z, h_w, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, dark_shade);
-                            if (h_s < h_here) render_wall_3d_tex(WallFace::ZPos, world_x, world_z, h_s, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, side_shade);
-                            if (h_n < h_here) render_wall_3d_tex(WallFace::ZNeg, world_x, world_z, h_n, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, dark_shade);
+                            if (wall_e) render_wall_3d_tex(WallFace::XPos, world_x, world_z, h_e, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, side_shade, (h_here - h_e) <= kFlatWallThreshold);
+                            if (wall_w) render_wall_3d_tex(WallFace::XNeg, world_x, world_z, h_w, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, dark_shade, (h_here - h_w) <= kFlatWallThreshold);
+                            if (wall_s) render_wall_3d_tex(WallFace::ZPos, world_x, world_z, h_s, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, side_shade, (h_here - h_s) <= kFlatWallThreshold);
+                            if (wall_n) render_wall_3d_tex(WallFace::ZNeg, world_x, world_z, h_n, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, dark_shade, (h_here - h_n) <= kFlatWallThreshold);
                         } else {
                             // Fallback sem texturas: quads coloridos
                             auto wall_col = [&](float s) {
@@ -1364,7 +1563,7 @@ void render_world(int win_w, int win_h) {
                                 rlColor4f(wr, wg, wb, wall_a);
                             };
                             constexpr float half = 0.5f;
-                            if (h_e < h_here) {
+                            if (wall_e) {
                                 rlBegin(RL_QUADS);
                                 wall_col(side_shade);
                                 rlVertex3f(world_x + half, h_e, world_z - half);
@@ -1373,7 +1572,7 @@ void render_world(int win_w, int win_h) {
                                 rlVertex3f(world_x + half, h_here, world_z - half);
                                 rlEnd();
                             }
-                            if (h_w < h_here) {
+                            if (wall_w) {
                                 rlBegin(RL_QUADS);
                                 wall_col(dark_shade);
                                 rlVertex3f(world_x - half, h_w, world_z + half);
@@ -1382,7 +1581,7 @@ void render_world(int win_w, int win_h) {
                                 rlVertex3f(world_x - half, h_here, world_z + half);
                                 rlEnd();
                             }
-                            if (h_s < h_here) {
+                            if (wall_s) {
                                 rlBegin(RL_QUADS);
                                 wall_col(side_shade);
                                 rlVertex3f(world_x - half, h_s, world_z + half);
@@ -1391,7 +1590,7 @@ void render_world(int win_w, int win_h) {
                                 rlVertex3f(world_x - half, h_here, world_z + half);
                                 rlEnd();
                             }
-                            if (h_n < h_here) {
+                            if (wall_n) {
                                 rlBegin(RL_QUADS);
                                 wall_col(dark_shade);
                                 rlVertex3f(world_x + half, h_n, world_z - half);
@@ -1526,6 +1725,13 @@ void render_world(int win_w, int win_h) {
         }
     }
 
+    // Terreno distante (alem de near_radius, ate view_radius) - malha cacheada por chunk em
+    // vez de modo imediato (ver terrain_mesh.h/.cpp). Precisa do atlas ja ligado (esta' desde
+    // a linha "rlSetTexture(g_tex_atlas)" no topo deste bloco) - so roda com use_textures,
+    // mesma condicao do resto do loop acima.
+    g_debug_far_chunks_drawn = use_textures ? terrain_mesh_render_far(player_tile_x, player_tile_z, near_radius, view_radius) : 0;
+    if (use_textures) rlSetTexture(g_tex_atlas); // DrawMesh troca o shader ativo - reafirma o atlas pro resto do frame
+
     // Drops coletaveis
     if (use_textures && !g_drops.empty()) {
         for (size_t di = 0; di < g_drops.size(); ++di) {
@@ -1613,7 +1819,10 @@ void render_world(int win_w, int win_h) {
         // OFFSET PARA ELEVAR O JOGADOR ACIMA DO SOLO (evita pes afundados); nadando, o
         // personagem afunda parcialmente na agua em vez de flutuar por cima dela (o piso de
         // colisao continua sendo o fundo do lago - so este offset visual muda).
-        bool swimming = (surf == Block::Water);
+        // Le g_physics.in_water (fonte unica, calculada COM altura na fisica) em vez de
+        // "surf == Block::Water": aquele teste e' verdadeiro em QUALQUER altitude sobre agua,
+        // entao voando sobre o mar o corpo era desenhado 0.57 afundado e SEM sombra.
+        bool swimming = g_physics.in_water;
         float player_y_offset = swimming ? -0.42f : 0.15f;
         float py = rpy + player_y_offset;  // Altura real + offset
 
@@ -1663,7 +1872,14 @@ void render_world(int win_w, int win_h) {
         suit_b = clamp01(suit_b);
         
         // === CHAMA DO JETPACK (renderizar primeiro, atras do jogador) ===
-        if (g_player.jetpack_active && g_player.jetpack_fuel > 0.0f) {
+        // Sem "&& jetpack_fuel > 0" de proposito: a rajada de pouso automatica
+        // (landing_assist_active, ver player_physics.cpp) liga jetpack_active mesmo com
+        // combustivel zerado (e' um mecanismo de seguranca independente de combustivel, nao
+        // impulso manual) - a checagem extra de combustivel escondia o foguinho bem na hora
+        // que o jogador mais esperava ve-lo (pousando sem combustivel), bug reportado.
+        // jetpack_active ja e' a condicao certa sozinho (so fica true por impulso manual COM
+        // combustivel OU pela rajada de pouso, nunca à toa).
+        if (g_player.jetpack_active) {
             float pack_dist = 0.25f;
             float flame_x = px - sin_rot * pack_dist;
             float flame_z = pz - cos_rot * pack_dist;
@@ -1828,13 +2044,37 @@ void render_world(int win_w, int win_h) {
             }
         }
 
-        // === CORPO (Bloco principal - torso branco do astronauta) ===
-        render_cube_3d(px, py + 0.30f + bob, pz, 0.45f, suit_r, suit_g, suit_b, 1.0f, true);
-        
-        // === CABECA (Capacete - bloco branco com visor) ===
-        render_cube_3d(px, py + 0.68f + bob, pz, 0.38f, suit_r * 0.98f, suit_g * 0.98f, suit_b, 1.0f, true);
-        
-        // Visor (bloco azul na frente da cabeca)
+        // === CORPO (torso branco do astronauta - elipsoide, nao mais cubo. "personagem
+        // muito quadrado", pedido do jogador: um torso e' mais alto/fundo que largo, entao
+        // scale_y>1 (mais alto) e scale_z<1 (um pouco mais fino de frente pra tras) em vez de
+        // uma esfera perfeita) ===
+        render_sphere_3d(px, py + 0.30f + bob, pz, 0.24f, suit_r, suit_g, suit_b, 1.0f, 8, 12, 1.35f, 0.95f);
+
+        // Ombros arredondados (2 esferas pequenas nos cantos superiores do torso) - quebra a
+        // silhueta reta do cubo do torso ("personagem muito quadrado", pedido do jogador) sem
+        // precisar redesenhar o traje inteiro.
+        // Raio+offset pequenos de proposito: um raio de 0.15 a 0.20 do centro deixava a
+        // esfera espiando bem alem da lateral do torso (meia-largura 0.225), lendo como
+        // "gordinho"/ombreira inchada em vez de so' arredondar o canto - jogador reportou
+        // isso depois do primeiro ajuste. Com raio 0.09 a 0.15 do centro, a borda da esfera
+        // (0.15+0.09=0.24) fica só um pouco alem da lateral do torso, um arredondado sutil.
+        float shoulder_side = 0.15f;
+        // perp_x/perp_z de verdade (usado por tubos/mochila/painel) so' e' declarado mais
+        // abaixo nesta funcao - mesma formula (perpendicular a direcao que o jogador olha),
+        // calculada aqui de novo em vez de mover a declaracao original.
+        float shoulder_perp_x = cos_rot, shoulder_perp_z = -sin_rot;
+        render_sphere_3d(px - shoulder_perp_x * shoulder_side, py + 0.46f + bob, pz - shoulder_perp_z * shoulder_side,
+                          0.09f, suit_r * 0.94f, suit_g * 0.94f, suit_b * 0.96f, 1.0f);
+        render_sphere_3d(px + shoulder_perp_x * shoulder_side, py + 0.46f + bob, pz + shoulder_perp_z * shoulder_side,
+                          0.09f, suit_r * 0.94f, suit_g * 0.94f, suit_b * 0.96f, 1.0f);
+
+        // === CABECA (Capacete redondo de verdade, nao mais um cubo - mesmo pedido acima:
+        // um capacete de astronauta e' a peca mais obviamente "deveria ser redonda" do
+        // personagem) ===
+        render_sphere_3d(px, py + 0.68f + bob, pz, 0.21f, suit_r * 0.98f, suit_g * 0.98f, suit_b, 1.0f);
+
+        // Visor (bloco azul na frente da cabeca - vidro plano encaixado no capacete redondo,
+        // continua reto de proposito, visor de capacete de verdade e' uma placa plana).
         float visor_dist = 0.12f;
         float vx = px + sin_rot * visor_dist;
         float vz = pz + cos_rot * visor_dist;
@@ -2160,6 +2400,15 @@ void render_world(int win_w, int win_h) {
     }
     
     render_hud(win_w, win_h);
+
+    // DIAGNOSTICO TEMPORARIO (remover depois) - jogador reportou voo infinito + piscar do
+    // chao de novo mesmo apos o ajuste de smooth_passes/detail_weight. Mostra FPS real +
+    // raio de visao/paredes + quantas paredes foram desenhadas neste frame, pra medir de
+    // verdade em vez de ajustar terreno as cegas outra vez.
+    DrawText(TextFormat("[DEBUG] FPS:%d  view_r:%d  wall_r:%d  near_walls:%d  quality:%.2f  far_chunks:%d",
+                         GetFPS(), g_debug_view_radius, g_debug_wall_radius, g_debug_wall_draws, g_render_quality, g_debug_far_chunks_drawn),
+             10, win_h - 26, 18, YELLOW);
+
     // Overlays - Menus estilo Minecraft (Paused/Menu/Dead/Settings). Extracted verbatim to
     // ui_menu.cpp's render_menus() - see ui_menu.h for details; the build menu (g_show_build_menu)
     // and the victory/alerts/world-map overlays right after it stay inline here.
@@ -2281,39 +2530,109 @@ static void update_meteors(float dt) {
     for (auto it = g_meteors.begin(); it != g_meteors.end();) {
         it->t += dt;
         if (it->t >= it->duration) {
-            // Cratera de impacto de verdade - antes so' soltava o cristal, sem deformar o
-            // terreno nenhum (feedback do jogador: "nem fez uma cratera"). Mesma conversao
-            // unidade-de-mundo -> unidade-de-heightmap ja usada pela mineracao
-            // (building_interaction.cpp), so' aplicada num raio ao redor do impacto em vez
-            // de 1 tile so', com o fundo mais fundo no centro (falloff quadratico).
+            // === CRATERA DE IMPACTO ===
+            // Muito maior e com BORDA ELEVADA (ejecta) em vez de so' uma tigela lisa - uma
+            // cratera de verdade sobe acima do terreno ao redor na beirada, e e' isso que
+            // faz ela ler como cratera de impacto e nao como um buraco.
             int ix = world_to_tile(it->x);
             int iz = world_to_tile(it->z);
             if (g_world->in_bounds(ix, iz)) {
-                constexpr float kCraterRadius = 3.2f;
-                constexpr float kCraterDepthWorldUnits = 2.2f;
-                int dig_units_max = std::max(1, (int)std::lround(kCraterDepthWorldUnits / std::max(0.01f, kHeightScale)));
-                int crater_r = (int)kCraterRadius + 1;
-                for (int cz = iz - crater_r; cz <= iz + crater_r; ++cz) {
-                    for (int cx = ix - crater_r; cx <= ix + crater_r; ++cx) {
+                constexpr float kCraterRadius = 7.5f;      // tigela (era 3.2 - dava um pratinho)
+                constexpr float kCraterRimRadius = 10.5f;  // ate onde vai a borda elevada
+                constexpr float kCraterDepthWorld = 4.0f;  // fundo no centro (era 2.2)
+                constexpr float kCraterRimWorld = 1.0f;    // quanto a borda sobe
+                constexpr float kMoltenRadius = 2.6f;      // nucleo ainda derretido (Lava)
+                int dig_max = std::max(1, (int)std::lround(kCraterDepthWorld / std::max(0.01f, kHeightScale)));
+                int rim_max = std::max(1, (int)std::lround(kCraterRimWorld / std::max(0.01f, kHeightScale)));
+                int scan_r = (int)kCraterRimRadius + 2;
+
+                // Agua/gelo NAO e' escavado. Motivo: no world-gen todo tile de agua e'
+                // achatado exatamente em sea_level, e nao existe simulacao de fluido pra
+                // reencher nada - escavar tiles de agua deixaria um poco seco com uma parede
+                // de agua de 5 unidades do lado, e um meteoro "drenaria" o lago. Caindo perto
+                // da praia, a cratera simplesmente para na linha d'agua.
+                for (int cz = iz - scan_r; cz <= iz + scan_r; ++cz) {
+                    for (int cx = ix - scan_r; cx <= ix + scan_r; ++cx) {
                         if (!g_world->in_bounds(cx, cz)) continue;
+                        Block gb = g_world->get_ground(cx, cz);
+                        if (gb == Block::Water || gb == Block::Ice) continue;
+                        // Nao mexe em nada da base (modulos/estruturas) - o jogador perderia
+                        // construcao sem ter como evitar.
+                        Block tb = g_world->get(cx, cz);
+                        if (is_module(tb) || is_base_structure(tb) || is_base_structure(gb)) continue;
+
                         float ddx = (float)(cx - ix), ddz = (float)(cz - iz);
                         float dist = std::sqrt(ddx * ddx + ddz * ddz);
-                        if (dist > kCraterRadius) continue;
-                        float falloff = 1.0f - (dist / kCraterRadius);
-                        falloff *= falloff;
-                        int dig = (int)std::lround((float)dig_units_max * falloff);
-                        if (dig <= 0) continue;
+                        if (dist > kCraterRimRadius) continue;
+
                         int16_t ch = g_world->height_at(cx, cz);
-                        int nh = std::max(0, (int)ch - dig);
-                        g_world->set_height(cx, cz, (int16_t)nh);
+                        if (dist <= kCraterRadius) {
+                            // Tigela: fundo no centro, subindo suave ate a beirada.
+                            float t = dist / kCraterRadius;
+                            float falloff = 1.0f - t * t;              // quadratico, fundo chato-ish
+                            int dig = (int)std::lround((float)dig_max * falloff);
+                            int nh = std::max(0, (int)ch - dig);
+                            g_world->set_height(cx, cz, (int16_t)nh);
+                            // Nucleo derretido: Lava (nao Stone - Stone na camada de solo
+                            // permitiria minerar pedra infinita ali; Lava nao e' mineravel,
+                            // nao bloqueia passagem e nao causa dano nenhum hoje, so' brilha).
+                            if (dist <= kMoltenRadius) {
+                                g_world->set_ground(cx, cz, Block::Lava);
+                                g_world->set(cx, cz, Block::Lava);
+                            } else {
+                                // Resto da tigela: terra revirada, sem vegetacao/rocha em cima.
+                                g_world->set_ground(cx, cz, Block::Dirt);
+                                if (tb != Block::Air) g_world->set(cx, cz, Block::Dirt);
+                            }
+                        } else {
+                            // Borda elevada: altura ABSOLUTA (maior vizinho + rim) em vez de
+                            // somar um delta ao terreno - somar 3 unidades num terreno ja
+                            // acidentado desaparece no ruido; um anel numa altura definida
+                            // realmente aparece como lombada de ejecta.
+                            float t = (dist - kCraterRadius) / std::max(0.01f, (kCraterRimRadius - kCraterRadius));
+                            float rim_profile = 1.0f - t;      // maximo junto da tigela
+                            rim_profile *= rim_profile;
+                            int rise = (int)std::lround((float)rim_max * rim_profile);
+                            if (rise <= 0) continue;
+                            int nh = std::min(255, (int)ch + rise);
+                            g_world->set_height(cx, cz, (int16_t)nh);
+                        }
                     }
                 }
+
+                // Ejecta: pedras arremessadas ao redor, deterministicas (nao aleatorias por
+                // frame). Comeca 2 tiles ALEM da beirada de proposito: um bloco de rocha em
+                // cima da lombada bloquearia a subida (try_step_climb se recusa a subir com
+                // objeto na frente), transformando a borda numa parede que exige pulo.
+                for (int e = 0; e < 26; ++e) {
+                    float ha = std::sin((float)e * 12.9898f + (float)ix * 0.017f) * 43758.5453f;
+                    ha -= std::floor(ha);
+                    float hr = std::sin((float)e * 78.233f + (float)iz * 0.023f) * 43758.5453f;
+                    hr -= std::floor(hr);
+                    float ang = ha * 6.2831853f;
+                    float rad = kCraterRimRadius + 2.0f + hr * 5.0f;
+                    int ex = ix + (int)std::lround(std::cos(ang) * rad);
+                    int ez = iz + (int)std::lround(std::sin(ang) * rad);
+                    if (!g_world->in_bounds(ex, ez)) continue;
+                    Block egb = g_world->get_ground(ex, ez);
+                    if (egb == Block::Water || egb == Block::Ice || egb == Block::Lava) continue;
+                    Block etb = g_world->get(ex, ez);
+                    if (etb != Block::Air) continue; // nao apaga arvore/minerio/estrutura
+                    g_world->set(ex, ez, Block::Stone);
+                }
+
                 g_surface_dirty = true;
             }
 
             spawn_item_drop(Block::Crystal, it->x, it->z, it->target_y + 0.3f);
             spawn_block_particles(Block::Crystal, it->x, it->z, g_world->h);
             play_meteor_impact_sound();
+            // Onda de choque na hora do impacto: reaproveita o efeito de poeira do pouso de
+            // jetpack (ja aprovado pelo jogador), na intensidade maxima e ancorado no ponto
+            // do impacto - de graca, sem sistema de particulas novo.
+            g_physics.landing_dust_timer = 1.1f;
+            g_physics.landing_dust_pos = {it->x, it->target_y, it->z};
+            g_physics.landing_dust_intensity = 1.0f;
             set_toast("Um meteoro caiu por perto! Cristal raro pra coletar.", 3.5f);
             it = g_meteors.erase(it);
         } else {
@@ -2665,6 +2984,50 @@ void update_game(float dt) {
     const float kSuitDecayPerMin = 2.5f;
     if (!near_base_shelter) {
         g_suit_integrity = std::max(0.0f, g_suit_integrity - kSuitDecayPerMin / 60.0f * dt);
+    }
+
+    // === QUEIMADURA DE LAVA ===
+    // Pedido do jogador: "quando passo por cima deveria comecar a queimar e a dar dano".
+    // Antes a lava era 100% decorativa - nao existia NENHUM caminho de dano por lava no jogo
+    // (o unico dano de terreno era queda), entao dava pra ficar parado dentro dela sem
+    // consequencia nenhuma. Dano CONTINUO (nao timer-depois-dano como sede/oxigenio): pisar
+    // em lava e' consequencia imediata, nao uma privacao que se acumula.
+    {
+        static float lava_burn_accum = 0.0f;   // fracao de HP acumulada (dano e' int)
+        static float lava_warn_timer = 0.0f;
+        lava_warn_timer = std::max(0.0f, lava_warn_timer - dt);
+
+        int lava_tx = world_to_tile(g_player.pos.x);
+        int lava_tz = world_to_tile(g_player.pos.y);
+        bool standing_in_lava = false;
+        if (g_world->in_bounds(lava_tx, lava_tz) && g_world->get_ground(lava_tx, lava_tz) == Block::Lava) {
+            // Precisa estar NO chao/junto dele - voar por cima de lava nao queima (mesma
+            // licao do bug de voar sobre agua: "o chao embaixo e' X" nao e' "estou em X").
+            float lava_surface = surface_height_at(*g_world, lava_tx, lava_tz);
+            standing_in_lava = (g_player.pos_y <= lava_surface + 1.2f);
+        }
+
+        if (standing_in_lava) {
+            // ~12 HP/s: da pra atravessar um riacho estreito correndo e sobreviver, mas ficar
+            // parado dentro de um lago de lava mata em ~8s. Tambem consome o traje rapido.
+            lava_burn_accum += 12.0f * dt;
+            g_suit_integrity = std::max(0.0f, g_suit_integrity - 6.0f * dt);
+            int whole = (int)lava_burn_accum;
+            if (whole > 0) {
+                lava_burn_accum -= (float)whole;
+                g_player.hp = std::max(0, g_player.hp - whole);
+            }
+            if (lava_warn_timer <= 0.0f) {
+                set_toast("QUEIMANDO! Saia da lava!", 1.2f);
+                lava_warn_timer = 1.0f;
+            }
+            if (g_player.hp <= 0) {
+                respawn_player_at_base("Queimado pela lava");
+                lava_burn_accum = 0.0f;
+            }
+        } else {
+            lava_burn_accum = 0.0f;
+        }
     }
 
     // Porta da cupula (sempre fechada - ver render_geodesic_dome): cruzar a parede da base

@@ -281,6 +281,29 @@ static void collect_lights() {
                     crystal_light.flicker_speed = 5.0f;
                     crystal_light.is_emissive = true;
                     g_lights.push_back(crystal_light);
+                    continue;
+                }
+                // LAVA como fonte de luz de verdade: nao bastava a lava se desenhar brilhante,
+                // ela tem que ILUMINAR o terreno em volta (pedido do jogador: "no escuro ela
+                // deveria ser luminosa, pois e' lava" - a noite um campo de lava ficava um
+                // borrao escuro cercado de terreno preto). Passo de 4 tiles (nao 2 como o
+                // cristal): campos de lava sao grandes e contiguos, sem isso um unico lago
+                // estouraria sozinho o teto de 32 luzes e apagaria todas as outras.
+                if ((dx % 4) == 0 && (dz % 4) == 0 && g_world->get_ground(tx, tz) == Block::Lava) {
+                    Light2D lava_light;
+                    lava_light.x = (float)tx + 0.5f;
+                    lava_light.y = (float)tz + 0.5f;
+                    lava_light.height = surface_height_at(*g_world, tx, tz) + 0.35f;
+                    lava_light.radius = 9.0f;
+                    lava_light.intensity = 0.95f;
+                    lava_light.r = 1.0f;
+                    lava_light.g = 0.45f;
+                    lava_light.b = 0.12f;
+                    lava_light.falloff = 1.6f;
+                    lava_light.flicker = true;       // luz de fogo nunca e' estavel
+                    lava_light.flicker_speed = 2.4f; // mais lento que cristal - massa pesada
+                    lava_light.is_emissive = true;
+                    g_lights.push_back(lava_light);
                 }
             }
         }

@@ -57,6 +57,14 @@ extern Vec2 g_cam_pos;
 // future extraction stage), so this is a plain extern here, not a header declaration.
 extern std::vector<ShootingStar> g_shooting_stars;
 
+// Meteoros em voo precisam ser descartados na carga de um save: um meteoro foi mirado no
+// mundo/base ANTIGOS e, se sobrevivesse, cairia num ponto arbitrario do mundo novo escavando
+// a cratera (agora bem maior, raio ~10) possivelmente na periferia da base. Como o tipo
+// FallingMeteor e' definido dentro de main.cpp (nao num header), aqui vai uma funcao
+// minuscula definida la' em vez de um extern do vector - um vector de tipo incompleto nao
+// deixaria chamar clear().
+void clear_falling_meteors();
+
 // kEnergyMax is a compile-time literal (not mutable state) defined in main.cpp, which
 // keeps its own copy too (other deprecated-resource clamps there still use it). Since it's
 // a literal, not state, this file keeps its own static constexpr copy rather than sharing
@@ -400,6 +408,7 @@ bool load_game(const char* path) {
     g_particles.clear();
     g_shooting_stars.clear();
     g_drops.clear();
+    clear_falling_meteors(); // ver comentario da declaracao no topo deste arquivo
 
     g_energy = std::clamp(energy, 0.0f, kEnergyMax);
     g_water_res = std::clamp(water_res, 0.0f, 100.0f);
