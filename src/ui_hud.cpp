@@ -11,6 +11,7 @@
 #include "inventory_crafting.h"
 #include "modules_building.h"
 #include "font.h"
+#include "interiors.h"   // interior_prompt (dica de porta exterior<->interior)
 #include "minimap.h"
 #include "render_primitives.h"
 #include "lighting.h"
@@ -31,6 +32,9 @@ static constexpr float kRightPanelBarW = 180.0f;
 static constexpr float kRightPanelBarGap = 18.0f;
 static constexpr float kRightPanelTopY = 18.0f;
 static constexpr float kRightPanelH = kRightPanelBarGap * 6.0f + 90.0f;
+// Ver comentario da declaracao em ui_hud.h.
+bool g_hud_pointer_over_button = false;
+
 
 float hud_right_panel_right_x(int win_w) {
     return (float)win_w - 20.0f;
@@ -407,10 +411,11 @@ void render_hud(int win_w, int win_h) {
         float bar_gap = 18.0f;
         
         // Check if player is at base (usando distancia 2D)
-        float dx_base = g_player.pos.x - (float)g_base_x;
-        float dy_base = g_player.pos.y - (float)g_base_y;
-        float dist_to_base = std::sqrt(dx_base * dx_base + dy_base * dy_base);
-        bool at_base = (dist_to_base < g_base_cfg.safe_radius);
+        // Mesmo predicado do reabastecimento e do dreno do traje - ver player_in_base_complex()
+        // (modules_building.h): disco da zona segura OU dentro do corredor/estufa. As 3 copias
+        // manuais do calculo de distancia que existiam aqui, em update_modules e em main.cpp foram
+        // substituidas por esta chamada - com o anexo existindo, elas fatalmente discordariam.
+        bool at_base = player_in_base_complex();
         
         // === FUNDO TRANSPARENTE DO HUD ESQUERDO ===
         float left_panel_h = bar_gap * 11 + 100.0f;  // Altura aproximada do painel esquerdo (incluindo jetpack + traje)
@@ -864,28 +869,25 @@ void render_hud(int win_w, int win_h) {
             };
 
             float btn_radius = 30.0f;
-            float btn_gap = 16.0f;
             float cluster_cx = hud_right_panel_right_x(win_w) - btn_radius - 6.0f;
-            float cluster_top_y = hud_right_panel_bottom_y() + 240.0f;
+            float gun_cy = hud_right_panel_bottom_y() + 240.0f + btn_radius;
 
-            float tool_cy = cluster_top_y + btn_radius;
-            bool tool_selected = (g_selected != Block::LaserPistol);
-            if (g_mouse_left_clicked && mouse_in_circle(cluster_cx, tool_cy, btn_radius) && g_state == GameState::Playing) {
-                g_selected = s_last_non_weapon;
-                g_mouse_left_clicked = false;
-            }
-            draw_action_button(cluster_cx, tool_cy, btn_radius, s_last_non_weapon, tool_selected);
-            draw_text(cluster_cx - 34.0f, tool_cy + btn_radius + 4.0f, "Ferramenta", 0.75f, 0.78f, 0.85f, 0.85f);
-
+            // UM botao so' (a arma), sem rotulos de texto. Pedido do jogador: "nao precisa ter textos
+            // ali, e nao precisa ter o menu ferramentas, basta desmarcar a arma para usar ferramentas".
+            // O botao "Ferramenta" era redundante - desmarcar a arma ja devolve o ultimo item normal.
+            g_hud_pointer_over_button = false;
             if (has_pistol) {
-                float gun_cy = tool_cy + btn_radius * 2.0f + btn_gap + 20.0f;
                 bool gun_selected = (g_selected == Block::LaserPistol);
-                if (g_mouse_left_clicked && mouse_in_circle(cluster_cx, gun_cy, btn_radius) && g_state == GameState::Playing) {
+                bool over = mouse_in_circle(cluster_cx, gun_cy, btn_radius);
+                // Marca ANTES de tratar o clique e independente dele: o tiro usa o botao SEGURADO
+                // (IsMouseButtonDown), entao o que precisa ser bloqueado e' o cursor estar sobre o
+                // botao, nao o evento de clique.
+                if (over && g_state == GameState::Playing) g_hud_pointer_over_button = true;
+                if (g_mouse_left_clicked && over && g_state == GameState::Playing) {
                     g_selected = gun_selected ? s_last_non_weapon : Block::LaserPistol;
                     g_mouse_left_clicked = false;
                 }
                 draw_action_button(cluster_cx, gun_cy, btn_radius, Block::LaserPistol, gun_selected);
-                draw_text(cluster_cx - 16.0f, gun_cy + btn_radius + 4.0f, "Arma", 0.75f, 0.78f, 0.85f, 0.85f);
             }
         }
 
@@ -990,6 +992,19 @@ void render_hud(int win_w, int win_h) {
                     }
                 }
             }
+        }
+
+        // === PROMPT DE PORTA (exterior <-> interior) ===
+        // Centralizado e acima do hotbar - a transicao e' por tecla (nao por proximidade), entao sem
+        // um prompt visivel a porta seria indescobrivel. interior_prompt() devolve nullptr quando
+        // nao ha porta por perto, entao isto nao polui a tela.
+        if (const char* prompt = interior_prompt()) {
+            std::string txt(prompt);
+            float tw = estimate_text_w_px(txt);
+            float px = ((float)win_w - tw) * 0.5f;
+            float py = win_h - 150.0f;
+            render_quad(px - 12.0f, py - 8.0f, tw + 24.0f, 30.0f, 0.05f, 0.06f, 0.08f, 0.72f);
+            draw_text(px, py, txt, 0.95f, 0.88f, 0.45f, 1.0f);
         }
 
         // Debug info (3D)

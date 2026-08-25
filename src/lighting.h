@@ -66,6 +66,12 @@ struct LightingSettings {
     float vignette_radius = 0.85f;
     float depth_darkening = 0.5f;    // Escurecimento por profundidade
     bool color_grading = true;
+    // Escurecimento de AMBIENTE em ambiente fechado (interior da cupula + corredor). O ambiente
+    // deste motor e' um termo GLOBAL uniforme (compute_ambient_light -> compute_lightmap): nao
+    // existe skylight nem oclusao, entao um interior fechado fica exatamente tao claro quanto campo
+    // aberto ao meio-dia e as luminarias de dentro nao aparecem. Este multiplicador e' o UNICO
+    // lugar que introduz a nocao de "dentro". 1.0 = desligado (bit-a-bit igual ao de antes).
+    float indoor_ambient_mul = 0.45f;
 };
 extern LightingSettings g_lighting;
 

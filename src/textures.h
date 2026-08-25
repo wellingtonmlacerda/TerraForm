@@ -73,6 +73,11 @@ enum class Tile : int {
     Lava1,
     Lava2,
     Lava3,
+    // Idem Lava0..3: acrescentados no FIM. O resto do codigo faz aritmetica de indice sobre
+    // Water0..3 / Crack1..8 / Lava0..3 - mexer na ordem quebraria aquilo. O atlas tem 256 slots
+    // e menos de 60 em uso, sobra de sobra.
+    BaseFloor,    // Chapa metalica clara do piso interno da base
+    PlanterBed,   // Terra revirada em sulcos, com brotos, para os canteiros da estufa
 };
 
 struct UvRect {

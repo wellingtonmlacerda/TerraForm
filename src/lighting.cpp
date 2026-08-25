@@ -7,6 +7,9 @@
 #include "player_physics.h"     // Player, g_player, get_player_render_pos/get_player_render_y
 #include "modules_building.h"   // Module, ModuleStatus, g_modules
 #include "game_state.h"         // kDayLength
+#include "base_interior.h"       // kBaseLamps/base_interior_ambient (luminarias + ambiente interno)
+#include "base_exterior.h"       // kBaseFloods (holofotes externos da base)
+#include "interiors.h"           // interior_at/interior_district_center (luminarias por ambiente)
 
 #include <algorithm>
 #include <cmath>
@@ -18,6 +21,8 @@
 // em camera.cpp / g_terrain_cfg em world.cpp.
 extern float g_day_time;
 extern float g_atmosphere;
+extern int g_base_x;
+extern int g_base_y;
 
 // kDayLength agora vem de game_state.h (era uma copia local aqui).
 
@@ -253,6 +258,60 @@ static void collect_lights() {
         }
     }
 
+    // Luminarias das salas do distrito de interiores (ver base_interior.h - a MESMA tabela que
+    // desenha as luminarias). Elas sao o que faz o interior parecer habitado: o ambiente e' um termo
+    // global sem nocao de "dentro", entao sem fonte propria a sala nao tem nenhuma luz que seja dela.
+    // Filtradas pela sala em que o jogador ESTA - as outras estao a celulas de distancia, nao cairiam
+    // na janela do lightmap e so' gastariam slots do teto de 32 luzes.
+    {
+        int inside = interior_at(rpos.x, rpos.y);
+        if (inside >= 0) {
+            int icx, icz;
+            interior_district_center(icx, icz);
+            for (int i = 0; i < kBaseLampCount; ++i) {
+                const BaseLamp& lp = kBaseLamps[i];
+                if (lp.interior != inside) continue;
+                Light2D l = {};
+                l.x = (float)icx + lp.dx;
+                l.y = (float)icz + lp.dz;
+                l.height = lp.y;   // guardado, nunca usado (o lightmap e' 2D)
+                l.radius = lp.radius;
+                l.intensity = lp.intensity;
+                l.r = lp.r; l.g = lp.g; l.b = lp.b;
+                l.falloff = 2.0f;
+                l.flicker = false;  // luz de base e' estavel; flicker leria como defeito
+                l.flicker_speed = 0.0f;
+                l.is_emissive = true;
+                g_lights.push_back(l);
+            }
+        }
+    }
+
+
+    // Holofotes EXTERNOS da base (ver base_exterior.h). Sem eles, com a auto-iluminacao do modelo, a
+    // instalacao ficava acesa sobre um chao PRETO de noite - o que le pior que tudo escuro. Poucos e
+    // de raio grande: o objetivo e' o SOLO em volta ter luz. Cortados por distancia porque alem disso
+    // nem caem na janela do lightmap (centrada no jogador) e so' gastariam slots do teto de 32 luzes.
+    {
+        float bdx2 = rpos.x - (float)g_base_x, bdz2 = rpos.y - (float)g_base_y;
+        if (bdx2 * bdx2 + bdz2 * bdz2 < 110.0f * 110.0f) {
+            for (int i = 0; i < kBaseFloodCount; ++i) {
+                const BaseFlood& fl = kBaseFloods[i];
+                Light2D l = {};
+                l.x = (float)g_base_x + fl.dx;
+                l.y = (float)g_base_y + fl.dz;
+                l.height = fl.y;
+                l.radius = fl.radius;
+                l.intensity = fl.intensity;
+                l.r = fl.r; l.g = fl.g; l.b = fl.b;
+                l.falloff = 2.0f;
+                l.flicker = false;
+                l.flicker_speed = 0.0f;
+                l.is_emissive = true;
+                g_lights.push_back(l);
+            }
+        }
+    }
     // Luzes de recursos emissivos (cristais)
     if (g_world) {
         int px = (int)g_player.pos.x;
@@ -332,7 +391,9 @@ static float compute_shadow(float lx, float ly, float px, float py) {
 
         if (g_world->in_bounds(tx, ty)) {
             Block obj = g_world->get(tx, ty);
-            if (is_solid(obj) && obj != Block::Water) {
+            // is_furniture_collider: os blocos invisiveis de colisao de mobilia nao podem projetar
+            // sombra - seria uma sombra sem corpo visivel no chao ao lado dos moveis.
+            if (is_solid(obj) && obj != Block::Water && !is_furniture_collider(obj)) {
                 // Sombra parcial - blocos nao bloqueiam totalmente
                 shadow *= g_lighting.shadow_softness;
                 if (shadow < 0.1f) break;
@@ -498,15 +559,37 @@ void compute_lightmap() {
     // Luz ambiente baseada no ciclo dia/noite
     float ambient = compute_ambient_light();
 
-    // Inicializar lightmap com luz ambiente
-    for (int i = 0; i < kLightmapPixels; ++i) {
-        g_lightmap_r[i] = ambient * nat_r;
-        g_lightmap_g[i] = ambient * nat_g;
-        g_lightmap_b[i] = ambient * nat_b;
+    // Inicializar lightmap com luz ambiente. Antes era um preenchimento plano (o mesmo valor em
+    // todos os pixels); agora cada pixel passa pelo multiplicador de "dentro"
+    // (base_interior_ambient_mul), a UNICA nocao de ambiente fechado do pipeline - ver
+    // g_lighting.indoor_ambient_mul. Com indoor_ambient_mul = 1.0 a funcao retorna 1.0 no caminho
+    // rapido e o resultado e' bit-a-bit o mesmo de antes. g_lightmap_center_x/z ja foram
+    // atualizados acima, entao a conversao pixel->mundo aqui e' valida.
+    for (int lz = 0; lz < kLightmapSize; ++lz) {
+        float wz = (float)(lz - kLightmapSize / 2 + g_lightmap_center_z);
+        for (int lx = 0; lx < kLightmapSize; ++lx) {
+            float wx = (float)(lx - kLightmapSize / 2 + g_lightmap_center_x);
+            int i = lz * kLightmapSize + lx;
+            // Dentro do complexo de interiores o ambiente e' ABSOLUTO (iluminacao artificial 24h),
+            // nao o ambiente de dia/noite multiplicado - ver a nota longa em base_interior.h. Com o
+            // multiplicador antigo, de noite o interior caia pra 0.027 e renderizava preto.
+            float ir, ig, ib;
+            if (base_interior_ambient(wx, wz, ir, ig, ib)) {
+                g_lightmap_r[i] = ir;
+                g_lightmap_g[i] = ig;
+                g_lightmap_b[i] = ib;
+                continue;
+            }
+            float amb = ambient;
+            g_lightmap_r[i] = amb * nat_r;
+            g_lightmap_g[i] = amb * nat_g;
+            g_lightmap_b[i] = amb * nat_b;
+        }
     }
 
     // Coletar luzes
     collect_lights();
+    // (o clamp do lightmap fica depois de somar as luzes - ver abaixo)
 
     // Limitar numero de luzes para performance (prioriza mais proximas ao jogador)
     const int kMaxLights = 32;
@@ -525,6 +608,18 @@ void compute_lightmap() {
     // Adicionar contribuicao de cada luz
     for (const auto& light : g_lights) {
         add_light_to_lightmap(light);
+    }
+
+    // CLAMP em 1.0. add_light_to_lightmap SOMA sem limite, e no interior (ambiente absoluto de 0.38
+    // + 8 luminarias) o lightmap passava facil de 1.4 - qualquer superficie clara (o painel de parede
+    // estava em 0.88) era multiplicada acima de 1 e saia BRANCO PURO, perdendo todo o sombreamento.
+    // Era a causa do interior "lavado de branco" nos screenshots. Fora do interior isto nao muda
+    // praticamente nada: ao meio-dia o ambiente ja beira 1.0 e a cor final ja era clampada depois,
+    // em apply_color_grading - a diferenca e' que agora o CONTRASTE sobrevive em vez de estourar.
+    for (int i = 0; i < kLightmapPixels; ++i) {
+        g_lightmap_r[i] = std::min(1.0f, g_lightmap_r[i]);
+        g_lightmap_g[i] = std::min(1.0f, g_lightmap_g[i]);
+        g_lightmap_b[i] = std::min(1.0f, g_lightmap_b[i]);
     }
 
     // Blur para suavizar sombras

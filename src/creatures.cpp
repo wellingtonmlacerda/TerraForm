@@ -3,6 +3,8 @@
 #include "raylib_platform.h"
 #include "world.h"
 #include "player_physics.h"
+#include "ui_hud.h"          // g_hud_pointer_over_button (nao atirar clicando na HUD)
+#include "interiors.h"      // interior_at (nao spawnar criatura dentro de uma sala)
 #include "game_state.h"        // set_toast, rng_next_f01, kDayLength
 #include "items_particles.h"   // spawn_item_drop, spawn_block_particles
 #include "render_primitives.h"
@@ -163,7 +165,10 @@ void update_creatures(float dt) {
         spawn_next = kSpawnMinInterval + rng_next_f01() * (kSpawnMaxInterval - kSpawnMinInterval);
         float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
         float night_alpha = compute_night_alpha(day_phase);
-        if ((int)g_creatures.size() < kMaxCreatures && night_alpha > kNightSpawnGate) {
+        if ((int)g_creatures.size() < kMaxCreatures && night_alpha > kNightSpawnGate &&
+            interior_at(g_player.pos.x, g_player.pos.y) < 0) {
+            // Nunca dentro de um interior: o spawn e' a 20-45 tiles do JOGADOR, entao estando numa
+            // sala do distrito a criatura nasceria dentro do proprio laboratorio/dormitorio.
             spawn_creature();
         }
     }
@@ -348,7 +353,11 @@ void render_creatures() {
 
 void try_fire_laser_pistol(const Vec3& ray_o, const Vec3& ray_d, float dt) {
     (void)dt; // cooldown ja decrementado 1x por frame em update_creatures()
-    bool fire_input = IsMouseButtonDown(MOUSE_BUTTON_LEFT) || key_down(KEY_E);
+    // g_hud_pointer_over_button: clicar no icone da arma na HUD nao pode disparar. O tiro usa o botao
+    // SEGURADO, entao consumir o flag de clique no botao (o que a HUD fazia) nao impedia nada - bug
+    // reportado ("quando clico na arma ela sempre dispara").
+    bool fire_input = (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !g_hud_pointer_over_button)
+                      || key_down(KEY_E);
     if (!fire_input || g_fire_cooldown > 0.0f) return;
 
     g_fire_cooldown = kFireCooldownSeconds;
@@ -428,4 +437,9 @@ void try_fire_laser_pistol(const Vec3& ray_o, const Vec3& ray_d, float dt) {
         spawn_block_particles(Block::Organic, dx, dz, g_world->h);
     }
     add_alert("Criatura alienigena abatida!", 0.3f, 1.0f, 0.5f);
+}
+
+// Ver comentario da declaracao em creatures.h.
+float laser_cooldown_fraction() {
+    return clamp01(g_fire_cooldown / kFireCooldownSeconds);
 }

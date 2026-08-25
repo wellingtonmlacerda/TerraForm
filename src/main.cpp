@@ -28,6 +28,9 @@
 #include "creatures.h"            // update_creatures/render_creatures/try_craft_laser_pistol call site
 #include "audio.h"                // play_meteor_impact_sound
 #include "terrain_mesh.h"         // terrain_mesh_render_far/terrain_mesh_mark_dirty - cache de terreno distante
+#include "base_interior.h"        // render_base_interior (mobilia/plantas/teto das salas)
+#include "interiors.h"             // interiors_update/interior_at (exterior selado + interiores)
+#include "base_exterior.h"         // render_base_exterior (o modelo proprio do exterior)
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -323,6 +326,7 @@ static bool g_prev_f7 = false;
 static bool g_prev_h = false;
 static bool g_prev_tab = false;
 static bool g_prev_b = false;
+static bool g_prev_v = false;
 static bool g_prev_m = false;
 static bool g_prev_r = false;
 static bool g_prev_c = false;
@@ -748,8 +752,26 @@ static void apply_frame_fog_local(float wx, float wy, float wz, float& r, float&
 
 // Renderizar cubo 3D texturizado (tile do atlas) com iluminacao fake por face.
 // Requer rlSetTexture(g_tex_atlas) ativo (equivalente ao antigo glBindTexture).
+// Mascara de faces: bit setado = desenhar aquela face. Sem isso, cada camada de pilha desenha as 6
+// faces sempre - o comentario do loop de pilhas admitia isso ("culling de face oculta fica
+// deliberadamente fora de escopo... pilhas sao curtas na pratica"). A premissa mudou: o EXTERIOR da
+// base agora e' volume MACICO (ver interiors.h - a unica forma de o jetpack nao invadir um interior
+// e' nao existir vao nenhum pra invadir), e sem culling um modulo 9x9x5 custaria 405 cubos x 6 faces
+// = 2430 quads em vez dos 261 da casca visivel. Era exatamente esse custo que forcava a base a ser
+// feita de salas ocas - a origem do bug que o jogador reportou.
+enum : uint8_t {
+    kFaceTop    = 1 << 0,
+    kFaceBottom = 1 << 1,
+    kFaceZPos   = 1 << 2,
+    kFaceZNeg   = 1 << 3,
+    kFaceXNeg   = 1 << 4,
+    kFaceXPos   = 1 << 5,
+    kFaceAll    = 0x3F,
+};
+
 static void render_cube_3d_tex(float x, float y, float z, float size, Tile top, Tile side, Tile bottom,
-                               float tint_r, float tint_g, float tint_b, float a = 1.0f, bool outline = false) {
+                               float tint_r, float tint_g, float tint_b, float a = 1.0f,
+                               bool outline = false, uint8_t faces = kFaceAll) {
     float half = size * 0.5f;
 
     // Iluminacao fake (3 niveis)
@@ -768,46 +790,58 @@ static void render_cube_3d_tex(float x, float y, float z, float size, Tile top, 
     rlBegin(RL_QUADS);
 
     // Top (Y+)
-    rlColor4f(tint_r * top_shade, tint_g * top_shade, tint_b * top_shade, a);
-    rlTexCoord2f(uv_top.u0, uv_top.v1); rlVertex3f(x - half, y + half, z - half);
-    rlTexCoord2f(uv_top.u1, uv_top.v1); rlVertex3f(x + half, y + half, z - half);
-    rlTexCoord2f(uv_top.u1, uv_top.v0); rlVertex3f(x + half, y + half, z + half);
-    rlTexCoord2f(uv_top.u0, uv_top.v0); rlVertex3f(x - half, y + half, z + half);
+    if (faces & kFaceTop) {
+        rlColor4f(tint_r * top_shade, tint_g * top_shade, tint_b * top_shade, a);
+        rlTexCoord2f(uv_top.u0, uv_top.v1); rlVertex3f(x - half, y + half, z - half);
+        rlTexCoord2f(uv_top.u1, uv_top.v1); rlVertex3f(x + half, y + half, z - half);
+        rlTexCoord2f(uv_top.u1, uv_top.v0); rlVertex3f(x + half, y + half, z + half);
+        rlTexCoord2f(uv_top.u0, uv_top.v0); rlVertex3f(x - half, y + half, z + half);
+    }
 
     // Bottom (Y-)
-    rlColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
-    rlTexCoord2f(uv_bottom.u0, uv_bottom.v0); rlVertex3f(x - half, y - half, z + half);
-    rlTexCoord2f(uv_bottom.u1, uv_bottom.v0); rlVertex3f(x + half, y - half, z + half);
-    rlTexCoord2f(uv_bottom.u1, uv_bottom.v1); rlVertex3f(x + half, y - half, z - half);
-    rlTexCoord2f(uv_bottom.u0, uv_bottom.v1); rlVertex3f(x - half, y - half, z - half);
+    if (faces & kFaceBottom) {
+        rlColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
+        rlTexCoord2f(uv_bottom.u0, uv_bottom.v0); rlVertex3f(x - half, y - half, z + half);
+        rlTexCoord2f(uv_bottom.u1, uv_bottom.v0); rlVertex3f(x + half, y - half, z + half);
+        rlTexCoord2f(uv_bottom.u1, uv_bottom.v1); rlVertex3f(x + half, y - half, z - half);
+        rlTexCoord2f(uv_bottom.u0, uv_bottom.v1); rlVertex3f(x - half, y - half, z - half);
+    }
 
     // Front (Z+)
-    rlColor4f(tint_r * side_shade, tint_g * side_shade, tint_b * side_shade, a);
-    rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x - half, y - half, z + half);
-    rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x + half, y - half, z + half);
-    rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x + half, y + half, z + half);
-    rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x - half, y + half, z + half);
+    if (faces & kFaceZPos) {
+        rlColor4f(tint_r * side_shade, tint_g * side_shade, tint_b * side_shade, a);
+        rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x - half, y - half, z + half);
+        rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x + half, y - half, z + half);
+        rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x + half, y + half, z + half);
+        rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x - half, y + half, z + half);
+    }
 
     // Back (Z-)
-    rlColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
-    rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x + half, y - half, z - half);
-    rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x - half, y - half, z - half);
-    rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x - half, y + half, z - half);
-    rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x + half, y + half, z - half);
+    if (faces & kFaceZNeg) {
+        rlColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
+        rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x + half, y - half, z - half);
+        rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x - half, y - half, z - half);
+        rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x - half, y + half, z - half);
+        rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x + half, y + half, z - half);
+    }
 
     // Left (X-)
-    rlColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
-    rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x - half, y - half, z - half);
-    rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x - half, y - half, z + half);
-    rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x - half, y + half, z + half);
-    rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x - half, y + half, z - half);
+    if (faces & kFaceXNeg) {
+        rlColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
+        rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x - half, y - half, z - half);
+        rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x - half, y - half, z + half);
+        rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x - half, y + half, z + half);
+        rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x - half, y + half, z - half);
+    }
 
     // Right (X+)
-    rlColor4f(tint_r * side_shade, tint_g * side_shade, tint_b * side_shade, a);
-    rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x + half, y - half, z + half);
-    rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x + half, y - half, z - half);
-    rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x + half, y + half, z - half);
-    rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x + half, y + half, z + half);
+    if (faces & kFaceXPos) {
+        rlColor4f(tint_r * side_shade, tint_g * side_shade, tint_b * side_shade, a);
+        rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x + half, y - half, z + half);
+        rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x + half, y - half, z - half);
+        rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x + half, y + half, z - half);
+        rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x + half, y + half, z + half);
+    }
 
     rlEnd();
 
@@ -1158,29 +1192,6 @@ void render_world(int win_w, int win_h) {
     // === RENDERIZAR ELEMENTOS DO CEU (sol, luas, estrelas, anel) ===
     render_alien_sky(g_camera.position.x, g_camera.position.y, g_camera.position.z, g_player.ground_height, day_phase, atmos_factor);
 
-    // === CUPULA GEODESICA DA BASE (fundacao cilindrica + hemisferio, tudo decorativo - a
-    // colisao de verdade e a barreira cilindrica invisivel em player_physics.cpp, mesmo
-    // raio kDomeWallRadius) === Cor terrosa/dourada (referencia: domos de glamping no
-    // deserto que o usuario mandou), com a porta (sempre fechada, so um tom metalico +
-    // moldura na propria malha - ver render_geodesic_dome) virada pro sul, mesmo lado do
-    // gatilho de teleporte abaixo.
-    {
-        float ddx = tile_center(g_base_x) - rpos.x;
-        float ddz = tile_center(g_base_y) - rpos.y;
-        float dome_dist2 = ddx * ddx + ddz * ddz;
-        // So' desenha se o terreno ao redor da base tambem estiver dentro do view_radius -
-        // senao o terreno some (culling) mas a cupula (antes desenhada incondicionalmente)
-        // continuava aparecendo sozinha, lendo como "flutuando no nada" a distancia.
-        if (dome_dist2 <= view_radius2) {
-            const float kDoorFacing = kPi * 0.5f; // sul (+Z / +ty) - mesmo lado do gatilho de porta
-
-            float door_y = (float)g_world->height_at(g_base_x, g_base_y) * kHeightScale;
-            render_geodesic_dome({tile_center(g_base_x), door_y, tile_center(g_base_y)},
-                                  16.0f, 0.72f, 0.52f, 0.28f, 0.95f, 12, 24,
-                                  kDoorFacing, 0.20f, 2.6f, 3.2f);
-        }
-    }
-
     // === COMPUTAR LIGHTMAP 2D (RTX FAKE) ===
     compute_lightmap();
 
@@ -1240,6 +1251,17 @@ void render_world(int win_w, int win_h) {
         g_frame_fog.g = fog_col[1];
         g_frame_fog.b = fog_col[2];
     }
+    // === MODELO DO EXTERIOR DA BASE ===
+    // A cupula geodesica solta que ficava aqui foi substituida pelo modelo completo da instalacao
+    // (base_exterior.h/.cpp): domo central, modulos cilindricos com topo em domo, corredores-tubo,
+    // tanques, paineis solares, mastros e as escotilhas. Era a reclamacao "nao parece a base espacial
+    // que pedi" - uma cupula sozinha sobre volumes de cubo nao le como instalacao.
+    //
+    // Fica AQUI (depois do setup de fog/lightmap, antes do bind do atlas de textura) pelo mesmo
+    // motivo que a cupula: desenhado antes disso, o modelo nao receberia nem neblina nem iluminacao e
+    // de noite ficaria um objeto claro em brilho pleno cercado de terreno preto. O corte por
+    // distancia mora dentro de render_base_exterior().
+    render_base_exterior();
 
     // === RENDERIZACAO 3D DO MUNDO ===
     
@@ -1253,7 +1275,7 @@ void render_world(int win_w, int win_h) {
     if (use_textures) {
         rlSetTexture(g_tex_atlas);
     } else {
-        rlSetTexture(0);
+        rlSetTexture(rlGetTextureIdDefault());   // NAO rlSetTexture(0): pra id 0 o rlgl nao troca nada
     }
     int water_frame = ((int)std::floor(g_day_time * 4.0f)) & 3;
 
@@ -1415,23 +1437,11 @@ void render_world(int win_w, int win_h) {
                     if (surface == Block::Water) {
                         float water_y = base_y - 0.18f + 0.05f * std::sin(g_day_time * 2.0f + world_x * 0.5f + world_z * 0.3f);
 
-                        // Brilho de sol na agua ("sun glint") - flash breve e aditivo em
-                        // tiles aleatorios (determinístico por tile, varia com o tempo real -
-                        // g_day_time - entao pisca de verdade em vez de ficar parado). So
-                        // visivel de dia (compute_daylight), mais forte perto do meio-dia.
-                        float sparkle_seed = std::sin(world_x * 12.9898f + world_z * 78.233f) * 43758.5453f;
-                        sparkle_seed -= std::floor(sparkle_seed);
-                        float sparkle_wave = std::sin(g_day_time * (0.6f + sparkle_seed * 0.8f) + sparkle_seed * 37.0f);
-                        float daylight_now = compute_daylight(day_phase);
-                        if (sparkle_wave > 0.985f && daylight_now > 0.05f) {
-                            float sparkle_t = (sparkle_wave - 0.985f) / 0.015f;
-                            rlSetTexture(0);
-                            rlSetBlendMode(RL_BLEND_ADDITIVE);
-                            render_plane_3d(world_x, water_y + 0.01f, world_z, 0.55f, 1.0f, 1.0f, 0.95f,
-                                            sparkle_t * 0.6f * daylight_now);
-                            if (use_textures) rlSetTexture(g_tex_atlas);
-                            rlSetBlendMode(RL_BLEND_ALPHA);
-                        }
+                        // O "sun glint" (flash aditivo branco em tiles aleatorios da agua) foi
+                        // REMOVIDO a pedido do jogador. Ele piscava como manchas claras espalhadas
+                        // pela superficie em vez de ler como reflexo do sol, e num lago grande a tela
+                        // ficava salpicada de retangulos creme. A ondulacao de water_y acima ja da
+                        // movimento a superficie.
 
                         if (use_textures) render_plane_3d_tex(world_x, water_y, world_z, 1.0f, gtex.top, tint_r, tint_g, tint_b, a);
                         else render_plane_3d(world_x, water_y, world_z, 1.0f, tint_r, tint_g, tint_b, 0.75f);
@@ -1604,7 +1614,10 @@ void render_world(int win_w, int win_h) {
                 }
 
                 // === OBJETOS sobre o solo (rochas/minerios/modulos/estruturas) ===
-                if (obj != Block::Air && dist2 <= obj_radius2) {
+                // is_furniture_collider: blocos de colisao de mobilia sao INVISIVEIS de proposito -
+                // eles existem so' pra dar fisica aos moveis, cuja aparencia e' desenhada por
+                // base_interior.cpp. Desenhar o cubo aqui poria uma caixa cinza em cima da cama.
+                if (obj != Block::Air && !is_invisible_collider(obj) && dist2 <= obj_radius2) {
                     BlockTex tex = block_tex(obj);
                     if (tex.is_water) {
                         tex.top = (Tile)((int)Tile::Water0 + water_frame);
@@ -1665,20 +1678,48 @@ void render_world(int win_w, int win_h) {
                     }
                 }
 
-                // === PILHA DE BLOCOS CONSTRUIDOS (empilhamento - torres/paredes) ===
-                // Aditivo sobre o "obj" unico acima: desenha um cubo cheio por camada, com
-                // Y incremental a partir do topo do que ja existia (terreno, ou o obj unico
-                // se houver). render_cube_3d_tex/render_cube_3d ja desenham as 6 faces por
-                // chamada, entao uma torre de N blocos ganha suas 4 faces laterais de graca -
-                // nao precisa de logica de parede separada. Culling de face oculta (nao
-                // desenhar o fundo/topo de um cubo colado a outro) fica deliberadamente fora
-                // de escopo por ora - pilhas sao curtas na pratica.
+                // === PILHA DE BLOCOS CONSTRUIDOS (empilhamento - torres/paredes/volumes) ===
+                // Aditivo sobre o "obj" unico acima: um cubo por camada, com Y incremental a partir
+                // do topo do que ja existia (terreno, ou o obj unico se houver).
+                //
+                // CULLING DE FACE OCULTA: cada camada agora recebe uma mascara de faces (ver
+                // kFaceTop... acima de render_cube_3d_tex). Antes as 6 faces saiam sempre, o que
+                // tornava volume MACICO proibitivo - e volume macico e' justamente o que impede o
+                // jetpack de invadir a base pelo teto (ver interiors.h). Uma face lateral e' pulada
+                // quando a coluna vizinha tem, NAQUELA altura, um bloco opaco; o topo, quando ha
+                // outra camada opaca em cima. O fundo e' pulado sempre: a camada 0 assenta no topo
+                // do terreno desta coluna e as outras assentam na camada de baixo, entao o fundo
+                // nunca fica visivel.
                 int stack_h = g_world->stack_height_at(tx, tz);
                 if (stack_h > 0 && dist2 <= obj_radius2) {
                     float stack_base_y = base_y + get_block_height(obj);
+
+                    // Perfil vertical de uma coluna vizinha, pra decidir se ela tapa uma camada
+                    // desta. Devolve o bloco que ocupa a altura `probe_y` (Air = nada ali).
+                    auto neighbor_block_at_height = [&](int nx, int nz, float probe_y) -> Block {
+                        if (!g_world->in_bounds(nx, nz)) return Block::Air;
+                        int nsh = g_world->stack_height_at(nx, nz);
+                        if (nsh <= 0) return Block::Air;
+                        Block nobj = object_block_at(*g_world, nx, nz);
+                        float nbase = (float)g_world->height_at(nx, nz) * kHeightScale +
+                                      get_block_height(nobj);
+                        int idx = (int)std::floor(probe_y - nbase + 0.5f);
+                        if (idx < 0 || idx >= nsh) return Block::Air;
+                        return g_world->stack_block_at(nx, nz, idx);
+                    };
+                    // Opaco pra fins de culling. Um vizinho de vidro (DomeGlass) NAO tapa - senao a
+                    // parede atras dele desapareceria e se veria o vazio pelo vidro. Mobilia
+                    // tambem nao: e' invisivel de proposito, entao nao pode tapar nada.
+                    auto occludes = [&](Block nb) -> bool {
+                        if (nb == Block::Air || is_invisible_collider(nb)) return false;
+                        BlockTex nt = block_tex(nb);
+                        return !nt.transparent && !nt.is_water;
+                    };
+
                     for (int layer = 0; layer < stack_h; ++layer) {
                         Block sb = g_world->stack_block_at(tx, tz, layer);
-                        if (sb == Block::Air) continue;
+                        // is_furniture_collider: invisivel de proposito, ver o loop de objetos acima.
+                        if (sb == Block::Air || is_invisible_collider(sb)) continue;
 
                         BlockTex stex = block_tex(sb);
                         if (stex.is_water) {
@@ -1715,9 +1756,23 @@ void render_world(int win_w, int win_h) {
                             apply_color_grading(stint_r, stint_g, stint_b);
                         }
 
-                        bool suse_outline = is_module(sb) || (sb == Block::Crystal || sb == Block::Coal || sb == Block::Iron || sb == Block::Copper);
                         float scenter_y = stack_base_y + (float)layer * 1.0f + 0.5f;
-                        if (use_textures) render_cube_3d_tex(world_x, scenter_y, world_z, 1.0f, stex.top, stex.side, stex.bottom, stint_r, stint_g, stint_b, sa, suse_outline);
+
+                        // Mascara: fundo nunca; topo so' se nao houver camada opaca em cima; cada
+                        // lateral so' se a coluna vizinha nao a tapar naquela altura.
+                        uint8_t faces = kFaceAll & ~kFaceBottom;
+                        if (layer + 1 < stack_h && occludes(g_world->stack_block_at(tx, tz, layer + 1)))
+                            faces &= ~kFaceTop;
+                        if (occludes(neighbor_block_at_height(tx, tz + 1, scenter_y))) faces &= ~kFaceZPos;
+                        if (occludes(neighbor_block_at_height(tx, tz - 1, scenter_y))) faces &= ~kFaceZNeg;
+                        if (occludes(neighbor_block_at_height(tx - 1, tz, scenter_y))) faces &= ~kFaceXNeg;
+                        if (occludes(neighbor_block_at_height(tx + 1, tz, scenter_y))) faces &= ~kFaceXPos;
+                        // Cubo totalmente interno ao volume: nao gera nem um quad. E' o que faz um
+                        // modulo macico custar a casca, nao o volume.
+                        if (faces == 0) continue;
+
+                        bool suse_outline = is_module(sb) || (sb == Block::Crystal || sb == Block::Coal || sb == Block::Iron || sb == Block::Copper);
+                        if (use_textures) render_cube_3d_tex(world_x, scenter_y, world_z, 1.0f, stex.top, stex.side, stex.bottom, stint_r, stint_g, stint_b, sa, suse_outline, faces);
                         else render_cube_3d(world_x, scenter_y, world_z, 1.0f, stint_r, stint_g, stint_b, sa, suse_outline);
                     }
                 }
@@ -1774,7 +1829,7 @@ void render_world(int win_w, int win_h) {
     }
 
     if (use_textures) {
-        rlSetTexture(0);
+        rlSetTexture(rlGetTextureIdDefault());   // NAO rlSetTexture(0): pra id 0 o rlgl nao troca nada
     }
 
     // Meteoro raro caindo (ver update_meteors/FallingMeteor) - cubo incandescente
@@ -1790,7 +1845,7 @@ void render_world(int win_w, int win_h) {
         // velocidade, nao um cubo teleportando de posicao em posicao.
         float trail_u = clamp01(u - 0.06f);
         float trail_y = lerp(m.start_y, m.target_y, trail_u);
-        rlSetTexture(0);
+        rlSetTexture(rlGetTextureIdDefault());   // NAO rlSetTexture(0): pra id 0 o rlgl nao troca nada
         rlSetBlendMode(RL_BLEND_ADDITIVE);
         rlDisableDepthMask();
         render_beam_3d({m.x, trail_y, m.z}, {m.x, y, m.z}, 0.30f, 1.0f, 0.55f, 0.15f, 0.55f);
@@ -1803,6 +1858,24 @@ void render_world(int win_w, int win_h) {
 
     // Criaturas alienigenas perambulantes (ver update_creatures/render_creatures, creatures.cpp).
     render_creatures();
+
+    // Interior/anexos decorativos da base (mobilia, terminais, luminarias, tubulacao, marcacoes de
+    // piso, arco do corredor, abobada da estufa, canteiros e plantas) - ver base_interior.h.
+    // Aqui, e nao junto da cupula la em cima: precisa vir DEPOIS do loop de terreno (a geometria e'
+    // opaca e testa profundidade contra o chao/paredes) e depois de compute_lightmap()/g_frame_fog,
+    // que ela consome. ANTES do jogador de proposito: o vidro da estufa desenha com depth mask
+    // desligada, entao quem esta atras dele continua aparecendo.
+    render_base_interior();
+
+    // TEXTURA BRANCA PADRAO antes do jogador. O corpo e' desenhado com render_cube_3d/
+    // render_sphere_3d, que NAO emitem rlTexCoord2f: se o atlas continuar ligado, cada vertice usa a
+    // coordenada de textura RESIDUAL do ultimo desenho texturizado e o personagem inteiro sai
+    // multiplicado por um texel arbitrario do atlas - as vezes escuro, dai "de noite o boneco fica
+    // escuro". Os rlSetTexture(0) logo acima NAO resolvem: pra id 0 o rlgl nao troca nada (ja
+    // documentado em render_cube_3d_tex neste arquivo). E render_base_interior(), que terminava
+    // resetando a textura, agora RETORNA CEDO quando o jogador esta longe do distrito - entao nao da
+    // pra depender dele.
+    rlSetTexture(rlGetTextureIdDefault());
 
     // === RENDERIZAR PLAYER 3D (Estilo Minicraft - Blocky) ===
     {
@@ -1880,9 +1953,16 @@ void render_world(int win_w, int win_h) {
         // jetpack_active ja e' a condicao certa sozinho (so fica true por impulso manual COM
         // combustivel OU pela rajada de pouso, nunca à toa).
         if (g_player.jetpack_active) {
-            float pack_dist = 0.25f;
-            float flame_x = px - sin_rot * pack_dist;
-            float flame_z = pz - cos_rot * pack_dist;
+            // A chama sai dos DOIS BOCAIS, nas coordenadas exatas em que a mochila os desenha
+            // (ver o bloco MOCHILA A JATO mais abaixo: pack_dist 0.255 + profundidade 0.09,
+            // lateral +/-0.105). Antes saia de UM ponto central um pouco a frente e acima deles -
+            // a chama nao encostava em bocal nenhum e lia como fogo saindo das costas.
+            const float pack_dist = 0.255f + 0.09f;
+            const float nozzle_side = 0.105f;
+            const float nzl_perp_x = cos_rot, nzl_perp_z = -sin_rot;
+            for (float nsgn : {-1.0f, 1.0f}) {
+            float flame_x = px - sin_rot * pack_dist + nzl_perp_x * (nozzle_side * nsgn);
+            float flame_z = pz - cos_rot * pack_dist + nzl_perp_z * (nozzle_side * nsgn);
 
             // Rajada de pouso: chama bem maior/mais intensa e mais branca (nucleo mais
             // quente) que o voo manual normal, pra deixar visivel que esta freando de
@@ -1892,7 +1972,9 @@ void render_world(int win_w, int win_h) {
 
             // Animacao da chama (flicker)
             float flame_flicker = (0.8f + 0.4f * std::sin(g_player.jetpack_flame_anim * 2.0f)) * flame_boost;
-            float flame_size = (0.15f + 0.05f * std::sin(g_player.jetpack_flame_anim * 3.0f)) * flame_boost;
+            // x0.72: sao DUAS chamas agora (uma por bocal); com o tamanho antigo o volume total
+            // dobrava e virava uma bola de fogo atras do personagem.
+            float flame_size = (0.15f + 0.05f * std::sin(g_player.jetpack_flame_anim * 3.0f)) * flame_boost * 0.72f;
 
             // Glow aditivo por baixo da chama (disco billboard, ver render_glow_disc_3d
             // adicionado nesta sessao pro flash da pistola/meteoro) - da uma luz/brilho de
@@ -1932,9 +2014,10 @@ void render_world(int win_w, int win_h) {
                 float alpha = 0.8f - std::fmod(g_player.jetpack_flame_anim * 0.5f + i * 0.25f, 0.5f) * 1.5f;
                 if (alpha > 0.0f) {
                     render_cube_3d(flame_x + particle_offset, particle_y, flame_z + particle_offset * 0.5f,
-                        0.06f * flame_boost, 1.0f, 0.6f, 0.1f, alpha, false);
+                        0.05f * flame_boost, 1.0f, 0.6f, 0.1f, alpha, false);
                 }
             }
+            }   // fim do loop dos 2 bocais
         }
         
         // === ONDA DE CHOQUE DE POUSO (ver g_physics.landing_dust_timer/landing_dust_pos,
@@ -2085,25 +2168,170 @@ void render_world(int win_w, int win_h) {
         float refl_z = vz + cos_rot * 0.03f - sin_rot * 0.03f;
         render_cube_3d(refl_x, py + 0.73f + bob, refl_z, 0.08f, 0.95f, 0.98f, 1.0f, g_player_visual_cfg.visor_reflect_alpha, false);
         
-        // === MOCHILA (Bloco cinza atras) ===
-        float pack_dist = 0.25f;
-        float pack_x = px - sin_rot * pack_dist;
-        float pack_z = pz - cos_rot * pack_dist;
-        // Mochila brilha quando jetpack ativo
-        float pack_r = 0.45f, pack_g = 0.47f, pack_b = 0.50f;
-        if (g_player.jetpack_active) {
-            pack_r = 0.55f; pack_g = 0.50f; pack_b = 0.45f;
-        }
-        render_cube_3d(pack_x, py + 0.35f + bob, pack_z, 0.30f, pack_r, pack_g, pack_b, 1.0f, true);
+        // === MOCHILA A JATO ===
+        // 3a versao. A 1a era UM cubo cinza ("esta so um quadrado cinza"); a 2a virou um conjunto,
+        // mas TODAS as pecas ainda eram cubos - render_cube_3d so' aceita um `size` unico, e cubos
+        // posicionados por sin/cos continuam alinhados aos EIXOS DO MUNDO, entao a mochila ficava
+        // torta quando o personagem olhava na diagonal. Agora usa render_box_oriented_3d
+        // (render_primitives.h, adicionado pra isto): dimensoes independentes e giro em torno de Y,
+        // igual ao resto do corpo. Isso e' o que permite chassi achatado, ombreiras, aletas e bocais
+        // com proporcao de equipamento em vez de bloquinhos.
+        {
+            const float yaw = std::atan2(sin_rot, cos_rot);   // mesma orientacao do corpo
+            const float perp_x = cos_rot, perp_z = -sin_rot;  // "direita" do personagem
+            const float pack_dist = 0.255f;
+            const float pack_x = px - sin_rot * pack_dist;
+            const float pack_z = pz - cos_rot * pack_dist;
+            const float pack_y = py + 0.36f + bob;
+            const bool  active = g_player.jetpack_active;
+            const float fuel = clamp01(g_player.jetpack_fuel / 100.0f);
 
-        // Tubos de oxigenio (mangueiras laterais da mochila ao torso).
-        float tube_mid_x = px - sin_rot * 0.12f;
-        float tube_mid_z = pz - cos_rot * 0.12f;
-        float tube_side = 0.12f;
+            // Ponto no referencial da mochila: (lado, altura, profundidade) -> mundo.
+            auto P = [&](float side, float up, float depth) {
+                return Vec3{pack_x + perp_x * side - sin_rot * depth,
+                            pack_y + up,
+                            pack_z + perp_z * side - cos_rot * depth};
+            };
+
+            // --- 1) Placa de encosto: fina e larga, colada nas costas. E' ela que faz a mochila
+            //        parecer VESTIDA em vez de um bloco flutuando atras do torso. ---
+            render_box_oriented_3d(P(0.0f, 0.02f, -0.01f), 0.34f, 0.30f, 0.06f, yaw,
+                                   0.62f, 0.63f, 0.66f, 1.0f);
+
+            // --- 2) Chassi principal: ACHATADO (largo e raso), com uma tampa mais clara em cima. ---
+            float body_r = active ? 0.86f : 0.80f;
+            float body_g = active ? 0.83f : 0.81f;
+            float body_b = active ? 0.79f : 0.84f;
+            render_box_oriented_3d(P(0.0f, 0.00f, 0.085f), 0.30f, 0.34f, 0.16f, yaw,
+                                   body_r, body_g, body_b, 1.0f);
+            render_box_oriented_3d(P(0.0f, 0.185f, 0.085f), 0.32f, 0.04f, 0.18f, yaw,
+                                   0.62f, 0.64f, 0.68f, 1.0f);
+            // Grade de ventilacao: 3 ripas horizontais na face de tras.
+            for (int k = 0; k < 3; ++k) {
+                render_box_oriented_3d(P(0.0f, 0.06f - (float)k * 0.055f, 0.17f),
+                                       0.20f, 0.022f, 0.02f, yaw, 0.34f, 0.35f, 0.38f, 1.0f);
+            }
+
+            // --- 3) 2 tanques cilindricos, com cinta escura no meio e valvula em cima. A capsula
+            //        (esfera esticada) le como cilindro melhor que qualquer pilha de caixas. ---
+            for (float sgn : {-1.0f, 1.0f}) {
+                Vec3 t = P(0.145f * sgn, 0.015f, 0.11f);
+                render_sphere_3d(t.x, t.y, t.z, 0.075f, 0.68f, 0.70f, 0.74f, 1.0f, 6, 9, 2.15f, 1.0f);
+                // Cinta de reforco.
+                render_box_oriented_3d({t.x, t.y, t.z}, 0.17f, 0.032f, 0.17f, yaw,
+                                       0.26f, 0.27f, 0.30f, 1.0f);
+                // Valvula + saida.
+                render_box_oriented_3d({t.x, t.y + 0.165f, t.z}, 0.07f, 0.05f, 0.07f, yaw,
+                                       0.34f, 0.36f, 0.40f, 1.0f);
+                render_box_oriented_3d({t.x, t.y + 0.20f, t.z}, 0.035f, 0.035f, 0.035f, yaw,
+                                       0.72f, 0.60f, 0.24f, 1.0f);
+            }
+
+            // --- 4) Coletor: tubo horizontal ligando as valvulas dos 2 tanques. ---
+            render_box_oriented_3d(P(0.0f, 0.185f, 0.11f), 0.30f, 0.045f, 0.045f, yaw,
+                                   0.40f, 0.42f, 0.46f, 1.0f);
+
+            // --- 5) Aletas de dissipacao nas laterais: 2 de cada lado, finas e salientes. ---
+            for (float sgn : {-1.0f, 1.0f}) {
+                for (int k = 0; k < 2; ++k) {
+                    render_box_oriented_3d(P(0.185f * sgn, 0.03f - (float)k * 0.09f, 0.075f),
+                                           0.03f, 0.055f, 0.15f, yaw, 0.36f, 0.38f, 0.42f, 1.0f);
+                }
+            }
+
+            // --- 6) BOCAIS: haste + sino flarado (3 aneis de largura crescente pra baixo) e um
+            //        anel interno escuro. E' a peca que mais vende "propulsor". ---
+            for (float sgn : {-1.0f, 1.0f}) {
+                float side = 0.105f * sgn;
+                render_box_oriented_3d(P(side, -0.185f, 0.09f), 0.075f, 0.07f, 0.075f, yaw,
+                                       0.30f, 0.31f, 0.34f, 1.0f);
+                const float bw[3] = {0.085f, 0.105f, 0.125f};
+                for (int k = 0; k < 3; ++k) {
+                    render_box_oriented_3d(P(side, -0.225f - (float)k * 0.035f, 0.09f),
+                                           bw[k], 0.035f, bw[k], yaw,
+                                           0.24f - (float)k * 0.03f, 0.25f - (float)k * 0.03f,
+                                           0.28f - (float)k * 0.03f, 1.0f);
+                }
+                // Garganta: escura quando frio, incandescente quando ligado.
+                float th = active ? 1.0f : 0.0f;
+                render_box_oriented_3d(P(side, -0.30f, 0.09f), 0.075f, 0.022f, 0.075f, yaw,
+                                       lerp(0.10f, 1.00f, th), lerp(0.10f, 0.62f, th),
+                                       lerp(0.12f, 0.22f, th), 1.0f);
+            }
+
+            // --- 7) Alcas: 2 tiras passando por cima dos ombros e descendo pro peito. ---
+            for (float sgn : {-1.0f, 1.0f}) {
+                render_box_oriented_3d(P(0.115f * sgn, 0.145f, -0.06f), 0.05f, 0.05f, 0.20f, yaw,
+                                       0.42f, 0.44f, 0.48f, 1.0f);
+                render_box_oriented_3d(P(0.115f * sgn, 0.02f, -0.24f), 0.045f, 0.28f, 0.05f, yaw,
+                                       0.42f, 0.44f, 0.48f, 1.0f);
+            }
+
+            // --- 8) Medidor de combustivel: barra que ENCURTA conforme o tanque baixa, sobre um
+            //        trilho escuro. Le o estado real sem precisar olhar o HUD. ---
+            {
+                const float rail_w = 0.16f;
+                render_box_oriented_3d(P(-0.02f, 0.115f, 0.175f), rail_w, 0.030f, 0.02f, yaw,
+                                       0.10f, 0.11f, 0.12f, 1.0f);
+                float lit = std::max(0.012f, rail_w * fuel);
+                // Cresce a partir da ponta esquerda do trilho: centro desloca com o comprimento.
+                float cx2 = -0.02f - (rail_w - lit) * 0.5f;
+                bool low = fuel < 0.25f;
+                render_box_oriented_3d(P(cx2, 0.115f, 0.185f), lit, 0.022f, 0.02f, yaw,
+                                       low ? 0.95f : 0.25f, low ? 0.45f : 0.90f, low ? 0.15f : 0.40f, 1.0f);
+            }
+
+            // --- 9) Luz de estado: verde com combustivel, vermelha piscando quando acaba. ---
+            {
+                bool fuel_ok = g_player.jetpack_fuel > 15.0f;
+                float pulse = fuel_ok ? 1.0f : (0.45f + 0.55f * std::sin(g_player.anim_frame * 9.0f));
+                render_box_oriented_3d(P(0.10f, 0.115f, 0.185f), 0.035f, 0.035f, 0.02f, yaw,
+                                       fuel_ok ? 0.20f : 0.95f, fuel_ok ? 0.90f : 0.20f, 0.25f, pulse);
+            }
+
+            // --- 10) Calor nos bocais quando ligado: halo aditivo pequeno em cada sino. Separado da
+            //         chama grande (que sai de UM ponto central, mais abaixo) - isto e' o metal
+            //         quente do bocal, e e' o que liga visualmente a mochila a chama. ---
+            if (active) {
+                rlSetTexture(0);
+                rlSetBlendMode(RL_BLEND_ADDITIVE);
+                rlDisableDepthMask();
+                float hp2 = 0.7f + 0.3f * std::sin(g_player.jetpack_flame_anim * 7.0f);
+                for (float sgn : {-1.0f, 1.0f}) {
+                    Vec3 n = P(0.105f * sgn, -0.315f, 0.09f);
+                    render_glow_disc_3d(n, 0.085f, 1.0f, 0.58f, 0.20f, 0.75f * hp2, 8);
+                }
+                rlEnableDepthMask();
+                rlSetBlendMode(RL_BLEND_ALPHA);
+            }
+        }
+
+        // Mangueiras de oxigenio: da lateral BAIXA da mochila, subindo por fora e entrando no peito.
+        // Eram 2 cubos soltos de 0.07 a meia altura, sem ligar nada a nada. Agora sao 3 segmentos por
+        // lado com render_box_oriented_3d, girando com o corpo - le como mangueira ligada de verdade.
         float perp_x = cos_rot;
         float perp_z = -sin_rot;
-        render_cube_3d(tube_mid_x - perp_x * tube_side, py + 0.36f + bob, tube_mid_z - perp_z * tube_side, 0.07f, 0.38f, 0.44f, 0.52f, 1.0f, false);
-        render_cube_3d(tube_mid_x + perp_x * tube_side, py + 0.36f + bob, tube_mid_z + perp_z * tube_side, 0.07f, 0.38f, 0.44f, 0.52f, 1.0f, false);
+        {
+            const float hyaw = std::atan2(sin_rot, cos_rot);
+            auto HP = [&](float side, float up, float depth) {
+                return Vec3{px + perp_x * side + sin_rot * depth, py + up + bob,
+                            pz + perp_z * side + cos_rot * depth};
+            };
+            for (float sgn : {-1.0f, 1.0f}) {
+                // 1) sai da mochila pra fora
+                render_box_oriented_3d(HP(0.175f * sgn, 0.26f, -0.20f), 0.16f, 0.055f, 0.055f, hyaw,
+                                       0.30f, 0.36f, 0.44f, 1.0f);
+                // 2) sobe rente ao flanco
+                render_box_oriented_3d(HP(0.235f * sgn, 0.33f, -0.06f), 0.055f, 0.055f, 0.30f, hyaw,
+                                       0.32f, 0.38f, 0.46f, 1.0f);
+                // 3) entra no peito
+                render_box_oriented_3d(HP(0.16f * sgn, 0.33f, 0.115f), 0.20f, 0.05f, 0.05f, hyaw,
+                                       0.30f, 0.36f, 0.44f, 1.0f);
+                // Conector no peito.
+                render_box_oriented_3d(HP(0.075f * sgn, 0.33f, 0.155f), 0.05f, 0.05f, 0.05f, hyaw,
+                                       0.62f, 0.56f, 0.26f, 1.0f);
+            }
+        }
 
         // Painel do peito.
         float chest_x = px + sin_rot * 0.16f;
@@ -2154,20 +2382,77 @@ void render_world(int win_w, int win_h) {
         // cos_rot, mesma tecnica ja usada pro deslocamento da lanterna/antena acima), nao uma
         // unica caixa esticada. Mesmo estilo "Minicraft" do resto do corpo.
         if (g_selected == Block::LaserPistol) {
-            float gun_y = py + 0.25f + bob + arm_bob + mine_impact * 0.05f;
-            float grip_x = ra_x + sin_rot * 0.06f;
-            float grip_z = ra_z + cos_rot * 0.06f;
-            render_cube_3d(grip_x, gun_y, grip_z, 0.11f, 0.18f, 0.19f, 0.22f, 1.0f, true);
+            // Refeita com render_box_oriented_3d: eram 3 CUBOS em fila (cabo, cano, ponta), e cubo
+            // alinhado ao eixo do mundo fica torto quando o personagem olha na diagonal - o mesmo
+            // problema que a mochila tinha. Com caixa orientada da' pra ter cano fino e comprido,
+            // corpo achatado, mira em cima e uma celula de energia atras, tudo girando com o braco.
+            const float gyaw = std::atan2(sin_rot, cos_rot);
+            const float gun_y = py + 0.25f + bob + arm_bob + mine_impact * 0.05f;
+            const float gperp_x = cos_rot, gperp_z = -sin_rot;
+            // Ponto na arma: (frente, altura, lado) a partir da mao.
+            auto G = [&](float fwd, float up, float side) {
+                return Vec3{ra_x + sin_rot * fwd + gperp_x * side, gun_y + up,
+                            ra_z + cos_rot * fwd + gperp_z * side};
+            };
 
-            float barrel1_x = ra_x + sin_rot * 0.20f;
-            float barrel1_z = ra_z + cos_rot * 0.20f;
-            render_cube_3d(barrel1_x, gun_y + 0.03f, barrel1_z, 0.09f, 0.20f, 0.85f, 0.95f, 1.0f, true);
+            // Cabo inclinado pra tras (2 blocos escalonados dao a leitura de empunhadura).
+            render_box_oriented_3d(G(0.015f, -0.055f, 0.0f), 0.065f, 0.115f, 0.075f, gyaw,
+                                   0.16f, 0.17f, 0.20f, 1.0f);
+            render_box_oriented_3d(G(-0.03f, -0.105f, 0.0f), 0.060f, 0.075f, 0.065f, gyaw,
+                                   0.13f, 0.14f, 0.16f, 1.0f);
+            // Guarda-mato sob o cabo.
+            render_box_oriented_3d(G(0.075f, -0.075f, 0.0f), 0.045f, 0.035f, 0.10f, gyaw,
+                                   0.20f, 0.21f, 0.24f, 1.0f);
 
-            float barrel2_x = ra_x + sin_rot * 0.32f;
-            float barrel2_z = ra_z + cos_rot * 0.32f;
+            // Corpo/receptor: achatado e mais largo que alto.
+            render_box_oriented_3d(G(0.085f, 0.015f, 0.0f), 0.085f, 0.085f, 0.19f, gyaw,
+                                   0.26f, 0.28f, 0.32f, 1.0f);
+            // Placa lateral clara de cada lado (contraste, senao a arma inteira le como um borrao).
+            for (float sgn : {-1.0f, 1.0f}) {
+                render_box_oriented_3d(G(0.085f, 0.015f, 0.046f * sgn), 0.012f, 0.055f, 0.13f, gyaw,
+                                       0.52f, 0.55f, 0.60f, 1.0f);
+            }
+
+            // Celula de energia atras do receptor: barra acesa que ENCURTA conforme o cooldown.
+            {
+                float charge = 1.0f - clamp01(laser_cooldown_fraction());
+                render_box_oriented_3d(G(0.03f, 0.055f, 0.0f), 0.055f, 0.030f, 0.085f, gyaw,
+                                       0.10f, 0.11f, 0.13f, 1.0f);
+                float lit = std::max(0.008f, 0.085f * charge);
+                render_box_oriented_3d(G(0.03f - (0.085f - lit) * 0.5f, 0.058f, 0.0f),
+                                       0.042f, 0.022f, lit, gyaw,
+                                       0.30f, 0.92f, 1.0f, 1.0f);
+            }
+
+            // Mira em cima (base + 2 postes).
+            render_box_oriented_3d(G(0.10f, 0.062f, 0.0f), 0.035f, 0.020f, 0.11f, gyaw,
+                                   0.20f, 0.21f, 0.24f, 1.0f);
+            render_box_oriented_3d(G(0.055f, 0.088f, 0.0f), 0.030f, 0.038f, 0.020f, gyaw,
+                                   0.34f, 0.36f, 0.40f, 1.0f);
+            render_box_oriented_3d(G(0.155f, 0.082f, 0.0f), 0.026f, 0.028f, 0.020f, gyaw,
+                                   0.34f, 0.36f, 0.40f, 1.0f);
+
+            // Cano: fino e COMPRIDO (era um cubo de 0.09), com 2 aneis de refrigeracao.
+            render_box_oriented_3d(G(0.245f, 0.020f, 0.0f), 0.050f, 0.050f, 0.17f, gyaw,
+                                   0.22f, 0.24f, 0.27f, 1.0f);
+            for (float fw : {0.195f, 0.275f}) {
+                render_box_oriented_3d(G(fw, 0.020f, 0.0f), 0.072f, 0.072f, 0.022f, gyaw,
+                                       0.44f, 0.47f, 0.52f, 1.0f);
+            }
+            // Emissor: bocal escuro + nucleo pulsante, na PONTA (e' de onde o traco do tiro sai -
+            // ver get_weapon_muzzle_pos em player_physics.cpp).
+            render_box_oriented_3d(G(0.345f, 0.020f, 0.0f), 0.062f, 0.062f, 0.040f, gyaw,
+                                   0.14f, 0.15f, 0.17f, 1.0f);
             float tip_glow = 0.65f + 0.35f * std::sin(g_player.anim_frame * 6.0f);
-            render_cube_3d(barrel2_x, gun_y + 0.03f, barrel2_z, 0.07f,
-                          0.35f * tip_glow, 0.90f * tip_glow, 1.0f * tip_glow, 1.0f, false);
+            render_box_oriented_3d(G(0.372f, 0.020f, 0.0f), 0.040f, 0.040f, 0.022f, gyaw,
+                                   0.35f * tip_glow, 0.90f * tip_glow, 1.0f * tip_glow, 1.0f);
+            // Halo do emissor - o que faz a arma ler como energia e nao como ferro.
+            rlSetBlendMode(RL_BLEND_ADDITIVE);
+            rlDisableDepthMask();
+            render_glow_disc_3d(G(0.385f, 0.020f, 0.0f), 0.075f,
+                                0.40f, 0.92f, 1.0f, 0.45f * tip_glow, 8);
+            rlEnableDepthMask();
+            rlSetBlendMode(RL_BLEND_ALPHA);
         }
     }
 
@@ -2200,7 +2485,7 @@ void render_world(int win_w, int win_h) {
         Block tb = g_world->get(g_target_x, g_target_y);
         float base_y = (float)g_world->height_at(g_target_x, g_target_y) * kHeightScale;
 
-        rlSetTexture(0);
+        rlSetTexture(rlGetTextureIdDefault());   // NAO rlSetTexture(0): pra id 0 o rlgl nao troca nada
         rlSetBlendMode(RL_BLEND_ALPHA);
 
         // Evita caixa em volta do proprio jogador.
@@ -2697,6 +2982,7 @@ void update_game(float dt) {
     bool g_pressed = key_pressed(KEY_G, g_prev_g);
     bool t_pressed = key_pressed(KEY_T, g_prev_t);
     bool p_pressed = key_pressed(KEY_P, g_prev_p);
+    bool v_pressed = key_pressed(KEY_V, g_prev_v);   // transicao exterior<->interior (interiors.h)
     
     // === MAPA GRANDE (tecla M) ===
     if (m_pressed && g_state == GameState::Playing) {
@@ -2973,9 +3259,9 @@ void update_game(float dt) {
     // e pela progressao de fases), so nao causa mais dano/morte por si so. A degradacao do
     // traje (g_suit_integrity, ver comentario completo no topo do arquivo) e o unico jeito
     // de ficar mais vulneravel longe da base hoje - isso sim amplifica sede/fome/oxigenio.
-    float dx_base = g_player.pos.x - (float)g_base_x;
-    float dy_base = g_player.pos.y - (float)g_base_y;
-    bool near_base_shelter = (dx_base * dx_base + dy_base * dy_base) < (g_base_cfg.safe_radius * g_base_cfg.safe_radius);
+    // Mesmo predicado do reabastecimento (update_modules) e do HUD - ver player_in_base_complex()
+    // em modules_building.h: disco da zona segura OU dentro do corredor/estufa.
+    bool near_base_shelter = player_in_base_complex();
 
     // Integridade do traje: dreno CONTINUO (nao timer-depois-dano) enquanto fora do abrigo -
     // ~2.5/min, ~40min pra zerar ficando fora o tempo todo (decadencia lenta de proposito).
@@ -3029,54 +3315,12 @@ void update_game(float dt) {
             lava_burn_accum = 0.0f;
         }
     }
+    // A porta da cupula NAO tem mais teleporte. Ela existia porque a colisao da base era um
+    // cilindro invisivel de 360 graus sem excecao de angulo, entao a unica forma de atravessar em
+    // qualquer ponto era um pulinho por proximidade. Agora as paredes sao blocos de verdade com
+    // VAOS reais nos corredores (ver generate_base) - o jogador simplesmente anda pela porta, que
+    // e' desenhada como escotilha em volta do proprio vao. Nada de teleporte, nada de gatilho.
 
-    // Porta da cupula (sempre fechada - ver render_geodesic_dome): cruzar a parede da base
-    // agora e por proximidade (nao mais tecla F), mas o unico jeito de atravessar e este
-    // teleporte curto, disparado so ao ENCOSTAR na porta (raio 1.0 - bem mais apertado que
-    // antes - E perto do CHAO, dentro da altura da porta). 4 pontos distintos ao longo do
-    // eixo sul (a parede fica no raio 15.5, porta em cy+16): de dentro pra fora,
-    // kInsideFar(9) < kInsideTrigger(13) < [parede ~16] < kOutsideTrigger(19) <
-    // kOutsideFar(23). Cada gatilho pousa o jogador no ponto "Far" do OUTRO lado (nunca no
-    // proprio gatilho de origem nem no da chegada) - essa distancia evita redisparar o
-    // teleporte na hora ao chegar do outro lado.
-    //
-    // A checagem de ALTURA (pos_y perto do chao) e o que faltava antes: o gatilho so olhava
-    // pra distancia horizontal, entao voar de jetpack BEM ALTO passando por cima do ponto da
-    // porta tambem disparava o teleporte (parecia "voar pra fora da cupula", bug reportado) -
-    // a barreira cilindrica em si (player_physics.cpp) e valida em qualquer altura, mas o
-    // GATILHO da porta nao era, e um gatilho disparando na hora errada e igualzinho a nao ter
-    // barreira nenhuma. Com a altura exigida, so andar (ou pousar) bem perto do chao na porta
-    // ativa o teleporte - passar voando por cima, em qualquer altura, so esbarra na barreira.
-    {
-        static float teleport_cooldown = 0.0f;
-        teleport_cooldown = std::max(0.0f, teleport_cooldown - dt);
-
-        const int kInsideFar = 9;
-        const int kInsideTrigger = 13;
-        const int kOutsideTrigger = 19;
-        const int kOutsideFar = 23;
-        const float kDoorTriggerRadius2 = 1.0f * 1.0f;
-        const float kDoorHeightTolerance = 2.8f; // ~door_height (2.6) + folga pequena
-
-        float door_ground_y = (float)g_world->height_at(g_base_x, g_base_y) * kHeightScale;
-        bool near_door_height = std::fabs(g_player.pos_y - door_ground_y) < kDoorHeightTolerance;
-
-        float in_dx = g_player.pos.x - (float)g_base_x;
-        float in_dy = g_player.pos.y - (float)(g_base_y + kInsideTrigger);
-        float out_dx = g_player.pos.x - (float)g_base_x;
-        float out_dy = g_player.pos.y - (float)(g_base_y + kOutsideTrigger);
-        bool near_inside_trigger = near_door_height && (in_dx * in_dx + in_dy * in_dy) < kDoorTriggerRadius2;
-        bool near_outside_trigger = near_door_height && (out_dx * out_dx + out_dy * out_dy) < kDoorTriggerRadius2;
-
-        if (teleport_cooldown <= 0.0f && (near_inside_trigger || near_outside_trigger)) {
-            if (near_inside_trigger) {
-                teleport_player_to(g_base_x, g_base_y + kOutsideFar);
-            } else {
-                teleport_player_to(g_base_x, g_base_y + kInsideFar);
-            }
-            teleport_cooldown = 1.0f;
-        }
-    }
 
     // Track time without resources
     if (g_water_res <= 0.0f) {
@@ -3165,6 +3409,13 @@ void update_game(float dt) {
     // explicit-parameter functions there instead - the highest-value mechanical change of
     // this extraction stage, per the refactor plan.
     update_mining_and_placement(dt);
+
+    // === TRANSICAO EXTERIOR <-> INTERIOR (tecla V) ===
+    // Sistema generico: le a tabela kInteriors (interiors.h). Adicionar laboratorio/dormitorio/
+    // deposito/centro de pesquisa novo e' UMA linha lá - nao existe codigo por porta aqui.
+    // Depois de update_mining_and_placement de proposito: a alcova de porta e' feita de blocos
+    // is_base_structure (nao mineraveis), entao mirar nela nunca disputa com a mineracao.
+    interiors_update(v_pressed);
 
     // Upgrade de modulo (tecla R, ver try_upgrade_module()) - so quando mirando um modulo
     // ja construido em alcance, reaproveitando o mesmo raycast que update_mining_and_placement

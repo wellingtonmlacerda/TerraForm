@@ -109,6 +109,13 @@ struct PhysicsRuntime {
     bool hit_x = false;
     bool hit_z = false;
     bool sliding = false;
+
+    // Assistencia de pouso engatada (rajada disparada, segurando a velocidade segura ate tocar o
+    // chao). Vive AQUI, e nao num `static` local de apply_single_physics_step: um static sobrevive a
+    // respawn, Novo Jogo e teleporte, e este projeto ja teve bug real por estado preso em global que
+    // ninguem reseta (ver a nota sobre g_shelter_door_x/y em modules_building.h). Em PhysicsRuntime
+    // ele e' limpo por reset_player_physics_runtime() junto com o resto.
+    bool landing_assist_engaged = false;
     TerrainPhysicsType terrain = TerrainPhysicsType::Normal;
     std::string terrain_name = "Normal";
     bool submerged = false; // Cabeca abaixo da superficie da agua (dreno extra de O2 do traje)
@@ -177,12 +184,9 @@ void spawn_player_new_game(World& world);
 // distancia do destino ate o centro da cupula - quem chama nao precisa saber desse detalhe.
 void teleport_player_to(int x, int y);
 
-// Lado logico da barreira cilindrica invisivel da cupula (ver apply_dome_barrier em
-// player_physics.cpp): true = jogador devia estar DENTRO do raio (kDomeWallRadius), false =
-// devia estar fora. Reforcado todo frame independente de ter "pego o exato instante" da
-// travessia - so muda quando spawn_player_at_base()/teleport_player_to() (acima) mudam a
-// posicao do jogador de proposito.
-void set_dome_barrier_side(bool inside);
+// set_dome_barrier_side() foi REMOVIDO junto com a barreira cilindrica invisivel da cupula - ver o
+// comentario longo em player_physics.cpp. As paredes da base agora sao blocos de verdade com vaos
+// reais, entao nao existe mais "lado logico" nenhum pra manter em sincronia.
 
 // Definidas em player_physics.cpp (leem g_physics.render_pos/render_pos_y); camera.cpp
 // (e o resto de main.cpp) continuam chamando-as atraves desta declaracao. camera.h ja

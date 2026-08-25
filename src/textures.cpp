@@ -106,6 +106,16 @@ void block_color(Block b, int y, int world_h, float& r, float& g, float& bl, flo
         case Block::Antenna:         r = 0.75f; g = 0.77f; bl = 0.80f; break;  // Metal claro
         case Block::RefinedAlloy:    r = 0.85f; g = 0.65f; bl = 0.15f; break;  // Liga dourada - distingue do Metal cru
         case Block::LaserPistol:     r = 0.20f; g = 0.85f; bl = 0.95f; break;  // Ciano laser - distingue de tudo mais
+        case Block::BaseFloor:       r = 0.58f; g = 0.60f; bl = 0.64f; break;  // Chapa metalica clara
+        case Block::PlanterBed:      r = 0.30f; g = 0.22f; bl = 0.14f; break;  // Terra revirada escura
+        // Blocos de colisao de mobilia: nunca desenhados (ver os skips em main.cpp). Estes casos
+        // sao rede de seguranca, so' pra nao cair no magenta do default se algum caminho de render
+        // for esquecido no futuro.
+        case Block::FurnitureLow:
+        case Block::FurnitureMid:
+        case Block::FurnitureTall:   r = 0.50f; g = 0.52f; bl = 0.56f; break;
+        case Block::FurnitureHuge:   r = 0.44f; g = 0.46f; bl = 0.50f; break;
+        case Block::BaseShell:       r = 0.90f; g = 0.90f; bl = 0.93f; break;  // rede de seguranca: nunca desenhado (is_invisible_collider)
         default: r = 1.0f; g = 0.0f; bl = 1.0f; break;
     }
 
@@ -420,6 +430,43 @@ static void tile_generate_all(std::vector<uint8_t>& atlas) {
     tile_noise(atlas, Tile::Pipe, c8(155, 165, 175), 8, 0x8Au);
     tile_noise(atlas, Tile::Antenna, c8(205, 210, 220), 8, 0x8Bu);
 
+    // Piso INTERNO da base: chapa metalica CLARA com junta em cruz, escovado diagonal e rebites
+    // nos cantos. Deliberadamente o oposto do LandingPad (concreto escuro) - o pedido do jogador
+    // foi "o piso tem que ser diferente o la de fora", entao o contraste de VALOR (claro dentro /
+    // escuro fora) tem que ler na hora, nao so' a textura.
+    tile_noise(atlas, Tile::BaseFloor, c8(150, 152, 158), 8, 0x8Cu);
+    tile_draw_rect(atlas, Tile::BaseFloor, 0, 0, kAtlasTileSize, 1, c8(96, 99, 105));
+    tile_draw_rect(atlas, Tile::BaseFloor, 0, 0, 1, kAtlasTileSize, c8(96, 99, 105));
+    tile_draw_rect(atlas, Tile::BaseFloor, 0, 7, kAtlasTileSize, 1, c8(114, 117, 124));
+    tile_draw_rect(atlas, Tile::BaseFloor, 7, 0, 1, kAtlasTileSize, c8(114, 117, 124));
+    for (int y = 0; y < kAtlasTileSize; ++y) {
+        for (int x = 0; x < kAtlasTileSize; ++x) {
+            if (((x + y) & 7) == 0) tile_set_px(atlas, Tile::BaseFloor, x, y, c8(168, 171, 178));
+        }
+    }
+    {
+        const int rivets[4][2] = {{2, 2}, {13, 2}, {2, 13}, {13, 13}};
+        for (int i = 0; i < 4; ++i) {
+            tile_set_px(atlas, Tile::BaseFloor, rivets[i][0], rivets[i][1], c8(196, 199, 206));
+            tile_set_px(atlas, Tile::BaseFloor, rivets[i][0], rivets[i][1] + 1, c8(108, 111, 118));
+        }
+    }
+
+    // Canteiro da estufa: terra revirada escura em SULCOS + brotos. O tom teal dos brotos segue a
+    // paleta de Block::Organic de proposito - verde-Terra saturado num planeta ainda nao
+    // terraformado ja foi reclamado antes nesta sessao.
+    tile_noise_2layer(atlas, Tile::PlanterBed, c8(76, 54, 36), 12, 16, 0x8Du);
+    for (int y = 1; y < kAtlasTileSize; y += 4) {
+        tile_draw_rect(atlas, Tile::PlanterBed, 0, y, kAtlasTileSize, 1, c8(52, 36, 24));
+    }
+    for (int i = 0; i < 24; ++i) {
+        uint32_t hn = noise2_u32(i * 3, i * 5, 0x8D1u);
+        int sx = (int)(hn % (uint32_t)kAtlasTileSize);
+        int sy = 2 + (int)((hn >> 8) % (uint32_t)(kAtlasTileSize - 4));
+        tile_set_px(atlas, Tile::PlanterBed, sx, sy, c8(42, 168, 172));
+        tile_set_px(atlas, Tile::PlanterBed, sx, sy - 1, c8(74, 212, 202));
+    }
+
     // Cracks: linhas pretas sobre alpha
     for (int i = 0; i < 8; ++i) {
         Tile t = (Tile)((int)Tile::Crack1 + i);
@@ -513,6 +560,18 @@ BlockTex block_tex(Block b) {
         // Reaproveita a arte da Antena (uses_tint=true aplica o ciano de block_color() por
         // cima) - nunca colocado como tile do mundo, so existe pra icone do hotbar.
         case Block::LaserPistol: t = {Tile::Antenna, Tile::Antenna, Tile::Antenna, true, false, false}; break;
+        // uses_tint=false: a arte ja e' colorida (nao um tile "valor" cinza pra ser tintado
+        // depois), igual LandingPad/DomeFrame. O campo `side` importa: o complexo da base fica 1
+        // unidade de heightmap acima da planicie em volta, e o terreno desenha as faces laterais
+        // por diferenca de altura de vizinho - e' o que forma a mureta da borda.
+        case Block::BaseFloor:  t = {Tile::BaseFloor, Tile::BaseFloor, Tile::BaseFloor, false, false, false}; break;
+        case Block::PlanterBed: t = {Tile::PlanterBed, Tile::PlanterBed, Tile::PlanterBed, false, false, false}; break;
+        // Idem: rede de seguranca, estes nunca deveriam chegar a ser desenhados.
+        case Block::FurnitureLow:
+        case Block::FurnitureMid:
+        case Block::FurnitureTall: t = {Tile::Metal, Tile::Metal, Tile::Metal, false, false, false}; break;
+        case Block::FurnitureHuge: t = {Tile::Metal, Tile::Metal, Tile::Metal, false, false, false}; break;
+        case Block::BaseShell: t = {Tile::Metal, Tile::Metal, Tile::Metal, false, false, false}; break;
 
         default: t = {Tile::Missing, Tile::Missing, Tile::Missing, false, false, false}; break;
     }

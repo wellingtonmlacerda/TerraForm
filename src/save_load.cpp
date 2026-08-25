@@ -71,13 +71,21 @@ void clear_falling_meteors();
 // it via extern - same pattern as kDayLength/kTempThawing in modules_building.cpp/world.cpp.
 static constexpr float kEnergyMax = 500.0f;
 
+// Versao atual do formato de save. Era um literal solto em save_game() (10) enquanto load_game()
+// tinha um limite SUPERIOR FIXO de 5 no seu if/else de versao - ou seja, load_game() caia no
+// "else { return false; }" e REJEITAVA toda save escrita por qualquer build desde a v6. Carregar
+// jogo ("Continuar", ui_menu.cpp) nunca funcionou, e os blocos "if (version >= 6..10)" mais abaixo
+// eram codigo morto inalcancavel. Uma constante unica pros dois lados torna impossivel os limites
+// se separarem de novo.
+static constexpr uint32_t kSaveVersion = 10;
+
 bool save_game(const char* path) {
     if (!g_world) return false;
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) return false;
 
     const char magic[4] = {'T', 'F', '3', 'D'};  // Atualizado para 3D
-    uint32_t version = 10;  // Version 10 - adds ice/crystal/metal/organic/components unlock totals
+    uint32_t version = kSaveVersion;  // v10 - adds ice/crystal/metal/organic/components unlock totals
     uint32_t w = (uint32_t)g_world->w;
     uint32_t h = (uint32_t)g_world->h;
     uint32_t seed = (uint32_t)g_world->seed;
@@ -278,7 +286,12 @@ bool load_game(const char* path) {
             f.read((char*)&c, sizeof(c));
             if (i < (uint32_t)kBlockTypeCount) inv[(size_t)i] = (int)c;
         }
-    } else if (version >= 2 && version <= 5) {
+    // ATENCAO: o limite superior era 5 fixo, o que fazia toda save v6+ (ou seja, TODAS - save_game
+    // escreve kSaveVersion = 10) cair no "else { return false; }" la embaixo. Este bloco le o
+    // cabecalho COMUM a todas as versoes >= 2 (inventario, recursos, base, unlocks, camera) na
+    // mesma ordem em que save_game() escreve; os campos que so existem a partir da v6 sao lidos
+    // pelos blocos "if (version >= 6..10)" depois do mundo, mais abaixo.
+    } else if (version >= 2 && version <= kSaveVersion) {
         uint32_t inv_count = 0;
         f.read((char*)&inv_count, sizeof(inv_count));
         if (!f || inv_count > 4096) return false;
@@ -443,6 +456,10 @@ bool load_game(const char* path) {
     g_show_build_menu = false;
     g_suit_integrity = 100.0f; // default pra saves pre-v9; sobrescrito abaixo se version>=9
     rebuild_modules_from_world();
+    // g_build_slots nunca e' salvo - reconstruir a partir dos tiles BuildSlot do mundo, senao
+    // depois de carregar o menu de construcao nao encontra nenhum slot (ou usa os da partida
+    // anterior) e cria slots soltos perto da base. Ver modules_building.h.
+    rebuild_build_slots_from_world();
 
     // Version 6: Carregar fog of war e waypoints
     if (version >= 6) {

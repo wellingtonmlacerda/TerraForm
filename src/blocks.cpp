@@ -17,6 +17,8 @@ bool is_solid(Block b) {
         case Block::BuildSlot:
         case Block::LandingPad:
         case Block::RocketWindow:
+        case Block::BaseFloor:
+        case Block::PlanterBed:
             return false;  // Pode passar por cima
         default:
             return true;   // Bloqueia movimento (pedra, agua, gelo, modulos, etc) - DomeGlass
@@ -39,7 +41,10 @@ bool is_base_structure(Block b) {
            b == Block::RocketFin || b == Block::RocketDoor ||
            b == Block::DomeGlass || b == Block::DomeFrame ||
            b == Block::LandingPad || b == Block::BuildSlot ||
-           b == Block::PipeH || b == Block::PipeV || b == Block::Antenna;
+           b == Block::PipeH || b == Block::PipeV || b == Block::Antenna ||
+           b == Block::BaseFloor || b == Block::PlanterBed ||
+           b == Block::FurnitureLow || b == Block::FurnitureMid || b == Block::FurnitureTall ||
+           b == Block::FurnitureHuge || b == Block::BaseShell;
 }
 
 // Blocos que representam "solo/superficie" (nao sao objetos acima do terreno).
@@ -55,6 +60,8 @@ bool is_ground_like(Block b) {
         case Block::Lava:
         case Block::LandingPad:
         case Block::BuildSlot:
+        case Block::BaseFloor:
+        case Block::PlanterBed:
             return true;
         default:
             return false;
@@ -72,6 +79,8 @@ bool is_walkable(Block b) {
         case Block::Leaves:       // Pode andar sobre folhas
         case Block::BuildSlot:    // Slots de construcao
         case Block::LandingPad:   // Area de pouso
+        case Block::BaseFloor:    // Piso interno da base
+        case Block::PlanterBed:   // Canteiro (chao, da pra andar em cima/em volta)
             return true;
         default:
             return false;  // Pedra, agua, gelo, modulos bloqueiam
@@ -122,6 +131,14 @@ const char* block_name(Block b) {
         case Block::Lava: return "Lava";
         case Block::RefinedAlloy: return "Liga Refinada";
         case Block::LaserPistol: return "Pistola de Laser";
+        case Block::BaseFloor: return "Piso da Base";
+        case Block::PlanterBed: return "Canteiro";
+        // Aparecem na linha "Alvo:" do HUD se o jogador mirar num movel - nome sensato, nao "?".
+        case Block::FurnitureLow:
+        case Block::FurnitureMid:
+        case Block::FurnitureTall:
+        case Block::FurnitureHuge: return "Mobilia";
+        case Block::BaseShell: return "Estrutura da Base";
         default: return "?";
     }
 }
@@ -135,4 +152,15 @@ const char* phase_name(TerraPhase p) {
         case TerraPhase::Terraformed: return "Terraformado";
         default: return "?";
     }
+}
+
+// Ver comentario da declaracao em blocks.h.
+bool is_furniture_collider(Block b) {
+    return b == Block::FurnitureLow || b == Block::FurnitureMid || b == Block::FurnitureTall ||
+           b == Block::FurnitureHuge;
+}
+
+// Ver comentario da declaracao em blocks.h.
+bool is_invisible_collider(Block b) {
+    return is_furniture_collider(b) || b == Block::BaseShell;
 }

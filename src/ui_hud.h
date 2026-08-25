@@ -27,3 +27,14 @@ void render_hud(int win_w, int win_h);
 // dois nunca mais podem divergir.
 float hud_right_panel_right_x(int win_w);
 float hud_right_panel_bottom_y();
+
+// True enquanto o cursor esta sobre um botao redondo do cluster de acao (arma). Lido pelo caminho de
+// TIRO (creatures.cpp) e de mineracao/construcao (building_interaction.cpp) pra nao agir no mundo
+// quando o clique era na interface.
+//
+// Existe porque o tiro usa IsMouseButtonDown (botao SEGURADO), nao o flag de clique: consumir
+// g_mouse_left_clicked no botao nao impedia nada, e clicar no icone da arma sempre disparava um tiro -
+// bug reportado. Um teste de "cursor sobre a interface" resolve pros dois caminhos de uma vez.
+// Atualizado 1x por frame por render_hud(); os botoes sao estaticos, entao um frame de atraso e'
+// irrelevante.
+extern bool g_hud_pointer_over_button;

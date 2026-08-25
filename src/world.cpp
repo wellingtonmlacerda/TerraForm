@@ -917,6 +917,16 @@ float get_block_height(Block b) {
     if (is_ground_like(b)) return 0.0f; // Solo (inclui agua/gelo), sem volume acima
     if (b == Block::Leaves) return 0.0f; // Folhagem e tratada como plano
 
+    // Colisao de mobilia: ANTES dos testes genericos abaixo (que devolvem 1.0 pra tudo). E' o unico
+    // lugar do motor com altura sub-1.0, e e' exatamente por isso que a mobilia mora na slot de
+    // OBJETO e nao numa camada de pilha: camada de pilha e' fixa em 1.0 em render E colisao, entao
+    // o jogador pisaria 1.0 acima do movel (flutuando sobre a cama). Aqui a altura de colisao casa
+    // com a altura desenhada em base_interior.cpp.
+    if (b == Block::FurnitureLow) return 0.70f;   // cama, caixas, bancos
+    if (b == Block::FurnitureMid) return 1.10f;   // mesa, bancada, console, pia
+    if (b == Block::FurnitureTall) return 2.10f;  // armario, tanque, prateleira
+    if (b == Block::FurnitureHuge) return 4.20f;  // maquinario/reator/tanque industrial
+
     // Objetos (rochas/minerios/modulos/estruturas): cubo 1x1x1 sobre o solo.
     // Se quiser modulos mais altos no futuro, troque por um box/prisma (nao cubo uniforme).
     if (is_module(b)) return 1.0f;

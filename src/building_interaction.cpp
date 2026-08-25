@@ -11,6 +11,7 @@
 #include "game_state.h"
 #include "player_physics.h"
 #include "items_particles.h"
+#include "ui_hud.h"             // g_hud_pointer_over_button
 #include "modules_building.h"
 #include "inventory_crafting.h"
 #include "render_primitives.h"
@@ -715,7 +716,9 @@ void update_mining_and_placement(float dt) {
     // VK_LBUTTON/VK_RBUTTON are not keyboard keys in raylib - key_down()/IsKeyDown() has no
     // equivalent for them (it only worked before because GetAsyncKeyState happens to accept
     // mouse VK codes too). Use IsMouseButtonDown() directly for just these 2 sites.
-    bool lmb = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    // !g_hud_pointer_over_button: clicar num botao redondo da HUD nao pode minerar/construir no mundo,
+    // pelo mesmo motivo que nao pode disparar (ver ui_hud.h).
+    bool lmb = IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !g_hud_pointer_over_button;
     bool rmb = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
 
     bool e_key = key_down(KEY_E);

@@ -9,6 +9,9 @@
 #include "player_physics.h"     // g_player
 #include "objectives.h"         // notify_module_built, update_objectives
 #include "items_particles.h"    // spawn_block_particles (efeito visual do upgrade)
+#include "base_interior.h"     // kFurniture/base_interior_stamp_furniture (mobilia com fisica)
+#include "interiors.h"         // kInteriors (alcovas de porta) / build_interiors (distrito)
+#include "base_exterior.h"     // base_exterior_stamp (casca de colisao do modelo do exterior)
 
 #include <algorithm>
 #include <cmath>
@@ -86,6 +89,50 @@ std::vector<ConstructionJob> g_construction_queue;
 std::vector<BuildSlotInfo> g_build_slots;
 std::vector<Module> g_modules;
 
+// Ver comentarios das declaracoes em modules_building.h.
+float g_greenhouse_output = 0.0f;
+
+bool base_annex_contains(float dx, float dy) {
+    // "Anexo" = a pegada das pecas do exterior. Le a MESMA tabela kExterior[] que desenha o modelo e
+    // estampa a casca de colisao (base_exterior.h): reescrever a geometria a mao aqui foi exatamente
+    // o que criou bug antes neste projeto - a peca muda de tamanho na tabela e este teste continua
+    // achando que ela tem o tamanho antigo. Serve pra 2 coisas: o scanner de POI nao "descobrir" a
+    // propria base do jogador, e o entorno imediato dos modulos contar como base.
+    // A folga de +1.5 e' porque a posicao do jogador e' CONTINUA e ele deve contar como "na base"
+    // andando rente a fachada, nao so' dentro dela.
+    for (int i = 0; i < kExteriorCount; ++i) {
+        const ExtPiece& p = kExterior[i];
+        if (p.shape == ExtShape::Solar || p.shape == ExtShape::Mast) continue;  // detalhe, nao volume
+        float rx = dx - p.dx, rz = dy - p.dz;
+        if (p.shape == ExtShape::Drum) {
+            float rr = p.radius + 1.5f;
+            if (rx * rx + rz * rz <= rr * rr) return true;
+        } else {  // Tube: caixa orientada ao longo de axis_deg
+            float a = p.axis_deg * (kPi / 180.0f);
+            float ax = std::sin(a), az = std::cos(a);
+            float along = rx * ax + rz * az;
+            float across = rx * (-az) + rz * ax;
+            if (std::fabs(along) <= p.len * 0.5f + 1.0f &&
+                std::fabs(across) <= p.radius + 1.5f) return true;
+        }
+    }
+    return false;
+}
+
+bool player_in_base_complex() {
+    // Dentro de uma sala do distrito de interiores o jogador esta, por definicao, DENTRO de um modulo
+    // pressurizado da propria base - abrigado, com reabastecimento e sem dreno de traje. Sem isto, o
+    // sistema veria "1200 tiles longe da base" e o jogador morreria de frio no proprio dormitorio.
+    if (interior_is_shelter(interior_at(g_player.pos.x, g_player.pos.y))) return true;
+
+    float dx = g_player.pos.x - (float)g_base_x;
+    float dy = g_player.pos.y - (float)g_base_y;
+    // Disco original, identico ao que os 3 call sites faziam antes - o comportamento existente nao
+    // muda em nada, o anexo so' ACRESCENTA area abrigada.
+    if (dx * dx + dy * dy < g_base_cfg.safe_radius * g_base_cfg.safe_radius) return true;
+    return base_annex_contains(dx, dy);
+}
+
 // ============= Generate Base (Landing Site) =============
 void generate_base(World& world) {
     g_build_slots.clear();
@@ -109,33 +156,52 @@ void generate_base(World& world) {
             int score = 0;
             int16_t min_h = std::numeric_limits<int16_t>::max();
             int16_t max_h = std::numeric_limits<int16_t>::min();
-            // Amostra uma "área de pouso" menor, suficiente para decidir.
-            for (int dy = -10; dy <= 10; ++dy) {
-                for (int dx = -18; dx <= 18; ++dx) {
+            long ring_sum = 0; int ring_n = 0;
+            // Amostra o FOOTPRINT REAL da base (disco de raio 46, passo 4) em vez de uma caixa de
+            // 37x21. A caixa antiga era MENOR que a base e nao via o entorno: dava pra escolher uma
+            // mesa cujo achatamento virava um paredao na borda. Medido no mundo gerado: degrau de
+            // -7.25 de mundo em r=46, e o jogador sobe no maximo ~0.55 - quem descia nao voltava a pe.
+            // Passo 4 = ~190 amostras, MENOS que as 777 de antes, com cobertura muito maior.
+            // Os pesos por amostra sao x4 pra compensar a densidade menor e manter o balanco com
+            // range*6 (que nao e' por amostra).
+            const int kSampleR = kBaseFlattenRadius;
+            for (int dy = -kSampleR; dy <= kSampleR; dy += 4) {
+                for (int dx = -kSampleR; dx <= kSampleR; dx += 4) {
+                    int d2 = dx * dx + dy * dy;
+                    if (d2 > kSampleR * kSampleR) continue;
                     int sx = x + dx;
                     int sy = y + dy;
-                    if (!world.in_bounds(sx, sy)) { score -= 10; continue; }
+                    if (!world.in_bounds(sx, sy)) { score -= 40; continue; }
 
                     int16_t hh = world.height_at(sx, sy);
                     min_h = std::min(min_h, hh);
                     max_h = std::max(max_h, hh);
+                    // Anel externo: usado pra detectar mesa/cratera (ver a penalidade abaixo).
+                    if (d2 > 32 * 32) { ring_sum += hh; ring_n++; }
 
                     // Penalizar objetos (rochas/minerios/modulos) na area de pouso
-                    if (object_block_at(world, sx, sy) != Block::Air) score -= 6;
+                    if (object_block_at(world, sx, sy) != Block::Air) score -= 24;
 
                     // Preferir solo seco/estavel
                     Block surface = surface_block_at(world, sx, sy);
-                    if (surface == Block::Water || surface == Block::Ice) score -= 10;
-                    else if (surface == Block::Snow) score -= 2;
-                    else if (surface == Block::Sand) score += 1;
-                    else if (surface == Block::Dirt) score += 2;
-                    else if (surface == Block::Grass) score += 3;
+                    if (surface == Block::Water || surface == Block::Ice) score -= 40;
+                    else if (surface == Block::Snow) score -= 8;
+                    else if (surface == Block::Sand) score += 4;
+                    else if (surface == Block::Dirt) score += 8;
+                    else if (surface == Block::Grass) score += 12;
                 }
             }
 
             // Penalizar area inclinada (base precisa ser plana)
             int range = (int)max_h - (int)min_h;
             score -= range * 6;
+            // MESA / CRATERA: diferenca entre o centro e a media do anel externo do footprint. Sem
+            // isto, um pico plano no topo pontua igual a uma planicie - e' exatamente o caso que
+            // gerou o paredao medido.
+            if (ring_n > 0) {
+                int center_h = (int)world.height_at(x, y);
+                score -= std::abs(center_h - (int)(ring_sum / ring_n)) * 8;
+            }
             if (min_h <= 8) score -= 30; // muito perto de baixadas geladas
 
             if (score > best_score) {
@@ -152,15 +218,43 @@ void generate_base(World& world) {
 
     // === FLATTEN HEIGHTMAP (base precisa ser plana no terreno 3D) ===
     int16_t base_h = world.height_at(best_x, surface);
-    for (int dy = -30; dy <= 25; ++dy) {
-        for (int dx = -40; dx <= 40; ++dx) {
-            int tx = best_x + dx;
-            int ty = surface + dy;
-            if (!world.in_bounds(tx, ty)) continue;
-            world.set_height(tx, ty, base_h);
-            // Limpar objetos existentes (rochas/minerios) para nao poluir a base
-            if (object_block_at(world, tx, ty) != Block::Air) {
-                world.set(tx, ty, Block::Air);
+    auto flatten_tile = [&](int tx, int ty) {
+        if (!world.in_bounds(tx, ty)) return;
+        world.set_height(tx, ty, base_h);
+        // Limpar objetos existentes (rochas/minerios) para nao poluir a base
+        if (object_block_at(world, tx, ty) != Block::Air) {
+            world.set(tx, ty, Block::Air);
+        }
+    };
+    // DISCO, nao mais 2 retangulos: com modulos em 4 bearings (N/L/S/O) nao existe mais um "lado"
+    // privilegiado pra achatar, e um retangulo deixaria os modulos leste/oeste pendurados em terreno
+    // natural. Raio 46 cobre a estufa (borda em dy 42) com folga. Medido: o loop de pontuacao limita
+    // best_x/best_y a center +/-70/+/-45, entao a pior distancia a uma borda do mapa e' ~722 tiles -
+    // um disco de 46 nao chega perto; e flatten_tile checa in_bounds de qualquer jeito. Tambem
+    // preserva as margens de geracao do vulcao (anel 85..115 do centro do mapa) e das chaminees de
+    // lava (exclusao de 150 do centro) - medido que r<=50 e' seguro nas duas.
+    {
+        // Disco de cota unica ate kBaseFlattenRadius, e depois uma RAMPA suave ate o terreno natural.
+        // Sem a rampa, a borda do achatamento e' um degrau vertical: medido no mundo gerado, -7.25 de
+        // mundo (29 unidades de heightmap) em r=46. O jogador sobe no maximo ~0.55 de degrau
+        // (try_step_climb), entao quem descia por ali NAO voltava a pe - virava uma ilha alta cercada
+        // de abismo, e visualmente uma mesa recortada a faca.
+        // Com 32 tiles de rampa, aquele mesmo desnivel de 7.25 da 0.23 por tile: caminhavel em toda
+        // volta e sem costura visivel.
+        const int fr = kBaseFlattenRadius;
+        const int tr = kBaseTaperRadius;
+        for (int dy = -tr; dy <= tr; ++dy) {
+            for (int dx = -tr; dx <= tr; ++dx) {
+                int d2 = dx * dx + dy * dy;
+                if (d2 > tr * tr) continue;
+                int tx = best_x + dx, ty = surface + dy;
+                if (!world.in_bounds(tx, ty)) continue;
+                if (d2 <= fr * fr) { flatten_tile(tx, ty); continue; }  // cota unica + limpa objetos
+                // Rampa: NAO limpa objetos nem troca o solo - e' terreno natural, so' reperfilado.
+                // Le a altura natural do proprio tile antes de escrever (cada tile e' escrito 1x).
+                float t = smoothstep01((float)fr, (float)tr, std::sqrt((float)d2));
+                float nat = (float)world.height_at(tx, ty);
+                world.set_height(tx, ty, (int16_t)std::lround(lerp((float)base_h, nat, t)));
             }
         }
     }
@@ -195,6 +289,26 @@ void generate_base(World& world) {
             }
         }
     }
+    // ================= EXTERIOR DA BASE =================
+    // Duas reescritas aqui, pelas duas reclamacoes do jogador:
+    //
+    //  1) "atravessa tetos / entra na geometria interna" - a base era um HUB OCO + corredores e salas
+    //     ocas, ou seja, o interior jogavel e o exterior eram a MESMA geometria. O motor nao consegue
+    //     fazer teto de bloco (ver a explicacao longa em interiors.h), entao toda sala oca no mundo e'
+    //     aberta por cima e voar por cima dela e' entrar nela. Agora o exterior nao tem vao interno
+    //     nenhum: e' volume solido, intrinsecamente vedado.
+    //
+    //  2) "nao parece a base espacial que pedi" - a versao seguinte mostrava a propria casca de
+    //     colisao, e cubos empilhados leem como muro de blocos, nunca como instalacao espacial. Agora
+    //     a casca e' Block::BaseShell (INVISIVEL) e a aparencia vem de um MODELO PROPRIO de geometria
+    //     lisa - cilindros com topo em domo, corredores-tubo, tanques, paineis solares, mastros,
+    //     escotilhas (base_exterior.h/.cpp). As duas coisas saem da MESMA tabela kExterior[], entao a
+    //     forma que se ve e a forma que bloqueia nao podem divergir.
+    //
+    // Bonus medido: os blocos custavam ~8500 quads por frame perto da base. Sendo invisiveis, agora
+    // custam zero, e o modelo liso custa uma fracao disso.
+    base_exterior_stamp(world, best_x, surface, (int)pad_h);
+
 
     auto place_slot = [&](int sx, int sy, const std::string& label) {
         if (!world.in_bounds(sx, sy)) return;
@@ -203,43 +317,38 @@ void generate_base(World& world) {
         g_build_slots.push_back({sx, sy, Block::Air, label});
     };
 
-    // === SLOTS DE CONSTRUCAO (em anel ao redor do domo, nao mais numa grade espalhada) ===
+    // === SLOTS DE CONSTRUCAO (anel EXTERNO ao complexo) ===
     int cx = best_x;
     int cy = surface;
 
-    // NOTA: a parede da cupula NAO e mais feita de blocos do mundo (2 tentativas anteriores -
-    // sem altura e depois com altura - ficaram com contorno serrilhado/pontudo, uma grade
-    // quadrada tentando aproximar um circulo, e o usuario rejeitou o visual de novo mesmo
-    // com a malha lisa por cima). A colisao de verdade agora e uma barreira cilindrica
-    // invisivel calculada matematicamente (kDomeWallRadius, modules_building.h; aplicada em
-    // player_physics.cpp/apply_dome_barrier) - um circulo perfeito, sem serrilhado nenhum. A
-    // porta "sempre fechada" e so um detalhe de cor/moldura na propria malha decorativa
-    // (render_geodesic_dome em main.cpp, secao da saia/fundacao) - nao existe bloco de porta
-    // nenhum no mundo.
-
+    // Raio 38 (era 14): com o exterior virando volume MACICO, um anel de raio 14 cairia dentro dos
+    // tubos de ligacao e dos tambores, e place_slot sobrescreveria a fachada - abrindo exatamente o
+    // tipo de buraco que esta reforma existe pra eliminar. 38 fica fora de tudo (modulos axiais
+    // terminam em 30, diagonais em 21) e ainda dentro do achatamento de raio 46, entao os modulos do
+    // jogador formam um anel tecnico em volta da instalacao - o que combina com a referencia.
     static const char* kSlotLabels[10] = {
         "Solar 1", "Solar 2", "Solar 3", "Water Extractor", "O2 Generator",
-        "Greenhouse 1", "Greenhouse 2", "CO2 Factory", "Terraformer", "Habitat"
+        "Solar 4", "Energia", "CO2 Factory", "Terraformer", "Habitat"
     };
-    const float kSlotRingRadius = 14.0f;
-    // SEM deslocamento de fase de proposito: com 10 slots a 36 graus um do outro, um
-    // deslocamento de meia posicao (pi/10 = 18 graus) na verdade ALINHA um slot exatamente
-    // no eixo norte/sul (18+36*2=90, 18+36*7=270) - o oposto do que o comentario original
-    // aqui dizia querer. Sem deslocamento nenhum, 36*i nunca bate em 90/270 pra i inteiro
-    // (90/36 nao e inteiro), entao nenhum slot cai na linha da porta.
+    const float kSlotRingRadius = 38.0f;
+    // Os 2 slots de Estufa sairam desta lista: agora nascem DENTRO da sala Estufa do distrito de
+    // interiores (ver kInteriors[].build_slots em interiors.cpp), que e' onde o jogador pediu que a
+    // estufa fosse funcional. A contagem total de slots continua 10 aqui + 3 no distrito (2 estufa,
+    // 1 oficina); o menu escolhe "o primeiro slot vazio", entao a ORDEM dos 10 externos foi mantida
+    // e apenas os 2 rotulos liberados foram reaproveitados.
     for (int i = 0; i < 10; ++i) {
         float angle = (float)i / 10.0f * 2.0f * kPi;
         int sx = cx + (int)std::lround(std::cos(angle) * kSlotRingRadius);
         int sy = cy + (int)std::lround(std::sin(angle) * kSlotRingRadius);
         place_slot(sx, sy, kSlotLabels[i]);
     }
-
-    // === DECORACAO 3D (simples) - fora do anel de slots ===
-    // "Wreck" de foguete, reposicionado (radio ~25) pra nao colidir com o anel de slots
-    // (raio 14) nem com a parede/porta (lado sul, dy>0).
+    // === DECORACAO 3D: destroco do foguete ===
+    // Reposicionado pra (-30,-34): o antigo (+18,-18) e' agora o centro do modulo tecnico NE, e
+    // deixar o destroco ali sobrescreveria a fachada macica - furo exatamente do tipo que esta
+    // reforma existe pra eliminar. (-30,-34) fica fora de todos os volumes e dentro do achatamento.
     {
-        int rx = cx + 18;
-        int ry = cy - 18;
+        int rx = cx - 30;
+        int ry = cy - 34;
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {
                 if (world.in_bounds(rx + dx, ry + dy)) world.set(rx + dx, ry + dy, Block::RocketHull);
@@ -250,11 +359,9 @@ void generate_base(World& world) {
     }
 
     // NOTA: o "abrigo interior" estilo GTA (quartinho mobiliado bem distante, acessado por
-    // teleporte) foi removido a pedido do usuario - com a cupula agora tendo colisao de
-    // verdade, todo passeio pra fora da base (minerar/explorar) teria que passar pela porta,
-    // o que forcaria um teleporte indesejado pro quartinho distante toda vez. A porta agora
-    // so cruza a propria parede da cupula (ver bloco acima) - um pulo curto, nao uma viagem
-    // longa - entao sair da base pra explorar funciona normalmente.
+    // teleporte) foi removido a pedido do usuario. O que o substituiu sao os MODULOS deste
+    // complexo: comodos de verdade (dormitorio, controle, eclusa, estufa), ligados por corredores,
+    // no mesmo lugar da base - alcancados andando, nunca por teleporte.
 
     // O slot de construcao inicial fica vazio de proposito (nao ha mais um painel solar
     // pre-construido aqui): o primeiro objetivo do jogador ("Gerar energia") e justamente
@@ -262,7 +369,28 @@ void generate_base(World& world) {
     // perto da base - um tutorial natural para a mecanica de construcao, em vez de o
     // jogador so descobrir a mecanica minerando/recolocando um modulo que ja existia.
 
+    // === INTERIORES INDEPENDENTES (distrito reservado) ===
+    // Os ambientes jogaveis nao ficam mais dentro da geometria externa - ver a explicacao completa em
+    // interiors.h. Roda DEPOIS do exterior: build_interiors() cria seus proprios slots de construcao
+    // e nao pode ser sobrescrito pelo anel externo.
+    build_interiors(world);
+
+    // Mobilia com fisica das salas do distrito. Estampa os colliders invisiveis da tabela kFurniture
+    // (base_interior.h - a MESMA lida pelo desenho, entao a forma visivel e a que bloqueia nunca saem
+    // de sincronia). POR ULTIMO de proposito: so' pisa em tiles que sao BaseFloor, entao rodando
+    // depois de piso, paredes, canteiros e slots ela nao pode sobrepor nenhum deles - a ordem e' a
+    // propria garantia, nao uma lista de excecoes.
+
+    base_interior_stamp_furniture(world);
     world.rebuild_surface_cache();
+}
+
+// Onde o jogador nasce/renasce: NA FRENTE da eclusa (modulo sul), no exterior. Antes era o tile
+// central da base, que agora e' o meio de um tambor MACICO - nascer ali seria nascer dentro de
+// blocos solidos. Fonte unica lida por spawn_player_at_base() (player_physics.cpp).
+void base_spawn_tile(int& out_x, int& out_z) {
+    out_x = g_base_x;
+    out_z = g_base_y + 34;   // 2 tiles a frente do ponto de retorno da eclusa (dz 32)
 }
 
 void rebuild_modules_from_world() {
@@ -272,6 +400,25 @@ void rebuild_modules_from_world() {
         for (int x = 0; x < g_world->w; ++x) {
             Block b = g_world->get(x, y);
             if (is_module(b)) g_modules.push_back(Module{x, y, b, 0.0f});
+        }
+    }
+}
+
+// Ver comentario da declaracao em modules_building.h.
+void rebuild_build_slots_from_world() {
+    g_build_slots.clear();
+    if (!g_world) return;
+    for (int y = 0; y < g_world->h; ++y) {
+        for (int x = 0; x < g_world->w; ++x) {
+            Block t = g_world->get(x, y);
+            if (t == Block::BuildSlot) {
+                g_build_slots.push_back({x, y, Block::Air, "Slot"});
+            } else if (is_module(t) && g_world->get_ground(x, y) == Block::BuildSlot) {
+                // Slot JA ocupado: ao concluir a construcao, update_modules() sobrescreve so o
+                // tile de cima (world.set(slot.x, slot.y, module)) e deixa o ground como
+                // BuildSlot - e' dali que o vinculo slot<->modulo e' recuperado.
+                g_build_slots.push_back({x, y, t, "Slot"});
+            }
         }
     }
 }
@@ -797,6 +944,12 @@ void update_modules(World& world, float dt) {
 
     // ========== GREENHOUSES ==========
     // Produce food (+1/min, costs -0.5 energy/min, needs water)
+    // g_greenhouse_output: 0 = nenhuma estufa, ou estufa parada por falta de agua/energia; > 0 =
+    // produzindo (proporcional a quantidade/upgrade). Lido pelo desenho da estufa
+    // (base_interior.cpp) pra dirigir o visual das plantas - pedido do jogador de que fique
+    // visivel que elas estao produzindo alimento e oxigenio. Zerado aqui todo frame e so' setado
+    // no ramo que realmente produz, entao "parada" e' o padrao seguro.
+    g_greenhouse_output = 0.0f;
     if (greenhouse_count > 0) {
         float e_cost = (0.5f / 60.0f) * (float)greenhouse_count * dt;
         float w_cost = (0.3f / 60.0f) * (float)greenhouse_count * dt;
@@ -810,6 +963,7 @@ void update_modules(World& world, float dt) {
             float food_produced = (float)greenhouse_count * food_rate * dt;
             g_base_food = std::clamp(g_base_food + food_produced, 0.0f, kBaseFoodMax);
             g_base_oxygen = std::clamp(g_base_oxygen + food_produced * 0.2f, 0.0f, kBaseOxygenMax);
+            g_greenhouse_output = (float)greenhouse_count;
         } else {
             add_alert("Estufa parada - Sem energia!", 1.0f, 0.5f, 0.2f);
         }
@@ -906,10 +1060,10 @@ void update_modules(World& world, float dt) {
     }
 
     // ========== PLAYER IS AT BASE - ZONA SEGURA ==========
-    float dx_base = g_player.pos.x - (float)g_base_x;
-    float dy_base = g_player.pos.y - (float)g_base_y;
-    float dist_to_base = std::sqrt(dx_base * dx_base + dy_base * dy_base);
-    bool at_base = (dist_to_base < g_base_cfg.safe_radius);  // Usar raio configuravel
+    // Disco configuravel original OU dentro do corredor/estufa. Sem o anexo, o corredor e a estufa
+    // ficariam FORA do abrigo - nada de reabastecimento de O2/agua/comida, nada de reparo de HP,
+    // nada de jetpack, em ambientes que sao obviamente "dentro da base".
+    bool at_base = player_in_base_complex();
 
     if (at_base) {
         // Recharge O2 from base storage (consumes base O2!)

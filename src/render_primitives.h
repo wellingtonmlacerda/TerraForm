@@ -58,24 +58,81 @@ void render_plane_3d(float x, float y, float z, float size, float r, float g, fl
 void render_sphere_3d(float x, float y, float z, float radius, float r, float g, float b, float a = 1.0f,
                        int lat_seg = 6, int lon_seg = 10, float scale_y = 1.0f, float scale_z = 1.0f);
 
+// Escotilha/vigia de vidro (estilo submarino) numa parede CILINDRICA: disco de vidro + aro metalico
+// grosso com degrau + parafusos no aro + 2 barras cruzadas (mullion). O disco fica no plano TANGENTE
+// ao cilindro no angulo `wall_angle_rad` (normal radial pra fora) - NAO e' billboard-pra-camera, de
+// proposito: mesmo raciocinio de render_beam_3d, uma janela e' parte da estrutura e tem que girar
+// junto com ela, senao ela "desliza" pela parede conforme a camera orbita.
+//   center       - centro do vidro no mundo (o chamador ja empurra pra fora do raio da parede)
+//   glass_radius - raio do vidro; frame_width - espessura do aro em volta dele
+//   bolts        - quantos parafusos ao redor do aro (0 = nenhum)
+//   glow         - 0..1, "interior aceso visto de fora": aplicado como COR (lerp pra um branco
+//                  quente + alpha maior), NAO como blend aditivo - trocar blend mode dentro de um
+//                  primitivo obrigaria todo call site a salvar/restaurar esse estado. Quem quiser
+//                  bloom de verdade chama render_glow_disc_3d por fora, em ADDITIVE.
+void render_porthole_3d(Vec3 center, float wall_angle_rad, float glass_radius, float frame_width,
+                        float gr, float gg, float gb, float galpha,
+                        float fr, float fg, float fb,
+                        int segments = 16, int bolts = 10, float glow = 0.0f);
+
 // Cupula decorativa (saia cilindrica/fundacao + hemisferio geodesico por cima) - a malha em
-// si nao tem colisao (e so desenho, nao mexe em World/is_solid); a colisao de verdade e uma
-// barreira cilindrica invisivel calculada a parte em player_physics.cpp (kDomeWallRadius,
-// modules_building.h), com o MESMO raio/centro passados aqui. base_center e o centro no
+// si nao tem colisao (e so desenho, nao mexe em World/is_solid); a colisao de verdade sao as
+// PILHAS DE BLOCOS do anel de parede do hub (kHubWallInner/Outer, modules_building.h), logo dentro
+// deste raio - a barreira cilindrica invisivel que existia aqui foi removida. base_center e o centro no
 // chao; a fundacao sobe de y=0 a y=+skirt_height (cor metalica, mais fria que a casca tan),
 // e o hemisferio comeca dali e sobe mais +radius (mesma tecnica de faixas de latitude/
 // longitude de render_lit_sphere em sky.cpp, so sem luz solar - cor solida + gradiente de
 // altura, e um 2o passe em linhas pelas mesmas faixas pro padrao triangulado/geodesico).
 // door_facing_rad/door_half_angle/door_height (todos >0 pra ter porta - door_half_angle<=0
-// desenha tudo fechado, sem porta nenhuma) marcam um arco da fundacao (altura <= door_height,
-// deve ficar <= skirt_height pra a porta caber inteira na fundacao) que e desenhado com um
-// tom metalico distinto + moldura/costura/luzes (alcapao tipo espaconave, sempre fechado -
-// nao e um buraco na malha, e so uma textura/cor diferente no mesmo lugar solido).
+// desenha tudo fechado, sem porta nenhuma) marcam o arco de um VAO DE VERDADE na fundacao: a faixa
+// 0..door_height e' OMITIDA ali (sobra a verga acima), e em volta dela vem a moldura de eclusa
+// (batentes, verga saliente, soleira com faixas de advertencia, rebites, luzes de status), desenhada
+// nas duas faces da parede. door_count reparte N vaos igualmente espacados a partir de
+// door_facing_rad - o complexo modular tem 4 corredores (N/L/S/O) e a saia precisa de 4 aberturas.
+// Antes isso era um alcapao SEMPRE FECHADO, correto enquanto a colisao era uma barreira cilindrica
+// invisivel de 360 graus atravessada por teleporte de proximidade; com paredes de blocos e vaos
+// reais, uma porta desenhada fechada onde se atravessa a pe passou a ser a mentira.
 void render_geodesic_dome(Vec3 base_center, float radius, float r, float g, float b, float a,
                            int lat_seg = 8, int lon_seg = 16,
                            float door_facing_rad = 0.0f, float door_half_angle = 0.0f,
-                           float door_height = 0.0f, float skirt_height = 3.0f);
+                           float door_height = 0.0f, float skirt_height = 3.0f,
+                           // Anel de escotilhas de vidro na saia (0 = nenhuma). O arco de CADA vao
+                           // e' PULADO automaticamente - essa decisao fica aqui, junto de
+                           // door_facing_rad/door_half_angle/door_count, e nao no chamador:
+                           // duplicar a geometria da porta em 2 lugares ja causou bug real neste
+                           // projeto (ver a nota sobre g_shelter_door_x/y em modules_building.h).
+                           int porthole_count = 0, float porthole_radius = 0.0f,
+                           float porthole_glow = 0.0f, int door_count = 1);
 
+
+// ============= Escotilha de eclusa (a MESMA nos dois lados da porta) =============
+// Monta o portao redondo completo: chapa externa clara com aro metalico e parafusos, e por cima um
+// disco interno ESCURO com aro proprio e as barras cruzadas. O contraste claro-fora / escuro-dentro e'
+// o que faz o conjunto ler como porta; sem ele o disco desaparece numa parede clara.
+//
+// Existe como funcao unica porque o jogador reportou "a porta de saida nao parece com a porta de
+// entrada": o exterior (base_exterior.cpp) e o interior (base_interior.cpp) tinham cada um a sua
+// receita, e a de dentro estava com as cores invertidas (folha clara sobre parede clara) - a porta
+// simplesmente nao aparecia. Com uma funcao so', elas nao podem divergir de novo.
+//   center     - centro do portao, no plano da parede (o chamador ja poe na altura certa)
+//   wall_angle - normal da parede (0 = +X, pi/2 = +Z), mesma convencao de render_porthole_3d
+//   radius     - raio da chapa externa; todo o resto e' proporcional a ele
+//   glow       - brilho do disco interno (usado pra "acender" a porta de noite)
+void render_airlock_hatch_3d(Vec3 center, float wall_angle_rad, float radius, float glow);
+
+// Caixa com as 3 dimensoes INDEPENDENTES e girada em torno de Y. render_cube_3d so' faz cubos (um
+// unico `size`), e quase nada de equipamento e' cubico: a mochila a jato, por exemplo, tinha o
+// comentario "corpo achatado, nao um cubo" mas era literalmente um cubo de 0.30, porque nao havia
+// outra opcao. Pior: cubos posicionados com sin/cos do jogador continuam ALINHADOS AOS EIXOS, entao
+// uma peca larga ficava torta quando o personagem olhava na diagonal.
+//   center  - centro geometrico da caixa
+//   sx      - largura (eixo "direita" do objeto)   sy - altura   sz - profundidade (eixo "frente")
+//   yaw_rad - rotacao: a frente do objeto fica em (sin yaw, cos yaw), a MESMA convencao de
+//             Player::rotation e do resto do corpo do personagem
+// Mesmas 3 sombras por face de render_cube_3d (topo claro, 2 lados medios, 2 escuros) e neblina
+// aplicada 1x no centro.
+void render_box_oriented_3d(Vec3 center, float sx, float sy, float sz, float yaw_rad,
+                            float r, float g, float b, float a = 1.0f);
 // ============= Per-frame fog parameters (raylib migration) =============
 // Legacy OpenGL fixed-function fog (glFogf/glFogi/glFogfv, enabled for the whole terrain/
 // object/player/beacon render pass in main.cpp's render_world()) has no rlgl/raylib

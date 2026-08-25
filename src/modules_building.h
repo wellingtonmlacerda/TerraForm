@@ -135,6 +135,12 @@ std::string unlock_progress_string(Block b);
 // ---- Base generation / simulation ----
 void generate_base(World& world);
 void rebuild_modules_from_world();
+// Reconstroi g_build_slots a partir dos tiles do mundo, igual rebuild_modules_from_world() acima.
+// g_build_slots nunca foi salvo (save_load.cpp nao o menciona), entao ao carregar um jogo ele ficava
+// vazio (processo novo) ou com o conteudo da PARTIDA ANTERIOR (mesmo processo) - nos dois casos
+// desconectado dos tiles Block::BuildSlot que estao la no mundo, e o menu de construcao caia no
+// fallback de criar slot solto perto da base.
+void rebuild_build_slots_from_world();
 void update_modules(World& world, float dt);
 
 // Centro da cupula da base E' g_base_x/g_base_y (declarados em main.cpp) - nao existe um
@@ -155,3 +161,50 @@ void update_modules(World& world, float dt);
 // a porta e so um detalhe visual sempre "fechado" na malha (render_geodesic_dome), e a unica
 // forma de atravessar em qualquer ponto do circulo e o teleporte curto de proximidade.
 constexpr float kDomeWallRadius = 15.5f;
+
+// ---- Geometria do EXTERIOR da base (ver o bloco do exterior em generate_base) ----
+// Tudo em TILES, relativo a (g_base_x, g_base_y). Mora aqui, e nao local a generate_base(), porque
+// outros sistemas precisam da MESMA geometria: o teste de abrigo (player_in_base_complex abaixo) e a
+// exclusao do scanner de POI (minimap.cpp - sem ela o scanner "descobre" a propria base do jogador).
+// Duplicar coordenadas da base em 2 lugares ja causou bug real neste projeto - ver a nota sobre
+// g_shelter_door_x/y acima.
+//
+// ARQUITETURA (referencia: a base real "Mars Base 1" em Gansu, fotos do jogador): tambor central
+// (domo) + 4 modulos axiais ligados por tubos + 2 modulos tecnicos diagonais + tanques/mastros/
+// dutos. TODOS MACICOS - o exterior nao tem vao interno nenhum, e' isso que impede o jetpack de
+// invadir. Os ambientes jogaveis sao salas independentes no distrito de interiores (interiors.h).
+//
+// As constantes do layout ANTERIOR (kCorridorHalfWidth/kCorridorStart/kCorridorEnd/kModuleCenter/
+// kModuleHalf/kGreenhouseCenterDy/kGreenhouseHalf/kWallLayers/kHubWall*) foram REMOVIDAS junto com
+// ele: descreviam um hub oco de raio 16 com corredores e salas percorriveis por dentro, que era
+// exatamente a fonte do bug "atravessa tetos / entra na geometria interna". Deixa-las aqui seria
+// documentacao ativa de uma geometria que nao existe mais.
+constexpr int kBaseTaperRadius      = 78;  // fim da rampa que liga o achatamento ao terreno
+                                           // natural. Sem ela a borda do achatamento e' um degrau
+                                           // vertical (medido: -7.25 de mundo em r=46) que o jogador
+                                           // nao consegue subir de volta - ilha alta cercada de abismo.
+constexpr int kBaseFlattenRadius    = 46;  // achatamento e' um DISCO: com modulos em 6 direcoes nao
+                                           // existe "lado" privilegiado pra achatar. 46 cobre o anel
+                                           // de slots (38) com folga e preserva as margens do vulcao
+                                           // e das chaminees de lava (medido: r<=50 e' seguro).
+
+// True se o offset (dx,dy) em tiles do centro da base cai na pegada dos volumes do exterior.
+bool base_annex_contains(float dx, float dy);
+bool base_annex_contains(float dx, float dy);
+
+// "O jogador esta abrigado?" - disco configuravel ORIGINAL (g_base_cfg.safe_radius, inalterado) OU
+// dentro do anexo. Fonte unica pros 3 call sites que antes recalculavam a mesma distancia na mao
+// (reabastecimento em update_modules, dreno do traje em main.cpp, indicador de zona segura no HUD):
+// com o anexo existindo, 3 copias fatalmente discordariam.
+bool player_in_base_complex();
+
+// Onde o jogador nasce/renasce: NA FRENTE da eclusa, no exterior. Antes o spawn era o tile central
+// da base, que agora e o meio de um tambor MACICO - nascer ali seria nascer dentro de blocos
+// solidos. Fonte unica lida por spawn_player_at_base() (player_physics.cpp).
+void base_spawn_tile(int& out_x, int& out_z);
+
+// 0 = nenhuma Estufa produzindo (sem modulo, ou parada por falta de agua/energia), > 0 = produzindo.
+// Escrito por update_modules() e lido pelo desenho da estufa (base_interior.cpp) pra dirigir o
+// visual das plantas: pedido explicito do jogador - "quero que de fato seja visivel que sao plantas
+// e que estao produzindo alimento e oxigenio para a base".
+extern float g_greenhouse_output;

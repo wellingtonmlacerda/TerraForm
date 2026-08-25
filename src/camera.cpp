@@ -199,7 +199,10 @@ static bool camera_sample_hits_world(float sx, float sy, float sz, int* out_tx =
     Block obj = object_block_at(*g_world, tx, tz);
     float top = terrain_y;
     bool has_top = false;
-    if (obj != Block::Air) { top += get_block_height(obj); has_top = true; }
+    // is_furniture_collider: os blocos invisiveis de colisao de mobilia NAO devem ocluir a camera -
+    // senao aproximar-se de uma cama/mesa puxa a camera pra dentro e desvanece os tiles visiveis em
+    // volta (camera_occluder_alpha_for_tile), como se houvesse uma parede ali.
+    if (obj != Block::Air && !is_furniture_collider(obj)) { top += get_block_height(obj); has_top = true; }
     int stack_h = g_world->stack_height_at(tx, tz);
     if (stack_h > 0) { top += (float)stack_h * 1.0f; has_top = true; }
     if (has_top && sy >= terrain_y - 0.03f && sy <= top + 0.02f) return true;

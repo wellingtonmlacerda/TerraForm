@@ -10,6 +10,7 @@
 #include "inventory_crafting.h" // g_inventory, g_selected
 #include "objectives.h"         // reset_objectives (new game)
 #include "creatures.h"          // notify_player_respawned
+#include "interiors.h"          // interior_ceiling_at (o unico teto do jogo)
 
 #include <algorithm>
 #include <array>
@@ -127,9 +128,12 @@ Vec3 get_weapon_muzzle_pos() {
     float ra_z = pz + perp_z * kArmSep;
     float gun_y = py + 0.25f + bob + arm_bob + mine_impact * 0.05f;
 
-    float tip_x = ra_x + sin_rot * 0.32f;
-    float tip_z = ra_z + cos_rot * 0.32f;
-    return {tip_x, gun_y + 0.03f, tip_z};
+    // 0.385 / +0.020: a PONTA do emissor no modelo novo da arma (ver o bloco da pistola em
+    // main.cpp - o halo aditivo fica exatamente aqui). Era 0.32 / +0.03, a ponta do modelo antigo
+    // de 3 cubos; com a arma refeita mais comprida o traco do tiro passaria a nascer DENTRO do cano.
+    float tip_x = ra_x + sin_rot * 0.385f;
+    float tip_z = ra_z + cos_rot * 0.385f;
+    return {tip_x, gun_y + 0.020f, tip_z};
 }
 
 // ============= Movement / Collision =============
@@ -187,22 +191,27 @@ static int find_spawn_x(const World& world) {
 }
 
 void spawn_player_at_base() {
-    // Spawn player at the base
-    g_player.pos.x = (float)g_base_x;
-    g_player.pos.y = (float)g_base_y;
+    // NA FRENTE da eclusa, no exterior - nao mais no tile central, que agora e' o meio do tambor
+    // MACICO do domo (o exterior da base nao tem vao interno nenhum, ver interiors.h). Fonte unica
+    // em modules_building.cpp pra spawn e geometria da base nao poderem discordar.
+    int sx = g_base_x, sz = g_base_y;
+    base_spawn_tile(sx, sz);
+    g_player.pos.x = (float)sx;
+    g_player.pos.y = (float)sz;
     g_player.vel = {0.0f, 0.0f};
     g_player.vel_y = 0.0f;
     g_player.pos_y = 0.0f;
-    if (g_world && g_world->in_bounds(g_base_x, g_base_y)) {
-        g_player.pos_y = stack_top_height_at(*g_world, g_base_x, g_base_y);
+    if (g_world && g_world->in_bounds(sx, sz)) {
+        g_player.pos_y = stack_top_height_at(*g_world, sx, sz);
     }
     g_player.on_ground = true;
     g_player.can_jump = true;
     g_player.ground_height = g_player.pos_y;
-    g_player.facing_dir = 2; // Olhando para sul
+    g_player.facing_dir = 0;   // olhando pra eclusa (a base fica em -z a partir do spawn)
+    g_player.rotation = 180.0f;
+    g_player.target_rotation = 180.0f;
     g_player.w = g_physics_cfg.collider_width;
     g_player.h = g_physics_cfg.collider_depth;
-    set_dome_barrier_side(true); // spawna sempre no centro da cupula - dentro
     reset_camera_near_player(true);
     reset_player_physics_runtime(true);
 }
@@ -221,11 +230,6 @@ void teleport_player_to(int x, int y) {
     g_player.on_ground = true;
     g_player.can_jump = true;
     g_player.ground_height = g_player.pos_y;
-    // Recalcula sozinho de que lado da barreira da cupula o destino cai - quem chama (main.cpp,
-    // gatilho da porta) nao precisa saber desse detalhe nem manter o estado em sincronia.
-    float ddx = (float)x - (float)g_base_x;
-    float ddy = (float)y - (float)g_base_y;
-    set_dome_barrier_side((ddx * ddx + ddy * ddy) < (kDomeWallRadius * kDomeWallRadius));
     reset_camera_near_player(true);
     reset_player_physics_runtime(true);
 }
@@ -801,55 +805,28 @@ static void depenetrate_player_horizontal(Player& p, const World& world, const P
     }
 }
 
-// Barreira cilindrica invisivel da cupula da base (kDomeWallRadius, modules_building.h):
-// substitui a tentativa anterior de parede feita de blocos do mundo (contorno serrilhado -
-// uma grade quadrada nunca desenha um circulo liso -, rejeitada 2x pelo usuario mesmo com a
-// malha decorativa por cima). Aqui a colisao e so matematica (distancia ate o centro da
-// cupula), entao o circulo fica perfeitamente liso em qualquer raio - nao ha bloco nenhum,
-// so um clamp radial. Vale em qualquer altura (cilindro "infinito" pra cima) de proposito:
-// sem isso o jetpack deixaria voar por cima da parede (o antigo muro de 3 blocos empilhados
-// tinha exatamente esse furo). Nao ha excecao de angulo pra porta - a porta e so um detalhe
-// visual sempre fechado na malha (render_geodesic_dome); a unica forma de atravessar em
-// qualquer ponto do circulo e o teleporte curto de proximidade (main.cpp).
+// REMOVIDO: a barreira analitica da cupula (apply_dome_barrier / s_dome_barrier_inside /
+// set_dome_barrier_side) e, junto com ela, o teleporte de porta que só existia por causa dela
+// (era em main.cpp).
 //
-// Estado ("devia estar dentro ou fora?") fica guardado aqui, nao so inferido comparando
-// posicao antes/depois do movimento deste frame - assim TODO frame reforca o lado certo
-// (se devia estar dentro e a posicao atual, seja qual for o motivo, ficou fora do raio,
-// empurra de volta - sem depender de ter "pego o exato instante" da travessia). So o
-// teleporte da porta (main.cpp) muda o lado via set_dome_barrier_side().
+// Motivo (bug reportado pelo jogador): a colisao da base era um CILINDRO INVISIVEL calculado por
+// matematica, e a passagem pro corredor da estufa era um buraco invisivel nesse cilindro - ou seja,
+// o jogador atravessava a casca visivel do domo sem ver porta nenhuma ("esta sem porta para acessar
+// a estufa, estou passando direto pela parede"). Uma regra de colisao que nao corresponde a nada
+// desenhado e' indefensavel: qualquer vao nela vira "parede invisivel".
 //
-// Centro em g_base_x/g_base_y (nao um par de coordenadas separado - ver comentario em
-// modules_building.h): um bug real ja aconteceu aqui por causa disso - existia um par
-// g_shelter_door_x/y separado, so atribuido dentro de generate_base() (so roda num "Novo
-// Jogo"), que ficava preso em 0 (tile de origem do mundo) pra sempre que o processo era
-// reiniciado e o jogador continuava uma save em vez de comecar de novo - desconectando
-// essa barreira (e o gatilho da porta, e a propria malha decorativa) de onde a base
-// realmente estava, sem nenhum erro visivel. g_base_x/g_base_y sao salvos/carregados de
-// verdade (save_load.cpp), entao usa-los direto elimina essa classe de bug.
-static bool s_dome_barrier_inside = true;
-
-void set_dome_barrier_side(bool inside) {
-    s_dome_barrier_inside = inside;
-}
-
-static void apply_dome_barrier(Player& p) {
-    float cx = (float)g_base_x;
-    float cy = (float)g_base_y;
-    float r2 = kDomeWallRadius * kDomeWallRadius;
-
-    float dx = p.pos.x - cx;
-    float dy = p.pos.y - cy;
-    float dist2 = dx * dx + dy * dy;
-    bool now_inside = dist2 < r2;
-
-    if (now_inside == s_dome_barrier_inside) return; // lado certo - so desliza, sem clamp
-
-    float dist = std::sqrt(std::max(dist2, 1e-6f));
-    float target = s_dome_barrier_inside ? (kDomeWallRadius - 0.05f) : (kDomeWallRadius + 0.05f);
-    float scale = target / dist;
-    p.pos.x = cx + dx * scale;
-    p.pos.y = cy + dy * scale;
-}
+// Agora as paredes da base sao BLOCOS de verdade (RocketHull/DomeGlass empilhados, ver
+// generate_base) com VAOS reais nos corredores e escotilha desenhada em volta de cada vao - a
+// colisao e a porta passaram a ser a mesma coisa que o jogador ve. Nada fora deste arquivo lia o
+// lado da barreira, entao a remocao e' local.
+//
+// Efeito colateral aceito e deliberado: uma parede de 3 blocos (3.0 de mundo) da pra sobrevoar com
+// jetpack (o apice do pulo e' jump_velocity^2/(2*gravity) = 1.367, entao a pe nao passa). O
+// cilindro de altura infinita existia pra fechar isso, mas parede invisivel foi exatamente o que o
+// jogador rejeitou - a base e' um abrigo, nao uma prisao.
+//
+// kDomeWallRadius CONTINUA existindo: e' usado como numero puro pela exclusao do scanner de POI
+// (minimap.cpp) e pelo raio do piso/anel do hub.
 
 static void move_player_horizontal(Player& p, const World& world, const PhysicsConfig& cfg, const Vec2& world_delta, const Vec2& move_dir, bool in_water) {
     float max_component = std::max(std::fabs(world_delta.x), std::fabs(world_delta.y));
@@ -1019,6 +996,7 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     g_physics.hit_x = false;
     g_physics.hit_z = false;
     g_physics.sliding = false;
+    g_physics.landing_assist_engaged = false;
     g_physics.collision_normal = {0.0f, 0.0f};
 
     GroundProbeResult ground = probe_ground(p, world, cfg, true);
@@ -1109,28 +1087,38 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
         // livre de verdade (gravidade normal, acelerando) - so no gatilho a velocidade
         // muda NA HORA (nao gradual) pra uma velocidade segura, e fica segurada (mantida,
         // sem a gravidade voltar a acelerar) nos poucos frames residuais ate o pouso de
-        // fato. `s_landing_assist_engaged` (estado persistente, resetado no pouso de
+        // fato. `g_physics.landing_assist_engaged` (estado persistente, resetado no pouso de
         // verdade abaixo) faz a rajada disparar so 1x por queda - sem ela, a mesma
         // checagem repetiria (inofensivo pra velocidade, mas geraria poeira repetida).
-        static bool s_landing_assist_engaged = false;
         float safe_landing_speed = cfg.fall_damage_min_speed - cfg.landing_assist_safe_margin;
         bool landing_burst_fired_now = false;
         float burst_impact_speed = 0.0f; // -vel_y no instante do gatilho (antes da rajada resetar)
 
         if (p.on_ground) {
-            s_landing_assist_engaged = false;
-        } else if (!s_landing_assist_engaged && p.vel_y < 0.0f) {
+            g_physics.landing_assist_engaged = false;
+        } else if (!g_physics.landing_assist_engaged && p.vel_y < 0.0f) {
             float height_above_ground = p.pos_y - ground.height;
             if (height_above_ground <= cfg.landing_assist_trigger_height && -p.vel_y > safe_landing_speed) {
                 burst_impact_speed = -p.vel_y;
                 p.vel_y = -safe_landing_speed; // rajada na hora, nao "approach" gradual
-                s_landing_assist_engaged = true;
+                g_physics.landing_assist_engaged = true;
                 landing_burst_fired_now = true;
             }
         }
 
-        p.jetpack_active = jetpack_now || s_landing_assist_engaged;
-        p.landing_assist_active = s_landing_assist_engaged;
+        // DESENGATE: a assistencia so' faz sentido enquanto o jogador esta CAINDO e sem controle.
+        // Sem isto ela ficava engatada ate tocar o chao, e como o ramo de gravidade abaixo era
+        // "engatada ? segura a velocidade : aplica gravidade", segurar o espaco durante a assistencia
+        // somava empuxo COM GRAVIDADE DESLIGADA: o jogador subia no maximo pra sempre, nunca tocava o
+        // chao, nunca desengatava - e quando o combustivel zerava a velocidade positiva ficava
+        // congelada (sem gravidade pra derrubar), voando eternamente. Era o "propulsao infinita
+        // apertando shift com espaco rapido".
+        if (g_physics.landing_assist_engaged && (jetpack_now || p.vel_y >= 0.0f)) {
+            g_physics.landing_assist_engaged = false;
+        }
+
+        p.jetpack_active = jetpack_now || g_physics.landing_assist_engaged;
+        p.landing_assist_active = g_physics.landing_assist_engaged;
         if (jetpack_now) {
             p.jetpack_fuel = std::max(0.0f, p.jetpack_fuel - cfg.jetpack_fuel_consume * fixed_dt);
             p.vel_y += cfg.jetpack_thrust * fixed_dt;
@@ -1140,7 +1128,12 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
             p.jetpack_fuel = std::min(100.0f, p.jetpack_fuel + cfg.jetpack_fuel_regen * fixed_dt);
         }
 
-        if (s_landing_assist_engaged) {
+        // O `&& p.vel_y < 0.0f` e' a rede de seguranca ESTRUTURAL: a gravidade so' pode ser pulada
+        // enquanto o jogador esta DESCENDO. Com isso, "voo infinito" fica impossivel por construcao,
+        // nao por calibragem - descendo a uma velocidade fixa de -safe_landing_speed ele
+        // necessariamente alcanca o chao, on_ground vira true e a assistencia desengata. Qualquer
+        // caminho futuro que deixe g_physics.landing_assist_engaged preso em true deixa de ser catastrofico.
+        if (g_physics.landing_assist_engaged && p.vel_y < 0.0f) {
             // Segura a velocidade segura ate o pouso de fato - gravidade normal nao volta
             // a acelerar no trechinho final (poucos metros restantes).
             p.vel_y = std::max(p.vel_y, -safe_landing_speed);
@@ -1213,7 +1206,6 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
 
     Vec2 horizontal_delta = vec2_scale(p.vel, fixed_dt);
     move_player_horizontal(p, world, cfg, horizontal_delta, move_dir, in_water);
-    apply_dome_barrier(p);
 
     p.pos_y += p.vel_y * fixed_dt;
 
@@ -1286,6 +1278,26 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
         }
     }
     g_physics.submerged = still_in_water && (p.pos_y + cfg.collider_height < water_surface_y);
+
+    // ===== TETO DE INTERIOR =====
+    // A UNICA parte do mundo com teto. O motor nao sabe fazer teto de bloco (World guarda uma
+    // contagem de pilha por coluna e column_blocks_movement fixa o fundo de todo bloco no terreno -
+    // um "bloco de teto" seria um pilar solido do chao pra cima), entao dentro de uma sala do
+    // distrito de interiores o teto e' o que ele PODE ser: um limite de Y por area (interiors.h).
+    // Fica bem abaixo do topo da parede (3.2 contra 5 camadas), logo nao existe altura de jetpack
+    // que tire o jogador de uma sala - a saida e' a porta.
+    //
+    // NAO e' uma parede invisivel em volta da base: interior_ceiling_at() devolve 1e9 em TODO o
+    // resto do mundo, incluindo a base inteira. Voar por cima dos modulos, pousar no telhado e
+    // circular a instalacao continuam sem nenhum limite - o exterior e' vedado por ser MACICO, nao
+    // por ser bloqueado.
+    {
+        float in_ceiling = interior_ceiling_at(p.pos.x, p.pos.y) - cfg.collider_height;
+        if (p.pos_y > in_ceiling) {
+            p.pos_y = in_ceiling;
+            if (p.vel_y > 0.0f) p.vel_y = 0.0f;
+        }
+    }
 
     if (input.has_move) {
         p.target_rotation = std::atan2(move_dir.x, move_dir.y) * (180.0f / kPi);

@@ -431,7 +431,12 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
                     g_shooting_stars.clear();
                     g_construction_queue.clear();
                     g_alerts.clear();
-                    g_build_slots.clear();
+                    // NAO limpar g_build_slots aqui: spawn_player_new_game() -> generate_base() ja
+                    // fez o clear() como PRIMEIRA instrucao (modules_building.cpp:91) e acabou de
+                    // encher o vetor com os 10 slots do anel. Limpar DEPOIS apagava todos eles (os
+                    // tiles Block::BuildSlot ficavam no mundo, orfaos) e o menu de construcao caia
+                    // no fallback de "criar slot automatico" varrendo y = g_base_y-1
+                    // (building_interaction.cpp) - por isso o 1o modulo nascia fora da cupula.
                     g_collect_popups.clear();
                     g_drops.clear();
                     g_onboarding = OnboardingState();
@@ -468,7 +473,8 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
             g_shooting_stars.clear();
             g_construction_queue.clear();
             g_alerts.clear();
-            g_build_slots.clear();
+            // NAO limpar g_build_slots aqui - ver comentario no outro caminho de Novo Jogo acima
+            // (generate_base() ja limpou e repopulou o vetor; limpar depois orfanava os 10 slots).
             g_collect_popups.clear();
             g_drops.clear();
 
@@ -681,7 +687,7 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
             g_drops.clear();
             g_construction_queue.clear();
             g_alerts.clear();
-            g_build_slots.clear();
+            // NAO limpar g_build_slots aqui - ver comentario no 1o caminho de Novo Jogo acima.
             g_state = GameState::Playing;
             set_toast("Novo jogo!");
             return true;

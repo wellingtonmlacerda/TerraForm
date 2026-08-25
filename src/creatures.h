@@ -48,3 +48,8 @@ void try_fire_laser_pistol(const Vec3& ray_o, const Vec3& ray_d, float dt);
 // de graca onde criaturas ignoram o jogador. Respawn restaura so 50 HP (nao 100) - um bicho
 // ja perseguindo bem na hora do respawn seria injusto.
 void notify_player_respawned();
+
+// Fracao 0..1 do cooldown do tiro que ainda falta (1 = acabou de atirar, 0 = pronto). Usada pela
+// celula de energia desenhada na arma (main.cpp): a barra encurta e recarrega junto com o cooldown,
+// dando leitura de estado na propria arma em vez de so' no HUD.
+float laser_cooldown_fraction();

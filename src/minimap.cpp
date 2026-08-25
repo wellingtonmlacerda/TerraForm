@@ -6,7 +6,8 @@
 #include "config_types.h"        // MapConfig, MiniMapRuntime, MapWaypoint
 #include "world.h"                // World, g_world
 #include "player_physics.h"      // Player, g_player
-#include "modules_building.h"    // Module, g_modules
+#include "modules_building.h"   // Module, g_modules, base_annex_contains, kDomeWallRadius
+#include "interiors.h"        // interior_at (o distrito nao revela mapa nem gera POI)
 #include "game_state.h"          // set_toast
 #include "font.h"                // draw_text
 #include "render_primitives.h"   // render_quad, render_circle (render_primitives extraction stage)
@@ -54,6 +55,11 @@ void update_fog_of_war(float dt) {
     if (!g_world) return;
 
     if (g_scan_cooldown > 0.0f) g_scan_cooldown = std::max(0.0f, g_scan_cooldown - dt);
+
+    // Dentro de uma sala do distrito de interiores o mapa NAO revela nada: o distrito e' "backstage"
+    // (fica a ~1200 tiles da base, ver interiors.h), e revelar aquele canto deixaria uma mancha
+    // explorada num lugar onde o jogador nunca esteve de verdade.
+    if (interior_at(g_player.pos.x, g_player.pos.y) >= 0) return;
 
     int px = (int)g_player.pos.x;
     int py = (int)g_player.pos.y;
@@ -126,7 +132,14 @@ bool scan_for_points_of_interest() {
 
             if (is_base_structure(b)) {
                 float bx = (float)(x - g_base_x), by = (float)(y - g_base_y);
-                if (bx * bx + by * by > base_excl2 && (!found_poi || d2 < poi_d2)) {
+                // O anexo (corredor/estufa) se estende bem alem do disco de exclusao da base, e
+                // suas paredes/piso sao is_base_structure - sem base_annex_contains() o scanner
+                // "descobriria" a propria estufa do jogador como ponto de interesse. Um predicado
+                // geometrico, nao um raio maior: aumentar o disco mataria o scanner (o raio de
+                // varredura inteiro nao e' muito maior que isso).
+                if (bx * bx + by * by > base_excl2 && !base_annex_contains(bx, by) &&
+                    interior_at((float)x, (float)y) < 0 &&
+                    (!found_poi || d2 < poi_d2)) {
                     found_poi = true; poi_x = x; poi_y = y; poi_d2 = d2;
                 }
             } else if (b == Block::Metal) {
