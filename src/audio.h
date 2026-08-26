@@ -29,3 +29,7 @@ void play_laser_impact_sound();
 // Tocado quando um meteoro pousa de verdade (ver update_meteors(), main.cpp) - "boom"
 // bem maior/mais grave que o impacto da pistola. Respeita sfx_enabled/sfx_volume.
 void play_meteor_impact_sound();
+
+// Tocado quando a agua apaga um tile de lava (ver update_water_flow(), world.cpp) - chiado de vapor.
+// Respeita sfx_enabled/sfx_volume.
+void play_steam_hiss_sound();

@@ -6,7 +6,7 @@
 #include "ui_hud.h"          // g_hud_pointer_over_button (nao atirar clicando na HUD)
 #include "interiors.h"      // interior_at (nao spawnar criatura dentro de uma sala)
 #include "game_state.h"        // set_toast, rng_next_f01, kDayLength
-#include "items_particles.h"   // spawn_item_drop, spawn_block_particles
+#include "items_particles.h"   // spawn_block_particles (o drop de loot foi removido a pedido)
 #include "render_primitives.h"
 #include "audio.h"              // play_laser_fire_sound, play_laser_impact_sound
 
@@ -26,9 +26,12 @@ std::vector<Creature> g_creatures;
 
 namespace {
 
-constexpr int kMaxCreatures = 3;
-constexpr float kSpawnMinInterval = 30.0f;
-constexpr float kSpawnMaxInterval = 70.0f;
+// 3 -> 7 e intervalo 30-70s -> 14-38s (pedido do jogador: "quero mais inimigos"). O teto e o
+// intervalo sao o que realmente controlam a populacao; o corte por noite (kNightSpawnGate) fica
+// como esta, entao continuam raras de dia.
+constexpr int kMaxCreatures = 7;
+constexpr float kSpawnMinInterval = 14.0f;
+constexpr float kSpawnMaxInterval = 38.0f;
 constexpr float kSpawnMinDist = 20.0f;
 constexpr float kSpawnMaxDist = 45.0f;
 constexpr float kNightSpawnGate = 0.15f; // abaixo disso (quase dia pleno), nao rola spawn
@@ -432,10 +435,10 @@ void try_fire_laser_pistol(const Vec3& ray_o, const Vec3& ray_d, float dt) {
 
     float dx = hit.x, dz = hit.z, dy = hit.y;
     g_creatures.erase(g_creatures.begin() + best_idx);
-    if (g_world) {
-        spawn_item_drop(Block::Organic, dx, dz, dy + 0.3f);
-        spawn_block_particles(Block::Organic, dx, dz, g_world->h);
-    }
+    // SEM loot (pedido do jogador: "nao deve deixar materiais de coleta quando morrerem"). Antes
+    // dropava Block::Organic, o que transformava criatura em fonte renovavel de recurso - com 7
+    // delas no mapa isso viraria a rota mais barata pra comida/estufa. Fica so' o efeito visual.
+    if (g_world) spawn_block_particles(Block::Organic, dx, dz, g_world->h);
     add_alert("Criatura alienigena abatida!", 0.3f, 1.0f, 0.5f);
 }
 

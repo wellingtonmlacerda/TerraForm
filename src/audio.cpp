@@ -33,6 +33,7 @@ constexpr float kJetpackLoopDuration = 2.0f;
 Sound g_laser_fire_sound{};
 Sound g_laser_impact_sound{};
 Sound g_meteor_impact_sound{};
+Sound g_steam_hiss_sound{};
 Sound g_ambient_sound{};
 Sound g_jetpack_sound{};
 bool g_audio_ready = false;
@@ -130,6 +131,43 @@ Sound synth_meteor_impact() {
 
         float sample = noise * crack_env * 0.9f + roar_prev * boom_env * 0.85f + boom * boom_env * 0.6f;
         samples[i] = to_sample(sample * 10500.0f);
+    }
+    Sound s = LoadSoundFromWave(w);
+    UnloadWave(w);
+    return s;
+}
+
+
+// Agua apagando lava - CHIADO de vapor: ruido passa-alta (o "sss") com envelope de ataque rapido e
+// cauda longa, mais um sopro grave por baixo (a massa de vapor saindo). Sem tom definido de proposito:
+// vapor nao tem altura, e qualquer seno reconhecivel aqui soaria como apito de chaleira.
+Sound synth_steam_hiss() {
+    const float duration = 0.85f;
+    unsigned int n = (unsigned int)(duration * (float)kSampleRate);
+    Wave w = make_wave(n);
+    int16_t* samples = (int16_t*)w.data;
+    uint32_t seed = 9182736u;
+    float lp_prev = 0.0f, hp_prev = 0.0f, hp_prev_in = 0.0f;
+    for (unsigned int i = 0; i < n; ++i) {
+        float progress = (float)i / (float)n;
+        seed = seed * 1664525u + 1013904223u;
+        float noise = ((float)(seed & 0xFFFFu) / 32768.0f) - 1.0f;
+
+        // Passa-alta simples (1a ordem): deixa o sibilo e corta o corpo -> "sss" em vez de "shh".
+        float hp = 0.86f * (hp_prev + noise - hp_prev_in);
+        hp_prev = hp; hp_prev_in = noise;
+        // Sopro grave por baixo (passa-baixa do mesmo ruido).
+        lp_prev = lp_prev * 0.94f + noise * 0.06f;
+
+        // Ataque em ~4% da duracao, cauda longa: e' o perfil de um jato de vapor escapando.
+        float attack = std::min(1.0f, progress / 0.04f);
+        float decay = std::pow(1.0f - progress, 1.7f);
+        float env = attack * decay;
+        // Tremulo lento - vapor nao sai constante.
+        float flutter = 0.82f + 0.18f * std::sin(kPi2 * 11.0f * progress);
+
+        float sample = (hp * 0.85f + lp_prev * 0.55f) * env * flutter;
+        samples[i] = to_sample(sample * 8200.0f);
     }
     Sound s = LoadSoundFromWave(w);
     UnloadWave(w);
@@ -344,6 +382,7 @@ void init_game_audio() {
     g_laser_fire_sound = synth_laser_fire();
     g_laser_impact_sound = synth_laser_impact();
     g_meteor_impact_sound = synth_meteor_impact();
+    g_steam_hiss_sound = synth_steam_hiss();
     g_ambient_sound = synth_ambient();
     g_jetpack_sound = synth_jetpack();
     g_audio_ready = true;
@@ -359,6 +398,7 @@ void shutdown_game_audio() {
     UnloadSound(g_laser_fire_sound);
     UnloadSound(g_laser_impact_sound);
     UnloadSound(g_meteor_impact_sound);
+    UnloadSound(g_steam_hiss_sound);
     UnloadSound(g_ambient_sound);
     UnloadSound(g_jetpack_sound);
     CloseAudioDevice();
@@ -447,4 +487,10 @@ void play_meteor_impact_sound() {
     if (!g_audio_ready || !g_sfx_enabled) return;
     SetSoundVolume(g_meteor_impact_sound, g_sfx_volume);
     PlaySound(g_meteor_impact_sound);
+}
+
+void play_steam_hiss_sound() {
+    if (!g_audio_ready || !g_sfx_enabled) return;
+    SetSoundVolume(g_steam_hiss_sound, g_sfx_volume);
+    PlaySound(g_steam_hiss_sound);
 }

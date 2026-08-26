@@ -153,6 +153,18 @@ struct FrameFogParams {
 };
 extern FrameFogParams g_frame_fog;
 
+// HORIZONTE DE TERRENO deste frame, em tiles: o mesmo view_radius que o laco de terreno usa para
+// cortar tiles. Preenchido por render_world() logo depois de calcular view_radius, e lido por quem
+// desenha estrutura FIXA fora do laco (base_exterior.cpp, base_interior.cpp).
+//
+// Por que existe: esses modelos cortavam por uma distancia FIXA (190/150 tiles), mas view_radius e'
+// DINAMICO (110 a 380, conforme zoom da camera, altitude e g_render_quality). Com a camera rente ao
+// chao ele fica em 110 - ou seja, o terreno para em 110 e a base continuava sendo desenhada a 160.
+// Sem terreno na frente para ocluir, e totalmente enevoada, ela virava manchas claras contra o CEU
+// acima da crista do vulcao ("estou vendo a base do outro lado do vulcao"). Estrutura nao pode ser
+// desenhada mais longe do que o mundo que a esconde.
+extern float g_frame_terrain_horizon;
+
 // Parede vertical texturizada (para diferenca de altura entre tiles vizinhos). Antes eram 4
 // funcoes quase identicas (render_wall_3d_tex_xpos/xneg/zpos/zneg), uma por face/eixo
 // extrudado - colapsadas aqui numa unica funcao parametrizada por face (Fase 1b do plano de

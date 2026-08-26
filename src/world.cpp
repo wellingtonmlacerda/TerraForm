@@ -4,6 +4,9 @@
 #include "noise.h"       // init_permutation, perlin, fbm, ridged_fbm, lerp
 #include "config_types.h" // TerrainConfig, MiningConfig (types of the extern globals below)
 #include "game_state.h"  // rng_next_u32, rng_next_f01, set_toast
+#include "render_primitives.h"  // render_plane_3d/render_glow_disc_3d (efeitos de agua/vapor)
+#include "raylib_platform.h"    // rlSetTexture/rlSetBlendMode (efeitos)
+#include "audio.h"              // play_steam_hiss_sound (chiado ao apagar lava)
 
 #include <algorithm>
 #include <cmath>
@@ -208,6 +211,14 @@ void World::gen() {
         // mapa de 3072x1536, ver comentario acima), 150 ja da espaco de sobra pra espalhar
         // os volcano_seed_count vulcoes pelo mapa inteiro sem 2 ficarem colados.
         const float kVolcanoMinSpacing2 = 150.0f * 150.0f;
+        // NENHUM vulcao perto da base (pedido do jogador: "nao quero o vulcao muito proximo da
+        // base"). A base nasce sempre dentro da caixa centro +-70 x +-45 (generate_base), ou seja
+        // a <= ~83 tiles do centro do mapa - entao exigir 300 do CENTRO garante >= ~215 tiles entre
+        // a cratera e a base. Folga de sobra: o cone tem raio 30 e os riachos de lava morrem em
+        // poucas dezenas de passos. O mapa e' 3072x1536, entao 300 de exclusao sobra area enorme
+        // para os vulcoes naturais.
+        constexpr int kVolcanoBaseKeepOut = 300;
+        constexpr float kVolcanoBaseKeepOut2 = (float)kVolcanoBaseKeepOut * (float)kVolcanoBaseKeepOut;
         std::vector<SeedCandidate> volcanoes;
         // Distribuicao ESPACIAL por celulas, nao "os N mais altos". Medido instrumentando a
         // geracao de verdade: os 7 vulcoes naturais sairam TODOS entre x=2370..3007 e
@@ -231,6 +242,10 @@ void World::gen() {
             // Borda: um cone de raio 42 carimbado a 4 tiles da borda do mapa fica cortado pela
             // metade (3 dos 7 vulcoes medidos sairam com y=4/y=10, meio truncados).
             if (c.x < 60 || c.x >= w - 60 || c.y < 60 || c.y >= h - 60) continue;
+            {   // exclusao em torno da base - ver kVolcanoBaseKeepOut acima
+                float bdx = (float)(c.x - w / 2), bdy = (float)(c.y - h / 2);
+                if (bdx * bdx + bdy * bdy < kVolcanoBaseKeepOut2) continue;
+            }
             size_t slot = grid_slot_of(c.x, c.y);
             if (grid_used[slot]) continue;
             bool far_enough = true;
@@ -255,9 +270,11 @@ void World::gen() {
         //
         // Agora procura o melhor ponto num ANEL ao redor do centro do mapa (a base sempre
         // nasce a <= ~70x45 do centro, ver generate_base()):
-        //  - raio 85..115: longe do achatamento da base (flatten dy -30..25 / dx -40..40, e o
-        //    pad raio 20) mas DENTRO do alcance de visao do jogo (view_radius chega a 110+ no
-        //    chao), entao da' pra ver o cone do lado de fora da base.
+        //  - raio 300..390: o anel 85..115 que estava aqui punha o cone DENTRO do alcance de visao
+        //    da base de proposito, e foi exatamente isso que o jogador rejeitou ("nao quero o vulcao
+        //    muito proximo da base"). Agora e' o mesmo kVolcanoBaseKeepOut dos vulcoes naturais, ou
+        //    seja >= ~215 tiles da base: continua sendo o vulcao mais perto do mapa e o unico com
+        //    posicao garantida por seed, mas exige viajar ate ele - que e' o pedido.
         //  - exige terreno bem acima do nivel do mar (hn > sea_hn + 0.10) pra nao repetir o
         //    vulcao-lagoa: assim a cratera fica acima do mar e os riachos de lava tem desnivel
         //    de sobra pra escorrer de verdade.
@@ -268,7 +285,7 @@ void World::gen() {
             float sea_hn_guard = (float)(sea_h - min_h_i) / (float)(max_h_i - min_h_i) + 0.10f;
             int best_x = -1, best_y = -1;
             float best_h = -1.0f;
-            for (int rr = 85; rr <= 115; rr += 5) {
+            for (int rr = kVolcanoBaseKeepOut; rr <= kVolcanoBaseKeepOut + 90; rr += 8) {
                 // 24 direcoes por anel - amostragem suficiente pra achar a melhor encosta sem
                 // varrer a area toda.
                 for (int a = 0; a < 24; ++a) {
@@ -968,7 +985,9 @@ Block stack_top_block_at(const World& world, int tx, int tz) {
 }
 
 bool is_mineable(Block b) {
-    if (b == Block::Air || b == Block::Water || b == Block::Lava) return false;
+    // LAVA e' mineravel: o jogador pediu pra poder coleta-la. Agua continua fora - nao ha recipiente
+    // nem uso pra ela no inventario, e "minerar agua" leria como bug.
+    if (b == Block::Air || b == Block::Water) return false;
     if (is_base_structure(b)) return false;
     return true;
 }
@@ -989,6 +1008,13 @@ int block_hits_required(Block b) {
             return g_mining_cfg.hits_snow;
         case Block::Stone:
             return g_mining_cfg.hits_stone;
+        case Block::Basalt:
+            // Crosta de lava resfriada: um pouco mais duro que pedra comum.
+            return g_mining_cfg.hits_stone + 1;
+        case Block::Lava:
+            // Mais golpes que pedra: recolher lava e' lento e perigoso (o dano por contato ja existe,
+            // ver a queimadura em main.cpp) - nao pode ser mais barato que cavar terra.
+            return g_mining_cfg.hits_stone + 2;
         case Block::Coal:
         case Block::Iron:
         case Block::Copper:
@@ -1163,4 +1189,560 @@ void melt_ice_around(World& world, int cx, int cy, int radius) {
             }
         }
     }
+}
+
+
+// ============= AGUA FLUIDA (ver comentarios em world.h) =============
+namespace {
+
+struct WaterFlowCell {
+    int x, z;
+    int16_t level;   // cota (heightmap) da superficie da agua que esta enchendo este tile
+};
+
+// Lava a ser apagada: tile de lava encostado em agua.
+struct LavaQuenchCell {
+    int x, z;
+};
+
+// Filas de espalhamento. Duplicatas sao inofensivas de proposito: cada tile e' REVALIDADO no momento
+// em que sai da fila, entao processar o mesmo duas vezes nao faz nada na segunda - o que dispensa um
+// conjunto de visitados (que teria custo de memoria e precisaria ser limpo).
+std::vector<WaterFlowCell> g_water_flow;
+size_t g_water_head = 0;
+std::vector<LavaQuenchCell> g_lava_quench;
+float g_water_flow_timer = 0.0f;
+float g_lava_quench_timer = 0.0f;
+
+constexpr size_t kWaterFlowMaxQueue = 8192;   // teto de memoria
+// 1 tile por tick de 0.09s (~11 tiles/s). Era 18 por 0.07s (~257/s): um buraco de poucos tiles
+// enchia num piscar e nao dava pra VER a agua entrando - reclamacao do jogador ("faz isso muito
+// rapido sem efeito de que esta preenchendo"). O que da a leitura de fluido e' o ritmo, nao o efeito.
+constexpr int    kWaterFlowPerTick  = 1;
+constexpr float  kWaterFlowTick     = 0.09f;
+// Lava apaga BEM mais devagar que a agua enche: e' o momento dramatico, precisa ser visto tile a tile.
+constexpr float  kLavaQuenchTick    = 0.40f;
+
+// ---- Efeitos visuais (respingo ao encher, vapor ao apagar lava) ----
+// Lista propria, desenhada por render_water_fx(). NAO usa spawn_block_particles: o vetor g_particles
+// e' atualizado mas NUNCA desenhado em lugar nenhum (sobra da era pre-3D), entao qualquer efeito
+// jogado nele fica invisivel.
+struct WaterFx {
+    float x, y, z;
+    float timer, dur;
+    uint8_t kind;    // 0 = respingo de agua, 1 = vapor de lava apagada, 2 = lava escorrendo
+};
+std::vector<WaterFx> g_water_fx;
+constexpr size_t kWaterFxMax = 96;
+
+void spawn_water_fx(float x, float y, float z, bool steam) {
+    if (g_water_fx.size() >= kWaterFxMax) return;
+    float d = steam ? 1.6f : 0.55f;
+    g_water_fx.push_back({x, y, z, d, d, (uint8_t)(steam ? 1 : 0)});
+}
+
+void spawn_lava_fx(float x, float y, float z) {
+    if (g_water_fx.size() >= kWaterFxMax) return;
+    g_water_fx.push_back({x, y, z, 1.1f, 1.1f, 2});
+}
+
+// Hash deterministico 0..1 - mesma tecnica das brasas de lava. Sem rand(): as gotas nao podem
+// tremer de frame em frame.
+float fx_hash01(int i, float salt) {
+    float v = std::sin((float)i * 12.9898f + salt * 78.233f) * 43758.5453f;
+    return v - std::floor(v);
+}
+
+// Barreira: o que a agua nunca invade.
+bool water_flow_blocked(const World& world, int x, int z) {
+    if (world.stack_height_at(x, z) > 0) return true;   // parede construida represa
+    if (is_base_structure(world.get_ground(x, z))) return true;
+    if (is_base_structure(world.get(x, z))) return true;
+    return false;
+}
+
+bool water_flow_is_liquid(Block b) {
+    return b == Block::Water || b == Block::Ice || b == Block::Lava;
+}
+void water_flow_enqueue(int x, int z, int16_t level) {
+    if (g_water_flow.size() - g_water_head >= kWaterFlowMaxQueue) return;
+    g_water_flow.push_back({x, z, level});
+}
+
+// Consumo FIFO das filas de fluido. Com LIFO (pop_back) o fluido andava em PROFUNDIDADE: saia vagando
+// por um ramo so' e as outras frentes ficavam soterradas no fundo da pilha. Medido: um canal de 4
+// tiles ao lado da lava ficava com 0 tiles cheios depois de 6 ticks, enquanto a lava se espalhava por
+// 6 tiles em OUTRA direcao. Fluido avanca em todas as frentes ao mesmo tempo - isso e' fila, nao
+// pilha. O cursor `head` evita erase() no comeco do vetor; quando drena, limpa tudo de uma vez.
+template <typename T>
+bool fluid_pop(std::vector<T>& q, size_t& head, T& out) {
+    if (head >= q.size()) { q.clear(); head = 0; return false; }
+    out = q[head++];
+    if (head >= q.size()) { q.clear(); head = 0; }
+    return true;
+}
+
+// Fila de espalhamento da LAVA. Mesma mecanica da agua, ritmo MUITO mais lento: lava e' espessa.
+// `head` = cota da FONTE do derramamento. E' o teto absoluto de acumulo: liquido nao sobe acima da
+// propria carga (nao ha bomba). Sem isso, um tile de lava cercado de lava se considerava "sem saida"
+// e subia indefinidamente - medido: 9 tiles acima da cota da borda, o "plato no ar" de volta.
+struct LavaFlowCell { int x, z; int16_t level; int16_t head; int16_t budget; bool rise; };
+std::vector<LavaFlowCell> g_lava_flow;
+size_t g_lava_head = 0;
+// ORCAMENTO por evento de vazamento: cada derramamento espalha no maximo este numero de tiles.
+// Sem ele a lava seria ILIMITADA - num vulcao em crista ha encosta abaixo sem fim, e cavar perto
+// dele iniciaria uma inundacao lenta que desceria a montanha inteira e nunca pararia. O terreno
+// limita a agua (bacias sao niveladas na geracao), mas nao limita lava correndo ladeira abaixo.
+constexpr int16_t kLavaSpillBudget = 190;  // 24 -> 80: com o modo ACUMULAR, cada camada que sobe
+                                          // num poco consome orcamento. 24 nao enchia nem um buraco
+                                          // pequeno. 80 acoes a 0.42s = ~34s de escorrimento visivel.
+int g_lava_spill_left = 0;   // tiles restantes no vazamento ATUAL (ver a nota do orcamento acima)
+float g_lava_flow_timer = 0.0f;
+// 1 tile a cada 0.85s contra 0.09s da agua - ~9x mais lenta. E' o que faz ela "escorrer" em vez de
+// preencher. Pedido do jogador: "bem mais espessa que a agua".
+constexpr float kLavaFlowTick = 0.42f;   // 0.85 -> 0.42 a pedido do jogador ("acelere um pouco"):
+                                         // ainda ~4.7x mais lenta que a agua (0.09), continua lendo
+                                         // como fluido espesso, sem a sensacao de travado.
+
+// A lava pode entrar neste tile, vindo de uma poca na cota `level`?
+bool lava_can_enter(const World& world, int x, int z, int16_t level) {
+    if (!world.in_bounds(x, z)) return false;
+    Block g = world.get_ground(x, z);
+    if (g == Block::Lava) return false;                       // ja e' lava
+    if (g == Block::Water || g == Block::Ice) return false;    // agua/gelo: quem reage e' o apagamento
+    if (g == Block::Basalt) return false;                      // crosta resfriada REPRESA o fluxo
+    if (water_flow_blocked(world, x, z)) return false;         // base e paredes represam igual
+    // `<=`, nao `<`: lava atravessa terreno PLANO tambem (fluido espesso escorre e se espalha), so'
+    // nunca SOBE. Era `>= level -> rejeita`, o que exigia degrau pra baixo em cada passo e travava a
+    // lava na primeira borda plana.
+    if (world.height_at(x, z) > level) return false;
+    return true;
+}
+
+void lava_flow_enqueue(int x, int z, int16_t level, int16_t head, int16_t budget, bool rise) {
+    if (budget <= 0) return;   // vazamento esgotou o orcamento: para de espalhar
+    if (g_lava_flow.size() - g_lava_head >= kWaterFlowMaxQueue) return;
+    g_lava_flow.push_back({x, z, level, head, budget, rise});
+}
+
+// Enfileira a lava vizinha de (x,z) pra ser apagada.
+void lava_quench_enqueue_around(const World& world, int x, int z) {
+    const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+    for (int k = 0; k < 4; ++k) {
+        int tx = x + nx4[k], tz = z + nz4[k];
+        if (!world.in_bounds(tx, tz)) continue;
+        if (world.get_ground(tx, tz) != Block::Lava) continue;
+        if (g_lava_quench.size() >= kWaterFlowMaxQueue) return;
+        g_lava_quench.push_back({tx, tz});
+    }
+}
+
+} // namespace
+
+void water_flood_from(World& world, int x, int y) {
+    if (!world.in_bounds(x, y)) return;
+    const int nx4b[4] = {1, -1, 0, 0}, nz4b[4] = {0, 0, 1, -1};
+    // SEMENTE EM CIMA DE AGUA: o tile em si e' a fonte, entao espalha pros VIZINHOS. Sem isto,
+    // semear a partir de um tile que ja e' agua nao fazia nada (a revalidacao o descartava por ja
+    // estar cheio) e nada mais era enfileirado - a agua nao saia do lugar. Isso importa porque quem
+    // cava semeia o tile cavado E os 4 vizinhos, e vizinho de buraco costuma ser justamente agua.
+    if (world.get_ground(x, y) == Block::Water) {
+        lava_quench_enqueue_around(world, x, y);
+        int16_t lvl = world.height_at(x, y);
+        for (int k = 0; k < 4; ++k) {
+            int tx = x + nx4b[k], tz = y + nz4b[k];
+            if (!world.in_bounds(tx, tz)) continue;
+            if (water_flow_is_liquid(world.get_ground(tx, tz))) continue;
+            if (water_flow_blocked(world, tx, tz)) continue;
+            if (world.height_at(tx, tz) >= lvl) continue;
+            water_flow_enqueue(tx, tz, lvl);
+        }
+        return;
+    }
+
+    // Nivel da agua mais ALTA entre os 4 vizinhos: a agua desce da fonte mais alta disponivel.
+    const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+    bool found = false;
+    int16_t level = 0;
+    for (int k = 0; k < 4; ++k) {
+        int tx = x + nx4[k], tz = y + nz4[k];
+        if (!world.in_bounds(tx, tz)) continue;
+        if (world.get_ground(tx, tz) != Block::Water) continue;
+        int16_t h = world.height_at(tx, tz);
+        if (!found || h > level) { level = h; found = true; }
+    }
+    if (!found) return;
+    water_flow_enqueue(x, y, level);
+}
+
+void lava_flood_from(World& world, int x, int y) {
+    if (!world.in_bounds(x, y)) return;
+    const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+
+    // SEMENTE EM CIMA DE LAVA: o tile e' a fonte, espalha pros vizinhos (mesmo raciocinio da agua -
+    // quem cava semeia o tile cavado E os 4 vizinhos, e vizinho de buraco costuma ser a propria lava).
+    // Fila vazia = VAZAMENTO NOVO: recarrega o orcamento. Se ja ha um vazamento em curso, ele
+    // continua com o que sobrou - senao cavar repetidamente perto da lava recarregaria o orcamento
+    // a cada golpe e o limite nao limitaria nada.
+    if (g_lava_flow.size() <= g_lava_head) g_lava_spill_left = kLavaSpillBudget;
+
+    if (world.get_ground(x, y) == Block::Lava) {
+        int16_t lvl = world.height_at(x, y);
+        for (int k = 0; k < 4; ++k) {
+            int tx = x + nx4[k], tz = y + nz4[k];
+            if (!lava_can_enter(world, tx, tz, lvl)) continue;
+            lava_flow_enqueue(tx, tz, lvl, lvl, kLavaSpillBudget, false);
+        }
+        return;
+    }
+
+    bool found = false;
+    int16_t level = 0;
+    for (int k = 0; k < 4; ++k) {
+        int tx = x + nx4[k], tz = y + nz4[k];
+        if (!world.in_bounds(tx, tz)) continue;
+        if (world.get_ground(tx, tz) != Block::Lava) continue;
+        int16_t h = world.height_at(tx, tz);
+        if (!found || h > level) { level = h; found = true; }
+    }
+    if (!found) return;
+    if (!lava_can_enter(world, x, y, level)) return;
+    lava_flow_enqueue(x, y, level, level, kLavaSpillBudget, false);
+}
+
+void update_water_flow(World& world, float dt) {
+    // ---- Efeitos: envelhecem sempre, mesmo com as filas vazias ----
+    for (size_t i = 0; i < g_water_fx.size();) {
+        g_water_fx[i].timer -= dt;
+        if (g_water_fx[i].timer <= 0.0f) {
+            g_water_fx[i] = g_water_fx.back();
+            g_water_fx.pop_back();
+        } else {
+            ++i;
+        }
+    }
+
+    // ---- LAVA APAGANDO: 1 tile por kLavaQuenchTick ----
+    if (!g_lava_quench.empty()) {
+        g_lava_quench_timer += dt;
+        if (g_lava_quench_timer >= kLavaQuenchTick) {
+            g_lava_quench_timer = 0.0f;
+            while (!g_lava_quench.empty()) {
+                LavaQuenchCell c = g_lava_quench.back();
+                g_lava_quench.pop_back();
+                if (!world.in_bounds(c.x, c.z)) continue;
+                if (world.get_ground(c.x, c.z) != Block::Lava) continue;   // revalidacao
+                // Tem que continuar encostada em agua - senao a fila apagaria lava que ficou longe.
+                // A agua tambem precisa estar na MESMA FAIXA DE ALTURA: dois tiles vizinhos podem ter
+                // cotas muito diferentes, e agua num lago 10 unidades abaixo nao toca a lava que corre
+                // na encosta acima. Sem esta condicao, um rio de lava descendo a serra seria apagado
+                // inteiro por um lago no pe dela.
+                bool touches_water = false;
+                int16_t wlvl = 0;
+                int16_t lava_h = world.height_at(c.x, c.z);
+                const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+                for (int k = 0; k < 4 && !touches_water; ++k) {
+                    int tx = c.x + nx4[k], tz = c.z + nz4[k];
+                    if (!world.in_bounds(tx, tz)) continue;
+                    if (world.get_ground(tx, tz) != Block::Water) continue;
+                    int16_t h = world.height_at(tx, tz);
+                    if (std::abs((int)h - (int)lava_h) > 2) continue;   // fora da linha d'agua
+                    touches_water = true;
+                    wlvl = h;
+                }
+                if (!touches_water) continue;
+
+                // ENDURECE EM BASALTO, na PROPRIA cota. Duas mudancas em relacao a versao anterior:
+                //
+                //  1) Virava Dirt, porque nao havia bloco de rocha escura ground-like. Agora ha
+                //     (Block::Basalt) - o pedido era "a lava deveria endurecer ao encostar na agua",
+                //     e terra nao le como lava endurecida.
+                //  2) NAO baixa mais a cota. Antes eu assentava a rocha 1 unidade abaixo da linha
+                //     d'agua pra a agua correr por cima e a reacao continuar em cadeia - mas o
+                //     resultado media 5 tiles virando AGUA e 0 virando rocha: a crosta desaparecia
+                //     submersa. Endurecer quer dizer que a rocha FICA, visivel, na altura onde a lava
+                //     estava.
+                //
+                // A cadeia agora se propaga pela LINHA DE CONTATO, nao por submersao: cada tile de
+                // agua enfileira os vizinhos de lava dele, entao uma frente de lava chegando num lago
+                // endurece tile a tile ao longo da margem. E a crosta REPRESA o que vem atras
+                // (lava_can_enter rejeita Basalt), que e' o comportamento fisico e o limite natural.
+                world.set_ground(c.x, c.z, Block::Basalt);
+                if (world.get(c.x, c.z) == Block::Lava) world.set(c.x, c.z, Block::Basalt);
+                (void)wlvl;   // a cota da agua nao e' mais usada: a rocha fica onde a lava estava
+                g_surface_dirty = true;
+
+                float wy = (float)world.height_at(c.x, c.z) * kHeightScale;
+                spawn_water_fx((float)c.x, wy, (float)c.z, true);
+                play_steam_hiss_sound();
+
+                // A pedra nova NAO chama water_flood_from: ela e' terra agora, na cota onde a lava
+                // estava - a agua nao deve subir por cima dela (era isso que fazia a crosta
+                // desaparecer submersa). A cadeia continua pela linha de contato: cada tile de agua
+                // enfileira seus proprios vizinhos de lava.
+                lava_quench_enqueue_around(world, c.x, c.z);
+                break;   // 1 tile por tick: o efeito precisa ser visto acontecendo
+            }
+        }
+    }
+
+    // ---- LAVA ESCORRENDO / ACUMULANDO: 1 acao por kLavaFlowTick ----
+    if (g_lava_flow.size() > g_lava_head) {
+        g_lava_flow_timer += dt;
+        if (g_lava_flow_timer >= kLavaFlowTick) {
+            g_lava_flow_timer = 0.0f;
+            LavaFlowCell c;
+            while (fluid_pop(g_lava_flow, g_lava_head, c)) {
+                // ORCAMENTO TOTAL do vazamento, nao por profundidade. Com limite por celula a lava
+                // enchia TUDO que estivesse a N tiles de distancia: medido, 200 tiles em 200 ticks
+                // numa planicie rebaixada, sem parar. Um teto de ACOES TOTAIS por derramamento e' o
+                // que realmente limita - e subir de nivel tambem conta como acao (e' volume).
+                if (g_lava_spill_left <= 0) { g_lava_flow.clear(); g_lava_head = 0; break; }
+
+                const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+
+                // ================= MODO ACUMULAR (rise) =================
+                // Um tile de lava sem NENHUMA saida (nenhum vizinho de cota igual ou menor onde ela
+                // possa entrar) e' um fundo de poco. Fluido nessa situacao nao para: ele ACUMULA.
+                // Aqui a lava sobe 1 unidade de cota e tenta de novo no tick seguinte.
+                //
+                // Isto era o que faltava: eu tinha tirado o set_height pra matar o "plato no ar",
+                // e com isso a lava virou uma camada que NUNCA sobe - cobria o fundo do buraco e
+                // parava, mesmo com lava caindo de cima (bug reportado). O plato no ar vinha de subir
+                // ate a cota da FONTE; subir 1 unidade por vez, e so' quando nao ha escape, nao tem
+                // esse problema: no instante em que a cota iguala a de um vizinho, aquele vizinho
+                // passa a ser saida valida e o acumulo PARA. Ou seja, a lava nunca passa da borda
+                // mais baixa que a contem - que e' exatamente o comportamento de um liquido.
+                if (c.rise) {
+                    if (world.get_ground(c.x, c.z) != Block::Lava) continue;   // revalidacao
+                    int16_t h = world.height_at(c.x, c.z);
+                    bool escape = false;
+                    for (int k = 0; k < 4; ++k)
+                        if (lava_can_enter(world, c.x + nx4[k], c.z + nz4[k], h)) { escape = true; break; }
+                    if (escape) {
+                        // Achou borda: transborda em vez de continuar subindo.
+                        // Transborda pelo ponto MAIS BAIXO da borda, nao por toda a volta - mesma
+                        // regra do passo de descida: um liquido verte onde a borda cede primeiro.
+                        int16_t rim = 32767;
+                        for (int k = 0; k < 4; ++k) {
+                            int tx = c.x + nx4[k], tz = c.z + nz4[k];
+                            if (!lava_can_enter(world, tx, tz, h)) continue;
+                            int16_t nh = world.height_at(tx, tz);
+                            if (nh < rim) rim = nh;
+                        }
+                        for (int k = 0; k < 4; ++k) {
+                            int tx = c.x + nx4[k], tz = c.z + nz4[k];
+                            if (!lava_can_enter(world, tx, tz, h)) continue;
+                            if (world.height_at(tx, tz) != rim) continue;
+                            lava_flow_enqueue(tx, tz, h, c.head, (int16_t)(c.budget - 1), false);
+                        }
+                        continue;   // sem custo: nao adicionou volume, so' redirecionou
+                    }
+
+                    // NIVELAMENTO: se algum vizinho de lava esta MAIS BAIXO, ele sobe primeiro. Sem
+                    // isto o ultimo tile do poco a ficar sem saida subia sozinho e virava um PILAR de
+                    // lava dentro do buraco (medido: 9 tiles acima da cota da borda, 1 unico tile do
+                    // fundo cheio). O repasse sempre desce de cota, entao nao ha ciclo; com a fila
+                    // FIFO os tiles do fundo se alternam e a superficie da poca sobe plana.
+                    int low_k = -1; int16_t low_h = h;
+                    for (int k = 0; k < 4; ++k) {
+                        int tx = c.x + nx4[k], tz = c.z + nz4[k];
+                        if (!world.in_bounds(tx, tz)) continue;
+                        if (world.get_ground(tx, tz) != Block::Lava) continue;
+                        int16_t nh = world.height_at(tx, tz);
+                        if (nh < low_h) { low_h = nh; low_k = k; }
+                    }
+                    if (low_k >= 0) {
+                        lava_flow_enqueue(c.x + nx4[low_k], c.z + nz4[low_k], low_h, c.head, c.budget, true);
+                        continue;   // sem custo: passou a vez, nao adicionou volume
+                    }
+
+                    // TETO DE CARGA: nao existe bomba - liquido nao sobe acima da cota da propria
+                    // fonte. Sem este teto, um tile cercado de lava (que lava_can_enter recusa como
+                    // saida, por ja ser lava) se considerava "sem saida" e subia sem limite.
+                    // Vem DEPOIS do nivelamento de proposito: antes dele, o token que chegava ao teto
+                    // morria neste `continue` e os outros tiles do fundo ficavam sem entrada na fila -
+                    // medido, a poca parava 1 unidade abaixo da borda (1 de 9 tiles nivelados).
+                    if (h + 1 > c.head) continue;
+                    g_lava_spill_left--;
+                    world.set_height(c.x, c.z, (int16_t)(h + 1));
+                    g_surface_dirty = true;
+                    spawn_lava_fx((float)c.x, (float)(h + 1) * kHeightScale, (float)c.z);
+                    lava_flow_enqueue(c.x, c.z, (int16_t)(h + 1), c.head, (int16_t)(c.budget - 1), true);
+                    world.rebuild_surface_cache();
+                    break;   // 1 acao por tick
+                }
+
+                // ================= MODO ESPALHAR =================
+                if (!lava_can_enter(world, c.x, c.z, c.level)) continue;   // revalidacao
+                g_lava_spill_left--;
+
+                // Mantem a altura do PROPRIO tile (nao sobe pra cota da fonte): e' o que faz a lava
+                // escorrer por cima do relevo em vez de construir plato. Desenhada em base_y+kTopEps,
+                // sobre o terreno, entao camada fina renderiza certo. As LATERAIS do tile sao
+                // desenhadas como rocha (main.cpp/terrain_mesh.cpp) - lava e' camada, nao bloco.
+                int16_t here = world.height_at(c.x, c.z);
+                world.set_ground(c.x, c.z, Block::Lava);
+                world.set(c.x, c.z, Block::Lava);
+                g_surface_dirty = true;
+                spawn_lava_fx((float)c.x, (float)here * kHeightScale, (float)c.z);
+
+                // Encostou em agua? Endurece na hora - a interacao vale nos dois sentidos.
+                bool near_water = false;
+                for (int k = 0; k < 4 && !near_water; ++k)
+                    if (world.in_bounds(c.x + nx4[k], c.z + nz4[k]) &&
+                        world.get_ground(c.x + nx4[k], c.z + nz4[k]) == Block::Water) near_water = true;
+                if (near_water) {
+                    if (g_lava_quench.size() < kWaterFlowMaxQueue) g_lava_quench.push_back({c.x, c.z});
+                } else {
+                    // DESCE PELA PARTE MAIS BAIXA, nao em leque (pedido do jogador). O passo antigo
+                    // enfileirava TODOS os 4 vizinhos elegiveis, entao a lava se abria como poca em
+                    // qualquer terreno plano-ou-descendente. Fluido espesso nao faz isso: ele procura
+                    // a linha de maior declive e corre por ela.
+                    //
+                    // Como: primeiro acha a MENOR cota entre os vizinhos que aceitam lava; depois
+                    // enfileira somente os que estao nessa cota. Se existe vizinho mais baixo, so' ele
+                    // recebe - a lava vira um filete que desce a encosta. Se nao existe (terreno
+                    // plano), `low` continua sendo a cota deste tile e o laco espalha nos vizinhos de
+                    // mesma cota, que e' o que permite a poca crescer e achar a borda.
+                    int16_t low = here;
+                    for (int k = 0; k < 4; ++k) {
+                        int tx = c.x + nx4[k], tz = c.z + nz4[k];
+                        if (!lava_can_enter(world, tx, tz, here)) continue;
+                        int16_t nh = world.height_at(tx, tz);
+                        if (nh < low) low = nh;
+                    }
+                    int spread = 0;
+                    for (int k = 0; k < 4; ++k) {
+                        int tx = c.x + nx4[k], tz = c.z + nz4[k];
+                        if (!lava_can_enter(world, tx, tz, here)) continue;
+                        if (world.height_at(tx, tz) != low) continue;   // so' o caminho mais baixo
+                        // Propaga a altura DESTE tile, nao a da fonte: desce degrau por degrau
+                        // seguindo o relevo.
+                        lava_flow_enqueue(tx, tz, here, c.head, (int16_t)(c.budget - 1), false);
+                        spread++;
+                    }
+                    // Beco sem saida => vira poco: entra em modo ACUMULAR.
+                    if (spread == 0)
+                        lava_flow_enqueue(c.x, c.z, here, c.head, (int16_t)(c.budget - 1), true);
+                }
+                world.rebuild_surface_cache();
+                break;   // 1 acao por tick
+            }
+        }
+    }
+
+    // ---- AGUA ENCHENDO ----
+    if (g_water_flow.size() <= g_water_head) return;
+    g_water_flow_timer += dt;
+    if (g_water_flow_timer < kWaterFlowTick) return;
+    g_water_flow_timer = 0.0f;
+
+    const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+    int processed = 0;
+    while (processed < kWaterFlowPerTick) {
+        WaterFlowCell c;
+        if (!fluid_pop(g_water_flow, g_water_head, c)) break;
+        if (!world.in_bounds(c.x, c.z)) continue;
+
+        // REVALIDACAO (e' o que torna duplicatas na fila inofensivas).
+        if (water_flow_is_liquid(world.get_ground(c.x, c.z))) continue;   // ja encheu
+        if (water_flow_blocked(world, c.x, c.z)) continue;
+        if (world.height_at(c.x, c.z) >= c.level) continue;               // acima da linha d'agua
+
+        // Enche: sobe a coluna ate a cota da agua e marca como agua.
+        world.set_height(c.x, c.z, c.level);
+        world.set_ground(c.x, c.z, Block::Water);
+        world.set(c.x, c.z, Block::Water);
+        g_surface_dirty = true;
+        processed++;
+
+        spawn_water_fx((float)c.x, (float)c.level * kHeightScale, (float)c.z, false);
+        // Encheu encostando em lava? Entao a lava vai apagar.
+        lava_quench_enqueue_around(world, c.x, c.z);
+
+        // Continua pelos vizinhos que ainda estao abaixo da linha d'agua. Como World::gen nivela cada
+        // bacia, o terreno em volta de um lago ja esta na cota dele ou acima - entao na pratica isto
+        // enche APENAS o que o jogador cavou, e para sozinho. O teto da fila e' so' rede de seguranca.
+        for (int k = 0; k < 4; ++k) {
+            int tx = c.x + nx4[k], tz = c.z + nz4[k];
+            if (!world.in_bounds(tx, tz)) continue;
+            if (water_flow_is_liquid(world.get_ground(tx, tz))) continue;
+            if (water_flow_blocked(world, tx, tz)) continue;
+            if (world.height_at(tx, tz) >= c.level) continue;
+            water_flow_enqueue(tx, tz, c.level);
+        }
+    }
+    if (processed > 0) world.rebuild_surface_cache();
+}
+
+void render_water_fx() {
+    if (g_water_fx.empty()) return;
+    rlSetTexture(rlGetTextureIdDefault());   // NAO rlSetTexture(0): pra id 0 o rlgl nao troca nada
+
+    for (size_t i = 0; i < g_water_fx.size(); ++i) {
+        const WaterFx& fx = g_water_fx[i];
+        float t = 1.0f - clamp01(fx.timer / fx.dur);   // 0 no nascimento, 1 no fim
+        int seed = (int)i * 17 + (int)(fx.x * 7.0f) + (int)(fx.z * 13.0f);
+
+        if (fx.kind == 0) {
+            // RESPINGO: anel de gotas achatadas se abrindo rente a superficie + um flash claro no
+            // centro. render_plane_3d (nao cubos) porque e' efeito de chao - cubo leria como bloco
+            // flutuando, licao ja aprendida na onda de choque do pouso.
+            const int kDrops = 7;
+            for (int d = 0; d < kDrops; ++d) {
+                float ang = fx_hash01(seed + d, 3.0f) * 6.2831853f;
+                float rr = (0.15f + t * 0.55f) * (0.7f + fx_hash01(seed + d, 4.0f) * 0.6f);
+                float size = (0.20f - t * 0.10f) * (0.8f + fx_hash01(seed + d, 5.0f) * 0.5f);
+                if (size <= 0.01f) continue;
+                render_plane_3d(fx.x + std::cos(ang) * rr, fx.y + 0.06f, fx.z + std::sin(ang) * rr,
+                                size, 0.70f, 0.88f, 1.0f, (1.0f - t) * 0.75f);
+            }
+            render_plane_3d(fx.x, fx.y + 0.05f, fx.z, 0.55f * (1.0f - t * 0.5f),
+                            0.85f, 0.95f, 1.0f, (1.0f - t) * 0.45f);
+        } else if (fx.kind == 1) {
+            // VAPOR: baforadas brancas subindo e abrindo, mais um brilho aditivo na base (a lava
+            // ainda quente por baixo). E' o efeito que o jogador pediu ao apagar a lava.
+            const int kPuffs = 6;
+            for (int pi = 0; pi < kPuffs; ++pi) {
+                float phase = fx_hash01(seed + pi, 9.0f) * 0.35f;
+                float lt = clamp01((t - phase) / std::max(0.05f, 1.0f - phase));
+                if (lt <= 0.0f) continue;
+                float ang = fx_hash01(seed + pi, 11.0f) * 6.2831853f;
+                float rr = 0.10f + lt * 0.55f;
+                float yy = fx.y + 0.15f + lt * 2.4f;
+                float size = (0.28f + lt * 0.42f);
+                float a = (1.0f - lt) * (1.0f - lt) * 0.60f;
+                render_plane_3d(fx.x + std::cos(ang) * rr, yy, fx.z + std::sin(ang) * rr,
+                                size, 0.94f, 0.96f, 0.98f, a);
+            }
+            rlSetBlendMode(RL_BLEND_ADDITIVE);
+            rlDisableDepthMask();
+            render_glow_disc_3d({fx.x, fx.y + 0.10f, fx.z}, 0.45f * (1.0f - t),
+                                1.0f, 0.55f, 0.20f, (1.0f - t) * 0.50f, 10);
+            rlEnableDepthMask();
+            rlSetBlendMode(RL_BLEND_ALPHA);
+        } else {
+            // LAVA ESCORRENDO: brasas subindo pouco + brilho laranja forte na base. Diferente do
+            // vapor de proposito - vapor sobe alto e clareia, lava fica rente ao chao e queima.
+            rlSetBlendMode(RL_BLEND_ADDITIVE);
+            rlDisableDepthMask();
+            render_glow_disc_3d({fx.x, fx.y + 0.08f, fx.z}, 0.70f * (1.0f - t * 0.4f),
+                                1.0f, 0.42f, 0.10f, (1.0f - t) * 0.65f, 10);
+            const int kEmbers = 5;
+            for (int e = 0; e < kEmbers; ++e) {
+                float phase = fx_hash01(seed + e, 21.0f) * 0.4f;
+                float lt = clamp01((t - phase) / std::max(0.05f, 1.0f - phase));
+                if (lt <= 0.0f) continue;
+                float ang = fx_hash01(seed + e, 23.0f) * 6.2831853f;
+                float rr = 0.10f + lt * 0.35f;
+                render_plane_3d(fx.x + std::cos(ang) * rr, fx.y + 0.12f + lt * 0.75f,
+                                fx.z + std::sin(ang) * rr, 0.13f * (1.0f - lt),
+                                1.0f, 0.62f, 0.18f, (1.0f - lt) * 0.85f);
+            }
+            rlEnableDepthMask();
+            rlSetBlendMode(RL_BLEND_ALPHA);
+        }
+    }
+    rlSetTexture(rlGetTextureIdDefault());
 }

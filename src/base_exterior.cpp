@@ -422,7 +422,16 @@ void render_base_exterior() {
     float bdx = rp.x - (float)g_base_x, bdz = rp.y - (float)g_base_y;
     // Corte de distancia: alem disso o terreno da base ja saiu por culling e o modelo leria como
     // "flutuando no nada" - o mesmo raciocinio do corte que a cupula antiga usava.
-    if (bdx * bdx + bdz * bdz > 190.0f * 190.0f) return;
+    //
+    // O corte era 190 tiles FIXOS, mas o alcance do terreno (view_radius, main.cpp) e' DINAMICO:
+    // 110 com a camera rente ao chao, ate 380 voando alto, ainda multiplicado por g_render_quality.
+    // Com view_radius em 110 e a base a 160, o terreno parava antes dela e o modelo continuava sendo
+    // desenhado - sem nada na frente para ocluir e 100% enevoado, virava manchas claras contra o CEU
+    // por cima da crista do vulcao ("estou vendo a base do outro lado do vulcao pela fumaca").
+    // Estrutura nunca pode ser desenhada mais longe do que o mundo que a esconde, entao o corte
+    // agora e' o MENOR entre o teto proprio e o horizonte real do frame.
+    float cut = std::min(190.0f, g_frame_terrain_horizon);
+    if (bdx * bdx + bdz * bdz > cut * cut) return;
     // Dentro de um interior nao se desenha o exterior: as salas ficam a ~1200 tiles, entao isto e'
     // so' uma guarda de clareza (o corte acima ja resolveria).
     if (interior_at(rp.x, rp.y) >= 0) return;

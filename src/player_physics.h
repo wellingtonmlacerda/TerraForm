@@ -116,6 +116,11 @@ struct PhysicsRuntime {
     // ninguem reseta (ver a nota sobre g_shelter_door_x/y em modules_building.h). Em PhysicsRuntime
     // ele e' limpo por reset_player_physics_runtime() junto com o resto.
     bool landing_assist_engaged = false;
+
+    // True no frame em que o jogador esta gastando combustivel de jetpack pra SAIR da agua. Libera o
+    // teto da agua (ver o clamp em apply_single_physics_step): sem isso, um lago maior que o alcance
+    // do probe de margem (10 tiles) nao tem saida vertical nenhuma e vira prisao.
+    bool water_exit_thrust = false;
     TerrainPhysicsType terrain = TerrainPhysicsType::Normal;
     std::string terrain_name = "Normal";
     bool submerged = false; // Cabeca abaixo da superficie da agua (dreno extra de O2 do traje)

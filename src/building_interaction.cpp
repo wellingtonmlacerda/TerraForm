@@ -856,6 +856,24 @@ void update_mining_and_placement(float dt) {
                 // Para blocos de terreno, remover 1 bloco "inteiro" em altura de mundo.
                 // Como o heightmap usa kHeightScale, convertemos 1.0 mundo -> unidades do heightmap.
                 if (is_ground_like(b)) {
+                    // LAVA: RECOLHER, nao cavar. Baixar a coluna 4 unidades como qualquer solo
+                    // abriria um poco dentro do rio de lava; o que faz sentido e' tirar a lava e
+                    // deixar a rocha na MESMA cota. E a lava em volta escorre pra ca depois, pelo
+                    // proprio fluxo (lava_flood_from abaixo) - o buraco nao fica seco de graca.
+                    if (b == Block::Lava) {
+                        g_world->set_ground(g_target_x, g_target_y, Block::Dirt);
+                        g_world->set(g_target_x, g_target_y, Block::Dirt);
+                        g_surface_dirty = true;
+                        float sy = (float)g_world->height_at(g_target_x, g_target_y) * kHeightScale
+                                   + drop_spawn_y_for_block(b);
+                        spawn_item_drop(Block::Lava, tile_center(g_target_x), tile_center(g_target_y), sy);
+                        // A lava vizinha volta a escorrer pro tile que acabou de esvaziar.
+                        const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+                        lava_flood_from(*g_world, g_target_x, g_target_y);
+                        for (int k = 0; k < 4; ++k)
+                            lava_flood_from(*g_world, g_target_x + nx4[k], g_target_y + nz4[k]);
+                        water_flood_from(*g_world, g_target_x, g_target_y);
+                    } else {
                     constexpr float kWorldBlockHeight = 1.0f;
                     int dig_units = std::max(1, (int)std::lround(kWorldBlockHeight / std::max(0.01f, kHeightScale)));
                     int16_t h = g_world->height_at(g_target_x, g_target_y);
@@ -869,6 +887,23 @@ void update_mining_and_placement(float dt) {
                     else if (prev_ground == Block::Snow || prev_ground == Block::Ice) next_ground = Block::Ice;
                     g_world->set_ground(g_target_x, g_target_y, next_ground);
                     g_world->set(g_target_x, g_target_y, next_ground);
+
+                    // Cavou: se ha agua vizinha acima desta cota, ela comeca a entrar no buraco
+                    // (ver water_flood_from em world.h). Semeia tambem a partir dos 4 vizinhos: sem
+                    // isso, cavar um tile que ja estava abaixo da linha d'agua mas cujo vizinho AGUA
+                    // so' apareceu depois nao disparava nada.
+                    water_flood_from(*g_world, g_target_x, g_target_y);
+                    {
+                        const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+                        for (int k = 0; k < 4; ++k)
+                            water_flood_from(*g_world, g_target_x + nx4[k], g_target_y + nz4[k]);
+                        // ... e a LAVA tambem escorre pra buracos novos, no ritmo dela (~9x mais
+                        // lento que a agua - ver lava_flood_from em world.h).
+                        lava_flood_from(*g_world, g_target_x, g_target_y);
+                        for (int k = 0; k < 4; ++k)
+                            lava_flood_from(*g_world, g_target_x + nx4[k], g_target_y + nz4[k]);
+                    }
+                    }   // fim do ramo "solo comum" (o ramo da lava esta acima)
                 } else {
                     g_world->set(g_target_x, g_target_y, Block::Air);
                 }
@@ -879,7 +914,9 @@ void update_mining_and_placement(float dt) {
                     refund_cost(get_module_cost(b));
                     g_modules.erase(std::remove_if(g_modules.begin(), g_modules.end(),
                         [](const Module& m) { return m.x == g_target_x && m.y == g_target_y; }), g_modules.end());
-                } else {
+                } else if (b != Block::Lava) {
+                    // Lava nao cai aqui: o ramo de recolher acima ja soltou o drop dela. Sem esta
+                    // excecao o jogador ganharia 2 lavas por tile.
                     Block drop = drop_item_for_block(b);
                     float sy = (float)g_world->height_at(g_target_x, g_target_y) * kHeightScale + drop_spawn_y_for_block(b);
                     spawn_item_drop(drop, tile_center(g_target_x), tile_center(g_target_y), sy);
@@ -955,15 +992,51 @@ void update_mining_and_placement(float dt) {
                         }
                     }
                 } else if (g_inventory[(int)g_selected] > 0) {
-                    g_inventory[(int)g_selected]--;
-                    // Preencher agua com um bloco solido tem que atualizar o "chao" por baixo
-                    // tambem (nao so o objeto) - senao surface_block_at/stack_top_block_at
-                    // continuam enxergando Agua ali (ground array nunca mudou) e o jogador
-                    // ficaria "nadando" em cima de um bloco solido que acabou de preencher o lago.
-                    if (cur == Block::Water) g_world->set_ground(g_place_x, g_place_y, Block::Dirt);
-                    g_world->set(g_place_x, g_place_y, g_selected);
-                    g_surface_dirty = true;
-                    g_place_cd = 0.12f;
+                    // BLOCO DE SOLO (Terra/Pedra/Areia/Grama/Neve/Gelo) NAO cabe na slot de OBJETO.
+                    // get_block_height() testa is_ground_like ANTES de tudo e devolve altura ZERO,
+                    // entao "world.set(tile, Terra)" gravava um objeto de altura 0: invisivel, sem
+                    // colisao - e o item era debitado do inventario do mesmo jeito. Era exatamente o
+                    // bug relatado ("a quantidade de blocos e' zerada e nao consigo construir"), e so'
+                    // com solo: Madeira/Metal/Carvao nao sao ground-like, ganham altura 1.0 e
+                    // apareciam normalmente.
+                    //
+                    // A slot certa pra "mais uma camada de terreno" e' a PILHA - altura fixa 1.0 em
+                    // render E colisao, o mesmo caminho que constroi torres e muros. A MIRA ja
+                    // classificava terreno solido como empilhamento, mas a ACAO redecidia pela slot de
+                    // objeto (que em terreno natural e' Air) e discordava dela; por isso o ramo de
+                    // empilhamento logo abaixo praticamente nunca rodava.
+                    Block gr = g_world->get_ground(g_place_x, g_place_y);
+                    bool on_water = (cur == Block::Water || gr == Block::Water);
+                    if (is_ground_like(g_selected) && on_water) {
+                        // Aterrar agua com solo: troca o CHAO pelo material escolhido em vez de
+                        // empilhar em cima da agua (o que deixaria um bloco sobre o lago). set_ground
+                        // fixo em Dirt, como era antes, aterraria areia como terra.
+                        g_world->set_ground(g_place_x, g_place_y, g_selected);
+                        if (cur == Block::Water) g_world->set(g_place_x, g_place_y, Block::Air);
+                        g_inventory[(int)g_selected]--;
+                        g_surface_dirty = true;
+                        g_place_cd = 0.12f;
+                    } else if (is_ground_like(g_selected)) {
+                        // Debita SO' se a pilha aceitou: kMaxStackExtra e' um teto real e gastar o
+                        // item numa recusa e' a mesma falha que este bloco esta consertando.
+                        if (g_world->stack_push(g_place_x, g_place_y, g_selected)) {
+                            g_inventory[(int)g_selected]--;
+                            g_surface_dirty = true;
+                            g_place_cd = 0.12f;
+                        } else {
+                            set_toast("Nao da pra empilhar mais alto aqui.");
+                        }
+                    } else {
+                        g_inventory[(int)g_selected]--;
+                        // Preencher agua com um bloco solido tem que atualizar o "chao" por baixo
+                        // tambem (nao so o objeto) - senao surface_block_at/stack_top_block_at
+                        // continuam enxergando Agua ali (ground array nunca mudou) e o jogador
+                        // ficaria "nadando" em cima de um bloco solido que acabou de preencher o lago.
+                        if (cur == Block::Water) g_world->set_ground(g_place_x, g_place_y, Block::Dirt);
+                        g_world->set(g_place_x, g_place_y, g_selected);
+                        g_surface_dirty = true;
+                        g_place_cd = 0.12f;
+                    }
                 }
             }
         } else if (g_place_is_stack && !is_module(g_selected) && g_inventory[(int)g_selected] > 0) {

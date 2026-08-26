@@ -179,3 +179,40 @@ void terraform_step(World& world, int cx, int cy);
 void recompute_terraform_score(World& world);
 void update_phase();
 void melt_ice_around(World& world, int cx, int cy, int radius);
+
+// ============= AGUA FLUIDA =============
+// A agua deste motor nao tem volume proprio: um tile de agua e' `ground == Block::Water`, e a
+// superficie dele e' derivada do PROPRIO heightmap (base_y - 0.18 no desenho). E' assim que lagos em
+// altitudes diferentes coexistem - World::gen nivela cada bacia num `lake_hn` unico.
+//
+// Consequencia: cavar ao lado de um lago abaixava o heightmap 4 unidades e a agua NAO reagia - ficava
+// um buraco seco encostado no lago, com a parede d'agua cortada. Pedido do jogador: "a agua deve ser
+// fluida, quando cavar proximo da agua a agua deve preencher o buraco".
+//
+// water_flood_from() SEMEIA o espalhamento a partir de (x,y): pega o maior nivel de agua entre os
+// vizinhos e enfileira os tiles que estao ABAIXO dele. update_water_flow() consome a fila aos poucos,
+// alguns tiles por tick - e' isso que faz a agua ENTRAR no buraco visivelmente em vez de aparecer
+// pronta num frame.
+//
+// Preencher = por o heightmap do tile no nivel da agua e marcar o ground como Water. Nao existe outra
+// forma num heightmap: o "volume" do buraco nao e' preservado, o buraco simplesmente passa a ser agua
+// na cota do lago - que e' exatamente o que se ve.
+//
+// Barreiras (nao inunda): tile ja de agua/gelo/lava, qualquer coisa is_base_structure (a base nao
+// alaga), e coluna com bloco empilhado - uma parede construida pelo jogador REPRESA a agua.
+void water_flood_from(World& world, int x, int y);
+
+// Consome a fila de espalhamento. Chamar 1x por frame.
+void update_water_flow(World& world, float dt);
+
+// Desenha os efeitos de agua/vapor pendentes (respingo ao encher um tile, baforadas de vapor ao apagar
+// lava). Chamar dentro da regiao 3D de render_world(), depois do terreno. Nao usa o vetor g_particles
+// de items_particles: ele e' atualizado mas NUNCA desenhado (sobra da era pre-3D), entao efeito jogado
+// nele fica invisivel.
+void render_water_fx();
+
+// LAVA FLUIDA. Mesma mecanica de water_flood_from, ritmo ~9x mais lento (lava e' espessa): 1 tile a
+// cada 0.85s contra 0.09s da agua. Semeia o escorrimento a partir de (x,y) - a lava so' desce (nunca
+// entra em tile de cota igual ou maior), nao invade agua/gelo (quem trata esse encontro e' o
+// apagamento) e e' represada por parede construida e por estrutura da base, igual a agua.
+void lava_flood_from(World& world, int x, int y);

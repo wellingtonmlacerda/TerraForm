@@ -75,6 +75,7 @@ void render_glow_disc_3d(Vec3 center, float radius, float r, float g, float b_co
 // region of the frame ends); this file's render_cube_3d()/render_wall_3d_tex() (and main.cpp's
 // own local render_plane_3d()/render_plane_3d_tex()/render_cube_3d_tex()) read them.
 FrameFogParams g_frame_fog;
+float g_frame_terrain_horizon = 1000.0f;
 
 // Applies the current frame's fog (if enabled) to an already-shaded color, based on the
 // distance from the camera to the given world-space position. Reproduces the old GL_LINEAR

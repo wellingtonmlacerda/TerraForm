@@ -270,13 +270,34 @@ void bake_tile(MeshBuild& mb, int tx, int tz, float rpy) {
     constexpr float side_shade = 0.72f;
     constexpr float dark_shade = 0.52f;
     constexpr float kFlatWallThreshold = 1.2f;
-    UvRect uv_side = atlas_uv(gtex.side);
+    // PAREDE DE TILE DE LAVA = ROCHA. Mesma correcao do loop de perto (main.cpp): a lateral usava a
+    // textura/tint do proprio solo, e num tile de lava em encosta isso desenhava um paredao de lava
+    // brilhante sem nada o sustentando ("represa no ar do nada"). A lava e' uma camada; o penhasco
+    // embaixo e' rocha. Precisa estar nos DOIS caminhos, senao aparece costura entre perto e longe.
+    Tile side_tile = gtex.side;
+    float wtint_r = tint_r, wtint_g = tint_g, wtint_b = tint_b;
+    if (is_lava) {
+        side_tile = block_tex(Block::Basalt).side;
+        float br, bg, bb, ba;
+        block_color(Block::Basalt, tz, g_world->h, br, bg, bb, ba);
+        wtint_r = br * shade; wtint_g = bg * shade; wtint_b = bb * shade;
+        if (g_lighting.enabled) {
+            float lr2, lg2, lb2;
+            sample_lightmap(world_x, world_z, lr2, lg2, lb2);
+            float df2 = compute_depth_factor(base_y, rpy);
+            wtint_r *= lr2 * df2; wtint_g *= lg2 * df2; wtint_b *= lb2 * df2;
+            apply_color_grading(wtint_r, wtint_g, wtint_b);
+        }
+        wtint_r = std::min(1.0f, wtint_r + 0.10f);
+        wtint_g = std::min(1.0f, wtint_g + 0.03f);
+    }
+    UvRect uv_side = atlas_uv(side_tile);
     UvRect uv_flat = uv_side;
     uv_flat.u1 = uv_flat.u0 = (uv_side.u0 + uv_side.u1) * 0.5f;
     uv_flat.v1 = uv_flat.v0 = (uv_side.v0 + uv_side.v1) * 0.5f;
 
     auto wall_color = [&](float shade_mult, float wy0, float wy1, float& r, float& g, float& b) {
-        r = tint_r * shade_mult; g = tint_g * shade_mult; b = tint_b * shade_mult;
+        r = wtint_r * shade_mult; g = wtint_g * shade_mult; b = wtint_b * shade_mult;
         apply_baked_fog(world_x, (wy0 + wy1) * 0.5f, world_z, r, g, b);
     };
 

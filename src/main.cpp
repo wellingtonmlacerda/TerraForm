@@ -1156,6 +1156,11 @@ void render_world(int win_w, int win_h) {
     // novo: quantas paredes estao sendo desenhadas por frame (cada diferenca de altura entre
     // tiles vizinhos, por menor que seja, desenha uma) e o FPS real na hora do bug.
     g_debug_view_radius = view_radius;
+    // Horizonte de terreno deste frame (ver g_frame_terrain_horizon em render_primitives.h): o laco
+    // de perto corta em view_radius e terrain_mesh_render_far recebe view_radius como far_radius,
+    // entao ESTE e' o alcance total do terreno. Quem desenha estrutura fixa fora do laco (a base)
+    // corta pelo mesmo numero - senao aparece onde nao ha mundo para esconder.
+    g_frame_terrain_horizon = (float)view_radius;
     g_debug_wall_radius = wall_radius;
     g_debug_wall_draws = 0;
     int wall_radius2 = wall_radius * wall_radius;
@@ -1537,6 +1542,32 @@ void render_world(int win_w, int win_h) {
                         }
                     }
 
+                    // === PAREDES DE TILE DE LAVA = ROCHA, nao lava ===
+                    // A parede de desnivel usava a textura e o tint do PROPRIO solo. Num tile de lava
+                    // numa encosta isso desenhava um PAREDAO DE LAVA brilhante de varias unidades de
+                    // altura, sem nada o sustentando - foi isso que o jogador viu como "represa no ar
+                    // do nada". Fisicamente a lava e' uma CAMADA fina escorrendo; o penhasco embaixo
+                    // dela e' rocha. Entao: topo continua lava emissiva, laterais viram basalto.
+                    Tile wall_tile = gtex.side;
+                    float wtint_r = tint_r, wtint_g = tint_g, wtint_b = tint_b;
+                    if (is_lava) {
+                        wall_tile = block_tex(Block::Basalt).side;
+                        float br, bg, bb, ba;
+                        block_color(Block::Basalt, tz, g_world->h, br, bg, bb, ba);
+                        wtint_r = br * shade; wtint_g = bg * shade; wtint_b = bb * shade;
+                        // Rocha nao e' emissiva: leva a iluminacao normal, ao contrario do topo.
+                        if (g_lighting.enabled) {
+                            float lr2, lg2, lb2;
+                            sample_lightmap((float)tx, (float)tz, lr2, lg2, lb2);
+                            float df2 = compute_depth_factor(base_y, rpy);
+                            wtint_r *= lr2 * df2; wtint_g *= lg2 * df2; wtint_b *= lb2 * df2;
+                            apply_color_grading(wtint_r, wtint_g, wtint_b);
+                        }
+                        // Brasa fraca na borda de cima da parede: a lava escorrendo pela beirada.
+                        wtint_r = std::min(1.0f, wtint_r + 0.10f);
+                        wtint_g = std::min(1.0f, wtint_g + 0.03f);
+                    }
+
                     // === LATERAIS (paredes) para diferenca de altura ===
                     bool do_walls = (dist2 <= wall_radius2);
                     if (!do_walls) {
@@ -1561,14 +1592,14 @@ void render_world(int win_w, int win_h) {
                         // DIAGNOSTICO TEMPORARIO - ver declaracao/limpeza no topo do arquivo.
                         g_debug_wall_draws += wall_e + wall_w + wall_s + wall_n;
                         if (use_textures) {
-                            if (wall_e) render_wall_3d_tex(WallFace::XPos, world_x, world_z, h_e, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, side_shade, (h_here - h_e) <= kFlatWallThreshold);
-                            if (wall_w) render_wall_3d_tex(WallFace::XNeg, world_x, world_z, h_w, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, dark_shade, (h_here - h_w) <= kFlatWallThreshold);
-                            if (wall_s) render_wall_3d_tex(WallFace::ZPos, world_x, world_z, h_s, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, side_shade, (h_here - h_s) <= kFlatWallThreshold);
-                            if (wall_n) render_wall_3d_tex(WallFace::ZNeg, world_x, world_z, h_n, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, dark_shade, (h_here - h_n) <= kFlatWallThreshold);
+                            if (wall_e) render_wall_3d_tex(WallFace::XPos, world_x, world_z, h_e, h_here, wall_tile, wtint_r, wtint_g, wtint_b, wall_a, side_shade, (h_here - h_e) <= kFlatWallThreshold);
+                            if (wall_w) render_wall_3d_tex(WallFace::XNeg, world_x, world_z, h_w, h_here, wall_tile, wtint_r, wtint_g, wtint_b, wall_a, dark_shade, (h_here - h_w) <= kFlatWallThreshold);
+                            if (wall_s) render_wall_3d_tex(WallFace::ZPos, world_x, world_z, h_s, h_here, wall_tile, wtint_r, wtint_g, wtint_b, wall_a, side_shade, (h_here - h_s) <= kFlatWallThreshold);
+                            if (wall_n) render_wall_3d_tex(WallFace::ZNeg, world_x, world_z, h_n, h_here, wall_tile, wtint_r, wtint_g, wtint_b, wall_a, dark_shade, (h_here - h_n) <= kFlatWallThreshold);
                         } else {
                             // Fallback sem texturas: quads coloridos
                             auto wall_col = [&](float s) {
-                                float wr = tint_r * s, wg = tint_g * s, wb = tint_b * s;
+                                float wr = wtint_r * s, wg = wtint_g * s, wb = wtint_b * s;
                                 apply_frame_fog_local(world_x, (h_here) , world_z, wr, wg, wb);
                                 rlColor4f(wr, wg, wb, wall_a);
                             };
@@ -1865,6 +1896,9 @@ void render_world(int win_w, int win_h) {
     // opaca e testa profundidade contra o chao/paredes) e depois de compute_lightmap()/g_frame_fog,
     // que ela consome. ANTES do jogador de proposito: o vidro da estufa desenha com depth mask
     // desligada, entao quem esta atras dele continua aparecendo.
+    // Efeitos de agua/vapor (respingo ao encher buraco, vapor ao apagar lava - ver world.h).
+    render_water_fx();
+
     render_base_interior();
 
     // TEXTURA BRANCA PADRAO antes do jogador. O corpo e' desenhado com render_cube_3d/
@@ -2797,11 +2831,27 @@ static void update_meteors(float dt) {
             float rad_yaw = g_camera.yaw * (kPi / 180.0f);
             float forward_ang = std::atan2(-std::cos(rad_yaw), -std::sin(rad_yaw));
             constexpr float kMeteorViewConeRad = 50.0f * (kPi / 180.0f); // bem dentro do FOV (74 graus)
-            float ang = forward_ang + (rng_next_f01() - 0.5f) * kMeteorViewConeRad;
-            float dist = 15.0f + rng_next_f01() * 15.0f;
-            int tx = world_to_tile(g_player.pos.x + std::cos(ang) * dist);
-            int tz = world_to_tile(g_player.pos.y + std::sin(ang) * dist);
-            if (g_world->in_bounds(tx, tz)) {
+
+            // ZONA PROIBIDA em volta da base (pedido do jogador: "nao quero o meteorito caindo na
+            // base ou muito proximo dela"). 90 tiles cobre com folga a instalacao (casca ~r22), o
+            // disco achatado (r46) e a rampa de transicao (r78) - a cratera nunca encosta em nada
+            // construido. Tenta varios angulos dentro do cone de visao antes de desistir: assim o
+            // meteoro continua caindo quando ha area livre em vista, e simplesmente NAO cai quando o
+            // jogador esta na base (o intervalo apenas reinicia e ele tenta de novo depois).
+            constexpr float kMeteorBaseKeepOut2 = 90.0f * 90.0f;
+            int tx = -1, tz = -1;
+            for (int attempt = 0; attempt < 10; ++attempt) {
+                float ang = forward_ang + (rng_next_f01() - 0.5f) * kMeteorViewConeRad;
+                float dist = 15.0f + rng_next_f01() * 15.0f;
+                int cx2 = world_to_tile(g_player.pos.x + std::cos(ang) * dist);
+                int cz2 = world_to_tile(g_player.pos.y + std::sin(ang) * dist);
+                if (!g_world->in_bounds(cx2, cz2)) continue;
+                float bdx = (float)(cx2 - g_base_x), bdz = (float)(cz2 - g_base_y);
+                if (bdx * bdx + bdz * bdz < kMeteorBaseKeepOut2) continue;
+                tx = cx2; tz = cz2;
+                break;
+            }
+            if (tx >= 0) {
                 FallingMeteor m;
                 m.x = tile_center(tx);
                 m.z = tile_center(tz);
@@ -2953,6 +3003,10 @@ void update_game(float dt) {
     
     // Atualizar fog of war do minimapa
     update_fog_of_war(dt);
+
+    // Espalhamento de agua: consome a fila semeada por water_flood_from() (ao cavar). Progressivo de
+    // proposito - alguns tiles por tick - pra a agua ENTRAR no buraco visivelmente. Ver world.h.
+    if (g_world) update_water_flow(*g_world, dt);
 
     // Stats timer (periodically recompute terraform score)
     g_stats_timer += dt;

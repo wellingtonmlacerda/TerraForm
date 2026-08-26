@@ -100,9 +100,17 @@ enum class Block : uint8_t {
     // um movel de 2.10 le como brinquedo, e desenhar uma maquina de 4+ com collider de 2.10 deixaria
     // o jogador atravessar a metade de cima dela com o jetpack.
     FurnitureHuge,
+
+    // Rocha de lava resfriada. Existe porque o jogador pediu que a lava "endurecesse ao encostar na
+    // agua": antes ela virava Dirt, o que eu mesmo tinha declarado como compromisso ruim - lava
+    // apagada nao e' terra. Alem do visual, Basalto tem uma funcao MECANICA: lava nao escoa pra
+    // dentro dele (lava_can_enter, world.cpp), entao a crosta resfriada REPRESA o fluxo atras dela.
+    // E' ground-like (obrigatorio: sem isso get_block_height o trataria como objeto de 1.0 e o
+    // caminho de escavacao deixaria de baixar a coluna) e mineravel - da' pra abrir a crosta.
+    Basalt,
 };
 
-static constexpr int kBlockTypeCount = (int)Block::FurnitureHuge + 1;
+static constexpr int kBlockTypeCount = (int)Block::Basalt + 1;
 
 // True pros 3 blocos de colisao de mobilia acima - usado pelos skips de render (main.cpp), de
 // oclusao de camera (camera.cpp) e de sombra (lighting.cpp). Um helper em vez de 3 comparacoes

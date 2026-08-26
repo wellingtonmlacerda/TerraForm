@@ -728,9 +728,17 @@ void render_base_interior() {
     // era o "bug de ver o interior pelo lado de fora". Com o gate por distancia, parede e teto
     // existem sempre que o complexo pode estar em vista, entao nao ha instante nenhum em que o piso
     // apareca sem eles. Custa zero no resto do mundo: o distrito fica a ~1200 tiles da base.
+    // O gate tem que ser NO MINIMO o alcance do terreno, nunca menos: o piso e' terreno de verdade,
+    // desenhado ate g_frame_terrain_horizon (= view_radius, dinamico de 110 a 380). O 150 FIXO que
+    // estava aqui era menor que o horizonte quando se voa alto - o piso apareceria a 200 tiles sem
+    // parede nem teto, ressuscitando exatamente o bug que este gate existe para impedir. A folga de
+    // 50 e' porque a medida e' ate o CENTRO do distrito, mas o piso se estende ~45 tiles a partir
+    // dele. (Este e' o inverso do corte de base_exterior.cpp, que tem que ser no MAXIMO o horizonte:
+    // la o modelo nao pode existir onde nao ha terreno para ocluir; aqui ele nao pode FALTAR onde ha.)
     {
         float ddx = rp.x - (float)ox, ddz = rp.y - (float)oz;
-        if (ddx * ddx + ddz * ddz > 150.0f * 150.0f) return;
+        float gate = std::max(150.0f, g_frame_terrain_horizon + 50.0f);
+        if (ddx * ddx + ddz * ddz > gate * gate) return;
     }
 
     rlSetTexture(rlGetTextureIdDefault());  // NAO rlSetTexture(0) - pra id 0 o rlgl nao troca nada

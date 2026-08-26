@@ -115,6 +115,7 @@ void block_color(Block b, int y, int world_h, float& r, float& g, float& bl, flo
         case Block::FurnitureMid:
         case Block::FurnitureTall:   r = 0.50f; g = 0.52f; bl = 0.56f; break;
         case Block::FurnitureHuge:   r = 0.44f; g = 0.46f; bl = 0.50f; break;
+        case Block::Basalt:          r = 0.20f; g = 0.19f; bl = 0.21f; break;  // basalto: quase preto
         case Block::BaseShell:       r = 0.90f; g = 0.90f; bl = 0.93f; break;  // rede de seguranca: nunca desenhado (is_invisible_collider)
         default: r = 1.0f; g = 0.0f; bl = 1.0f; break;
     }
@@ -571,6 +572,9 @@ BlockTex block_tex(Block b) {
         case Block::FurnitureMid:
         case Block::FurnitureTall: t = {Tile::Metal, Tile::Metal, Tile::Metal, false, false, false}; break;
         case Block::FurnitureHuge: t = {Tile::Metal, Tile::Metal, Tile::Metal, false, false, false}; break;
+        // Basalto reaproveita a arte de Stone com tint escuro - mesmo padrao de Lava (Water0) e
+        // RefinedAlloy (Metal): sem asset novo.
+        case Block::Basalt: t = {Tile::Stone, Tile::Stone, Tile::Stone, true, false, false}; break;
         case Block::BaseShell: t = {Tile::Metal, Tile::Metal, Tile::Metal, false, false, false}; break;
 
         default: t = {Tile::Missing, Tile::Missing, Tile::Missing, false, false, false}; break;

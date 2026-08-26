@@ -16,8 +16,12 @@
 
 struct Creature {
     float x = 0.0f, z = 0.0f, y = 0.0f;
-    int hp = 20;
-    int max_hp = 20;
+    // 20 -> 40: com 20 HP e kLaserDamage 10 eram 2 tiros, e como o disparo usa IsMouseButtonDown
+    // com cooldown de 0.33s, segurar o botao gastava os dois em 0.66s - lia como morrer com UM
+    // tiro (relato do jogador). 40 exige 4 acertos, tempo suficiente pra a criatura reagir e
+    // chegar no corpo a corpo.
+    int hp = 40;
+    int max_hp = 40;
     enum class State { Wandering, Chasing } state = State::Wandering;
     float wander_target_x = 0.0f, wander_target_z = 0.0f;
     float wander_timer = 0.0f;

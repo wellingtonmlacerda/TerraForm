@@ -225,6 +225,17 @@ void generate_base(World& world) {
         if (object_block_at(world, tx, ty) != Block::Air) {
             world.set(tx, ty, Block::Air);
         }
+        // DRENAR: agua/gelo dentro do disco achatado vira areia. O achatamento so' mexia na ALTURA,
+        // entao um tile de lago dentro da area da base era ERGUIDO ate base_h e continuava com ground
+        // de agua - virava uma poca na cota do piso da base (medido: 54 tiles num mundo gerado).
+        // Com a agua fluida agora isso e' pior que cosmetico: cada poca dessas e' uma FONTE na cota da
+        // base, e cavar em volta faria a propria base alagar.
+        Block g = world.get_ground(tx, ty);
+        if (g == Block::Water || g == Block::Ice) {
+            world.set_ground(tx, ty, Block::Sand);
+            if (world.get(tx, ty) == Block::Water || world.get(tx, ty) == Block::Ice)
+                world.set(tx, ty, Block::Sand);
+        }
     };
     // DISCO, nao mais 2 retangulos: com modulos em 4 bearings (N/L/S/O) nao existe mais um "lado"
     // privilegiado pra achatar, e um retangulo deixaria os modulos leste/oeste pendurados em terreno

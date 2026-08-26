@@ -55,6 +55,7 @@ Block drop_item_for_block(Block broken) {
         case Block::Leaves: return Block::Organic;
         case Block::Sand:   return Block::Dirt;
         case Block::Snow:   return Block::Ice;
+        case Block::Basalt: return Block::Stone;   // quebrar a crosta rende pedra util
         default:            return broken;
     }
 }

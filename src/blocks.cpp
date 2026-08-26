@@ -62,6 +62,7 @@ bool is_ground_like(Block b) {
         case Block::BuildSlot:
         case Block::BaseFloor:
         case Block::PlanterBed:
+        case Block::Basalt:
             return true;
         default:
             return false;
@@ -139,6 +140,7 @@ const char* block_name(Block b) {
         case Block::FurnitureTall:
         case Block::FurnitureHuge: return "Mobilia";
         case Block::BaseShell: return "Estrutura da Base";
+        case Block::Basalt: return "Basalto";
         default: return "?";
     }
 }

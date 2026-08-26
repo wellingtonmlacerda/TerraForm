@@ -996,7 +996,6 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     g_physics.hit_x = false;
     g_physics.hit_z = false;
     g_physics.sliding = false;
-    g_physics.landing_assist_engaged = false;
     g_physics.collision_normal = {0.0f, 0.0f};
 
     GroundProbeResult ground = probe_ground(p, world, cfg, true);
@@ -1046,10 +1045,28 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     if (p.on_ground) g_physics.coyote_timer = cfg.coyote_time;
     else g_physics.coyote_timer = std::max(0.0f, g_physics.coyote_timer - fixed_dt);
 
+    g_physics.water_exit_thrust = false;
     if (in_water) {
         g_physics.jump_buffer_timer = 0.0f;
         g_physics.coyote_timer = 0.0f;
         p.jetpack_active = false;
+
+        // SAIDA DA AGUA COM PROPULSOR. Sem isto a agua e' uma ARMADILHA de projeto: em mar aberto o
+        // teto da agua e' superficie+0.0015 (o probe de margem so' alcanca 10 tiles), a posicao fica
+        // pregada na superficie, on_ground e' forcado a falso - entao o combustivel NUNCA regenera - e
+        // o jetpack e' suprimido. Sobra nadar a 0.42x da velocidade. Num lago maior que ~20 tiles nao
+        // existe saida vertical nenhuma: era o "buguei dentro da agua, nao consigo sair".
+        //
+        // Agora segurar o pulo na agua gasta combustivel de jetpack e LIBERA o teto (ver o clamp no
+        // fim do passo). Nao abre voo infinito: o combustivel drena e so' regenera em terra firme
+        // (on_ground), entao o alcance e' finito por construcao - exatamente o que o teto tentava
+        // garantir, mas sem transformar agua funda em prisao.
+        if (input.jump_held && !input.descend_held && p.jetpack_fuel > 0.0f) {
+            p.jetpack_fuel = std::max(0.0f, p.jetpack_fuel - cfg.jetpack_fuel_consume * fixed_dt);
+            p.jetpack_active = true;
+            p.jetpack_flame_anim += fixed_dt * 15.0f;
+            g_physics.water_exit_thrust = true;
+        }
 
         float swim_speed = cfg.jump_velocity * 0.7f;
         float swim_accel = cfg.jetpack_thrust;
@@ -1268,8 +1285,10 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     // GATE: agora e' `in_water` (com altura), nao mais so' "post_ground.terrain == Water".
     // Aquele teste era verdadeiro em QUALQUER altitude sobre agua e este clamp teleportava
     // pra dentro do lago quem estava so' voando por cima - o bug reportado.
+    // !water_exit_thrust: segurando o pulo com combustivel, o teto da agua NAO se aplica - e' assim
+    // que se sai de um lago fundo. Ver a nota longa no ramo `if (in_water)` acima.
     bool still_in_water = in_water && (post_ground.terrain == TerrainPhysicsType::Water);
-    if (still_in_water) {
+    if (still_in_water && !g_physics.water_exit_thrust) {
         float ceiling = water_ceiling;
         if (p.pos_y > ceiling) {
             p.pos_y = ceiling;
@@ -1337,6 +1356,12 @@ void reset_player_physics_runtime(bool clear_timers) {
     g_physics.hit_x = false;
     g_physics.hit_z = false;
     g_physics.sliding = false;
+    // Estado de assistencia de pouso e de saida da agua: limpos AQUI (respawn/Novo Jogo/teleporte),
+    // nao a cada frame. Eram um `static` local de apply_single_physics_step, que sobrevive a tudo
+    // isso - mesmo footgun de estado preso em global que ja mordeu este projeto (ver a nota sobre
+    // g_shelter_door_x/y em modules_building.h).
+    g_physics.landing_assist_engaged = false;
+    g_physics.water_exit_thrust = false;
     if (clear_timers) {
         g_physics.jump_buffer_timer = 0.0f;
         g_physics.coyote_timer = 0.0f;
