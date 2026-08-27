@@ -77,7 +77,17 @@ void reset_camera_near_player(bool reset_angles);
 
 // Aplicar matriz de view (gluLookAt manual) / projecao perspectiva manual.
 void apply_look_at();
+// FOV vertical usado pela projecao. Era um literal 74.0f em main.cpp (chamada de apply_perspective)
+// E uma const local em get_mouse_ray_direction - duas copias que, se divergissem, fariam a mira e a
+// projecao do HUD discordarem do que e' desenhado. Fonte unica.
+constexpr float kCameraFovDegrees = 74.0f;
+
 void apply_perspective(float fov_degrees, float aspect, float near_plane, float far_plane);
+
+// Projecao MUNDO -> TELA. Inversa de get_mouse_ray_direction, usando o MESMO FOV e a mesma base de
+// camera, porque a projecao do jogo e' manual (apply_perspective) - nao ha Camera do raylib, entao
+// GetWorldToScreen() nao serve. Devolve false quando o ponto esta atras da camera.
+bool world_to_screen(Vec3 world, int win_w, int win_h, float& out_x, float& out_y);
 
 // Calcular direcao do ray a partir da posicao do mouse na tela (usado para mineracao/build).
 Vec3 get_mouse_ray_direction(int mouse_x, int mouse_y, int win_w, int win_h);

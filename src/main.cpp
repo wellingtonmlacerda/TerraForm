@@ -21,7 +21,8 @@
 #include "sky.h"                 // SkyPalette/compute_sky_palette/render_alien_sky/update_shooting_stars (sky extraction stage)
 #include "ui_hud.h"              // render_hud (ui_hud extraction stage)
 #include "ui_menu.h"             // render_menus/update_menu_input (ui_menu extraction stage)
-#include "building_interaction.h" // render_build_menu/update_build_menu_input/update_mining_and_placement (building_interaction extraction stage)
+#include "building_interaction.h" // update_mining_and_placement (building_interaction extraction stage)
+#include "ui_build_menu.h"        // render_build_menu/update_build_menu_input (menu de construcao)
 #include "input.h"                // key_down/key_pressed (input extraction stage)
 #include "win32_platform.h"       // WindowProc/WinMain (win32_platform extraction stage - see there for why it declares nothing)
 #include "objectives.h"           // objectives_victory_celebration_remaining (player objectives feature)
@@ -31,6 +32,7 @@
 #include "base_interior.h"        // render_base_interior (mobilia/plantas/teto das salas)
 #include "interiors.h"             // interiors_update/interior_at (exterior selado + interiores)
 #include "base_exterior.h"         // render_base_exterior (o modelo proprio do exterior)
+#include "module_models.h"         // render_module_models (geometria propria de cada modulo)
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -334,6 +336,7 @@ static bool g_prev_f = false; // Reparar traje (ver g_suit_integrity) - R ja e "
 static bool g_prev_g = false; // Refinar na Oficina (ver try_refine_at_workshop())
 static bool g_prev_t = false; // Scanner (ver scan_for_points_of_interest(), minimap.cpp)
 static bool g_prev_p = false; // Fabricar Pistola de Laser (ver try_craft_laser_pistol())
+static bool g_prev_u = false; // Aprimorar a Pistola de Laser (ver try_upgrade_weapon())
 
 // g_place_cd lost "static" here: building_interaction.cpp's update_mining_and_placement()
 // needs external linkage to read/write it from another translation unit - same pattern as
@@ -1082,7 +1085,7 @@ void render_world(int win_w, int win_h) {
     rlMatrixMode(RL_PROJECTION);
     rlLoadIdentity();
     float aspect = (float)win_w / (float)win_h;
-    apply_perspective(74.0f, aspect, 0.1f, 2200.0f);
+    apply_perspective(kCameraFovDegrees, aspect, 0.1f, 2200.0f);
 
     // Atualizar camera (target + colisao) para o frame atual
     update_camera_for_frame();
@@ -1267,6 +1270,11 @@ void render_world(int win_w, int win_h) {
     // de noite ficaria um objeto claro em brilho pleno cercado de terreno preto. O corte por
     // distancia mora dentro de render_base_exterior().
     render_base_exterior();
+
+    // Modelos proprios dos modulos (module_models.h). Fica AQUI pelo mesmo motivo do exterior da
+    // base: depois do setup de fog/lightmap e antes do bind do atlas de textura - os modelos usam
+    // a textura branca padrao, e desenhados depois do bind sairiam pintados com o atlas.
+    render_module_models();
 
     // === RENDERIZACAO 3D DO MUNDO ===
     
@@ -1648,7 +1656,13 @@ void render_world(int win_w, int win_h) {
                 // is_furniture_collider: blocos de colisao de mobilia sao INVISIVEIS de proposito -
                 // eles existem so' pra dar fisica aos moveis, cuja aparencia e' desenhada por
                 // base_interior.cpp. Desenhar o cubo aqui poria uma caixa cinza em cima da cama.
-                if (obj != Block::Air && !is_invisible_collider(obj) && dist2 <= obj_radius2) {
+                // MODULOS NAO SAO DESENHADOS AQUI. Eram cubos texturizados - um Painel Solar aparecia
+                // como caixa azul listrada ("nao parece um painel solar"). Agora cada um tem geometria
+                // propria em module_models.cpp, desenhada num passe separado (mesmo arranjo do
+                // exterior da base: o bloco no mundo continua sendo colisao/ancora, a aparencia vem
+                // de um modelo). O tile do modulo continua no mundo, so' nao virá cubo.
+                if (obj != Block::Air && !is_invisible_collider(obj) && !is_module(obj) &&
+                    dist2 <= obj_radius2) {
                     BlockTex tex = block_tex(obj);
                     if (tex.is_water) {
                         tex.top = (Tile)((int)Tile::Water0 + water_frame);
@@ -2420,6 +2434,16 @@ void render_world(int win_w, int win_h) {
             // alinhado ao eixo do mundo fica torto quando o personagem olha na diagonal - o mesmo
             // problema que a mochila tinha. Com caixa orientada da' pra ter cano fino e comprido,
             // corpo achatado, mira em cima e uma celula de energia atras, tudo girando com o braco.
+            // NIVEL DA ARMA (1..3, ver weapon_level em creatures.h): as pecas abaixo mudam com ele.
+            // A DISTANCIA DO BOCAL NAO muda em nenhum nivel - o 0.385f do halo esta duplicado em
+            // get_weapon_muzzle_pos (player_physics.cpp), que e' a origem do traco do tiro; move-lo
+            // exigiria editar os dois lugares e o tiro passaria a sair de um ponto errado se um
+            // deles fosse esquecido. Evolucao visual vem de PECAS NOVAS, cor e brilho.
+            const int wlv = weapon_level();
+            const bool mk2 = wlv >= 2, mk3 = wlv >= 3;
+            // Acabamento dourado quando o trilho de legado esta completo (recompensa cosmetica da
+            // missao 13 - puramente visual, nenhum efeito mecanico).
+            const bool legacy_trim = objectives_legacy_complete();
             const float gyaw = std::atan2(sin_rot, cos_rot);
             const float gun_y = py + 0.25f + bob + arm_bob + mine_impact * 0.05f;
             const float gperp_x = cos_rot, gperp_z = -sin_rot;
@@ -2442,9 +2466,15 @@ void render_world(int win_w, int win_h) {
             render_box_oriented_3d(G(0.085f, 0.015f, 0.0f), 0.085f, 0.085f, 0.19f, gyaw,
                                    0.26f, 0.28f, 0.32f, 1.0f);
             // Placa lateral clara de cada lado (contraste, senao a arma inteira le como um borrao).
-            for (float sgn : {-1.0f, 1.0f}) {
-                render_box_oriented_3d(G(0.085f, 0.015f, 0.046f * sgn), 0.012f, 0.055f, 0.13f, gyaw,
-                                       0.52f, 0.55f, 0.60f, 1.0f);
+            {
+                float pr = 0.52f, pg = 0.55f, pb = 0.60f;
+                if (mk2) { pr = 0.40f; pg = 0.72f; pb = 0.80f; }   // liga clara azulada
+                if (mk3) { pr = 0.62f; pg = 0.88f; pb = 0.96f; }
+                if (legacy_trim) { pr = 0.86f; pg = 0.72f; pb = 0.30f; }
+                for (float sgn : {-1.0f, 1.0f}) {
+                    render_box_oriented_3d(G(0.085f, 0.015f, 0.046f * sgn), 0.012f, 0.055f, 0.13f, gyaw,
+                                           pr, pg, pb, 1.0f);
+                }
             }
 
             // Celula de energia atras do receptor: barra acesa que ENCURTA conforme o cooldown.
@@ -2473,18 +2503,51 @@ void render_world(int win_w, int win_h) {
                 render_box_oriented_3d(G(fw, 0.020f, 0.0f), 0.072f, 0.072f, 0.022f, gyaw,
                                        0.44f, 0.47f, 0.52f, 1.0f);
             }
+            // ---- PECAS QUE SO' EXISTEM NOS NIVEIS ALTOS ----
+            if (mk2) {
+                // Trilho superior sobre o receptor: silhueta mais tecnica sem alongar a arma.
+                render_box_oriented_3d(G(0.10f, 0.082f, 0.0f), 0.052f, 0.014f, 0.15f, gyaw,
+                                       0.30f, 0.33f, 0.38f, 1.0f);
+            }
+            if (mk3) {
+                // Segundo par de aneis de arrefecimento (a arma dissipa mais energia agora).
+                for (float fw : {0.225f, 0.305f}) {
+                    render_box_oriented_3d(G(fw, 0.020f, 0.0f), 0.066f, 0.066f, 0.016f, gyaw,
+                                           0.58f, 0.62f, 0.68f, 1.0f);
+                }
+                // Capacitor sob o cano, com faixa acesa.
+                render_box_oriented_3d(G(0.215f, -0.032f, 0.0f), 0.048f, 0.036f, 0.13f, gyaw,
+                                       0.12f, 0.13f, 0.15f, 1.0f);
+                render_box_oriented_3d(G(0.215f, -0.030f, 0.0f), 0.030f, 0.020f, 0.10f, gyaw,
+                                       0.45f, 0.92f, 1.0f, 1.0f);
+                // Pulso de energia percorrendo o cano em direcao ao bocal - uma caixinha clara cujo
+                // `fwd` anda de 0.17 a 0.33 e reinicia. Usa anim_frame (o mesmo relogio do tip_glow),
+                // entao nao precisa de estado novo nem de timer proprio.
+                float pulse_t = std::fmod(g_player.anim_frame * 1.6f, 1.0f);
+                render_box_oriented_3d(G(0.17f + pulse_t * 0.16f, 0.020f, 0.0f),
+                                       0.056f, 0.056f, 0.020f, gyaw,
+                                       0.55f, 0.95f, 1.0f, 0.85f);
+            }
+
             // Emissor: bocal escuro + nucleo pulsante, na PONTA (e' de onde o traco do tiro sai -
             // ver get_weapon_muzzle_pos em player_physics.cpp).
             render_box_oriented_3d(G(0.345f, 0.020f, 0.0f), 0.062f, 0.062f, 0.040f, gyaw,
                                    0.14f, 0.15f, 0.17f, 1.0f);
             float tip_glow = 0.65f + 0.35f * std::sin(g_player.anim_frame * 6.0f);
-            render_box_oriented_3d(G(0.372f, 0.020f, 0.0f), 0.040f, 0.040f, 0.022f, gyaw,
-                                   0.35f * tip_glow, 0.90f * tip_glow, 1.0f * tip_glow, 1.0f);
+            // Nucleo maior e mais quente a cada nivel (o Mk III fica quase branco).
+            float core_sz = mk3 ? 0.052f : (mk2 ? 0.046f : 0.040f);
+            float core_r = mk3 ? 0.85f : (mk2 ? 0.55f : 0.35f);
+            render_box_oriented_3d(G(0.372f, 0.020f, 0.0f), core_sz, core_sz, 0.022f, gyaw,
+                                   core_r * tip_glow, 0.92f * tip_glow, 1.0f * tip_glow, 1.0f);
             // Halo do emissor - o que faz a arma ler como energia e nao como ferro.
             rlSetBlendMode(RL_BLEND_ADDITIVE);
             rlDisableDepthMask();
-            render_glow_disc_3d(G(0.385f, 0.020f, 0.0f), 0.075f,
-                                0.40f, 0.92f, 1.0f, 0.45f * tip_glow, 8);
+            float halo_rad = mk3 ? 0.125f : (mk2 ? 0.098f : 0.075f);
+            float halo_a   = mk3 ? 0.62f  : (mk2 ? 0.53f  : 0.45f);
+            float hr = legacy_trim ? 0.95f : (mk3 ? 0.70f : 0.40f);
+            float hg = legacy_trim ? 0.82f : 0.92f;
+            float hb = legacy_trim ? 0.40f : 1.0f;
+            render_glow_disc_3d(G(0.385f, 0.020f, 0.0f), halo_rad, hr, hg, hb, halo_a * tip_glow, 10);
             rlEnableDepthMask();
             rlSetBlendMode(RL_BLEND_ALPHA);
         }
@@ -2718,6 +2781,10 @@ void render_world(int win_w, int win_h) {
         }
     }
     
+    // HUD de combate (barra de vida das criaturas, nome do tipo, numeros de dano). ANTES do HUD
+    // principal: os paineis fixos devem ficar por cima das barras flutuantes, nao o contrario.
+    render_creature_hud(win_w, win_h);
+
     render_hud(win_w, win_h);
 
     // DIAGNOSTICO TEMPORARIO (remover depois) - jogador reportou voo infinito + piscar do
@@ -2917,7 +2984,19 @@ static void update_meteors(float dt) {
                             } else {
                                 // Resto da tigela: terra revirada, sem vegetacao/rocha em cima.
                                 g_world->set_ground(cx, cz, Block::Dirt);
-                                if (tb != Block::Air) g_world->set(cx, cz, Block::Dirt);
+                                // VEIOS DE FERRO METEORICO expostos na tigela. Um unico drop nao
+                                // faria diferenca no gargalo de ferro; a cratera virar um sitio de
+                                // mineracao de ferro faz - e da' ao meteoro um proposito de
+                                // gameplay em vez de so' ser um evento cosmetico destrutivo.
+                                // Hash deterministico (nao rng por frame): a mesma cratera tem
+                                // sempre os mesmos veios, e recarregar o save nao os embaralha.
+                                float vh = std::sin((float)cx * 12.9898f + (float)cz * 78.233f) * 43758.5453f;
+                                vh -= std::floor(vh);
+                                if (vh > 0.72f) {
+                                    g_world->set(cx, cz, Block::Iron);
+                                } else if (tb != Block::Air) {
+                                    g_world->set(cx, cz, Block::Dirt);
+                                }
                             }
                         } else {
                             // Borda elevada: altura ABSOLUTA (maior vizinho + rim) em vez de
@@ -2959,8 +3038,11 @@ static void update_meteors(float dt) {
                 g_surface_dirty = true;
             }
 
-            spawn_item_drop(Block::Crystal, it->x, it->z, it->target_y + 0.3f);
-            spawn_block_particles(Block::Crystal, it->x, it->z, g_world->h);
+            // FERRO, nao cristal (pedido do jogador: "o meteorito deveria deixar ferro"). Faz sentido
+            // tematico - meteorito metalico e' ferro-niquel, nao gema - e resolve o gargalo real:
+            // ferro e' o recurso mais exigido da campanha e o mais raro do mapa.
+            spawn_item_drop(Block::Iron, it->x, it->z, it->target_y + 0.3f);
+            spawn_block_particles(Block::Iron, it->x, it->z, g_world->h);
             play_meteor_impact_sound();
             // Onda de choque na hora do impacto: reaproveita o efeito de poeira do pouso de
             // jetpack (ja aprovado pelo jogador), na intensidade maxima e ancorado no ponto
@@ -2968,7 +3050,7 @@ static void update_meteors(float dt) {
             g_physics.landing_dust_timer = 1.1f;
             g_physics.landing_dust_pos = {it->x, it->target_y, it->z};
             g_physics.landing_dust_intensity = 1.0f;
-            set_toast("Um meteoro caiu por perto! Cristal raro pra coletar.", 3.5f);
+            set_toast("Um meteoro caiu por perto! Ferro meteorico exposto na cratera.", 3.5f);
             it = g_meteors.erase(it);
         } else {
             ++it;
@@ -3036,6 +3118,7 @@ void update_game(float dt) {
     bool g_pressed = key_pressed(KEY_G, g_prev_g);
     bool t_pressed = key_pressed(KEY_T, g_prev_t);
     bool p_pressed = key_pressed(KEY_P, g_prev_p);
+    bool u_pressed = key_pressed(KEY_U, g_prev_u);
     bool v_pressed = key_pressed(KEY_V, g_prev_v);   // transicao exterior<->interior (interiors.h)
     
     // === MAPA GRANDE (tecla M) ===
@@ -3210,11 +3293,17 @@ void update_game(float dt) {
     // Update modules (energy/water/oxygen production, terraforming)
     update_modules(*g_world, dt);
 
-    // Hotbar selection
-    // Resources: 1-6
-    const Block resource_slots[] = {Block::Dirt, Block::Stone, Block::Iron, Block::Copper, Block::Coal, Block::Wood};
-    for (int i = 0; i < 6; ++i) {
-        if (key_down('1' + i)) g_selected = resource_slots[i];
+    // Hotbar: teclas 1-6 selecionam os 6 slots VISIVEIS da barra de elementos. A lista de
+    // elementos era duplicada aqui e em ui_hud.cpp; agora vem de kElementSlots (ui_hud.h), fonte
+    // unica - com rolagem, duas copias divergiriam na hora. Rolar a barra muda o que 1-6 fazem,
+    // que e' o comportamento esperado de barra rolavel.
+    {
+        int scroll = hud_elements_scroll();
+        for (int i = 0; i < kElementVisibleSlots; ++i) {
+            int idx = scroll + i;
+            if (idx >= kElementSlotCount) break;
+            if (key_down('1' + i)) g_selected = kElementSlots[idx];
+        }
     }
     
     // Modules: 7-0 (dynamically based on unlocks)
@@ -3521,6 +3610,13 @@ void update_game(float dt) {
     // em qualquer lugar (sem precisar de Oficina, ver comentario na declaracao).
     if (p_pressed) {
         try_craft_laser_pistol();
+    }
+
+    // Tecla U: aprimorar a Pistola de Laser (Mk I -> Mk II -> Mk III). Passa o alvo do raycast quando
+    // ele existe, mas try_upgrade_weapon tambem funciona sem alvo - obrigatorio, porque com a pistola
+    // equipada o raycast nem roda (ver o comentario da definicao em modules_building.cpp).
+    if (u_pressed) {
+        try_upgrade_weapon(g_target_x, g_target_y, g_has_target && g_target_in_range);
     }
 }
 

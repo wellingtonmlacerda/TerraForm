@@ -17,6 +17,7 @@
 #include "lighting.h"
 #include "camera.h"
 #include "objectives.h"
+#include "creatures.h"           // weapon_level_name (indicador de nivel da arma)
 
 #include <algorithm>
 #include <cmath>
@@ -370,10 +371,12 @@ void render_hud(int win_w, int win_h) {
                 if (def.related_module != Block::Air && !is_unlocked(def.related_module)) {
                     line2 += "  (" + unlock_progress_string(def.related_module) + ")";
                 }
-                if ((ObjectiveId)idx == ObjectiveId::BankRefinedAlloy) {
-                    int have = std::max(0, g_inventory[(int)Block::RefinedAlloy]);
-                    line2 += "  (" + std::to_string(have) + "/20)";
-                }
+                // Progresso parcial: objectives.cpp e' quem sabe o que contar (era um (N/20) hardcoded
+                // aqui, so' pra Liga Refinada). Anexado a linha 2 entre parenteses - o painel se
+                // autodimensiona pela largura do texto (box_w = max(tw1,tw2) + 30), entao a altura
+                // fixa de 46 nao muda e nada colide.
+                std::string prog = objective_progress_string(idx);
+                if (!prog.empty()) line2 += "  (" + prog + ")";
             } else {
                 const ObjectiveDef& def = objective_def(idx);
                 char hdr[96];
@@ -383,6 +386,8 @@ void render_hud(int win_w, int win_h) {
                 if (def.related_module != Block::Air && !is_unlocked(def.related_module)) {
                     line2 += "  (" + unlock_progress_string(def.related_module) + ")";
                 }
+                std::string prog = objective_progress_string(idx);
+                if (!prog.empty()) line2 += "  (" + prog + ")";
             }
             bool all_done = legacy_done; // reaproveitado abaixo pra cor da borda
             float tw1 = estimate_text_w_px(line1);
@@ -661,7 +666,7 @@ void render_hud(int win_w, int win_h) {
             float ix = x + (size - icon_size) * 0.5f + 2.0f;
             float iy = y + (size - icon_size) * 0.4f;
             if (g_tex_atlas != 0) {
-                BlockTex bt = block_tex(block);
+                BlockTex bt = block_icon_tex(block);
                 int wf = ((int)std::floor(g_day_time * 4.0f)) & 3;
                 if (bt.is_water) {
                     bt.top = (Tile)((int)Tile::Water0 + wf);
@@ -718,11 +723,24 @@ void render_hud(int win_w, int win_h) {
             }
         };
         
-        // Slots de recursos (1-6)
-        const Block resource_slots[] = {Block::Dirt, Block::Stone, Block::Iron, Block::Copper, Block::Coal, Block::Wood};
-        const int res_count = 6;
-        
-        // Slots de modulos (7+) - apenas desbloqueados
+        // ============= BARRA DE ELEMENTOS (com rolagem) + BARRA DE MODULOS =============
+        // Antes era UMA barra unica: 6 slots de recurso fixos + os modulos desbloqueados emendados
+        // no fim, com um separador. Dois problemas reais que o jogador reportou:
+        //  1) "No painel de elementos consta painel solar, remova" - o Painel Solar (1o modulo
+        //     desbloqueado) aparecia entre os materiais. Modulo nao e' elemento; e nao dava pra tirar
+        //     so' ele, porque Extrator/Estufa/etc. entrariam pelo mesmo caminho depois.
+        //  2) "existem muitos elementos no planeta e nao cabem todos ao mesmo tempo na tela" -
+        //     a barra mostrava 6 de 13 coletaveis; Gelo, Cristal, Metal, Componentes, Areia,
+        //     Organico e Liga Refinada nao tinham slot NENHUM (so' apareciam no inventario do menu B).
+        //
+        // Agora sao duas barras: elementos embaixo (rolagem, 6 visiveis de 13) e modulos numa fileira
+        // propria acima. Os modulos CONTINUAM selecionaveis - eles sao o unico caminho pra colocacao
+        // livre com botao direito (o menu B apenas enfileira num slot da base, nao mexe em
+        // g_selected), entao tira-los da tela removeria uma capacidade do jogo.
+        const int elem_visible = kElementVisibleSlots;   // 6 - mantem as teclas 1-6 como sempre foram
+        const int elem_total = kElementSlotCount;
+
+        // Slots de modulos - apenas desbloqueados
         std::vector<Block> module_slots;
         if (g_unlocks.solar_unlocked) module_slots.push_back(Block::SolarPanel);
         if (g_unlocks.water_extractor_unlocked) module_slots.push_back(Block::WaterExtractor);
@@ -731,84 +749,133 @@ void render_hud(int win_w, int win_h) {
         if (g_unlocks.co2_factory_unlocked) module_slots.push_back(Block::CO2Factory);
         if (g_unlocks.habitat_unlocked) module_slots.push_back(Block::Habitat);
         if (g_unlocks.terraformer_unlocked) module_slots.push_back(Block::TerraformerBeacon);
-        
+
         float slot_size = 48.0f;
         float slot_gap = 4.0f;
+        const float arrow_w = 22.0f;
 
-        // === HOTBAR UNIFICADA (centrada na base da tela) ===
-        // Pistola de Laser NAO entra aqui - fica num cluster de botoes proprio, separado dos
-        // materiais/modulos (ver render_weapon_cluster() logo abaixo, pedido do jogador: "a
-        // pistola ficou junto dos materiais quero um menu assim", referenciando o cluster de
-        // botoes redondos de arma/punho no canto da tela em jogos tipo Last Day on Earth).
-        int total_slots = res_count + (int)module_slots.size();
-        float total_w = total_slots * slot_size + (total_slots - 1) * slot_gap;
-        float hx = win_w * 0.5f - total_w * 0.5f;
+        // Geometria: elementos na base, modulos numa fileira acima. `bars_top` e' o topo do
+        // conjunto - a linha de item selecionado e os popups de coleta ancoram nele, senao ficariam
+        // por baixo da barra de modulos.
+        float elem_w = elem_visible * slot_size + (elem_visible - 1) * slot_gap + 2.0f * (arrow_w + slot_gap);
+        float hx = win_w * 0.5f - elem_w * 0.5f;
         float hy = win_h - slot_size - 12.0f;
-        
-        // Fundo da hotbar (painel escuro)
-        draw_hud_panel(hx - 8.0f, hy - 8.0f, total_w + 16.0f, slot_size + 16.0f, 0.55f, 0.60f, 0.75f);
-        
-        // Funcao auxiliar para verificar se mouse esta sobre um slot
-        auto mouse_over_slot = [&](float sx, float sy, float ss) -> bool {
-            return g_mouse_x >= sx && g_mouse_x <= sx + ss && 
-                   g_mouse_y >= sy && g_mouse_y <= sy + ss;
+        float mod_y = hy - slot_size - 14.0f;
+        bool has_mods = !module_slots.empty();
+        float bars_top = has_mods ? mod_y : hy;
+
+        auto mouse_over_rect = [&](float sx, float sy, float sw, float sh) -> bool {
+            return g_mouse_x >= sx && g_mouse_x <= sx + sw &&
+                   g_mouse_y >= sy && g_mouse_y <= sy + sh;
         };
-        
-        // Desenhar slots de recursos
-        for (int i = 0; i < res_count; ++i) {
-            float bx = hx + i * (slot_size + slot_gap);
-            
-            // Detectar clique do mouse no slot
-            if (g_mouse_left_clicked && mouse_over_slot(bx, hy, slot_size) && g_state == GameState::Playing) {
-                g_selected = resource_slots[i];
-                bounce_hotbar_slot(i);
-                g_mouse_left_clicked = false;
+        auto mouse_over_slot = [&](float sx, float sy, float ss) -> bool {
+            return mouse_over_rect(sx, sy, ss, ss);
+        };
+
+        // ---- BARRA DE MODULOS (fileira de cima) ----
+        if (has_mods) {
+            float mod_count = (float)module_slots.size();
+            float mod_w = mod_count * slot_size + (mod_count - 1.0f) * slot_gap;
+            float mx = win_w * 0.5f - mod_w * 0.5f;
+            draw_hud_panel(mx - 8.0f, mod_y - 8.0f, mod_w + 16.0f, slot_size + 16.0f, 0.45f, 0.70f, 0.55f);
+            for (int i = 0; i < (int)module_slots.size(); ++i) {
+                float bx = mx + (float)i * (slot_size + slot_gap);
+                if (g_mouse_left_clicked && mouse_over_slot(bx, mod_y, slot_size) && g_state == GameState::Playing) {
+                    g_selected = module_slots[i];
+                    bounce_hotbar_slot(elem_visible + i);
+                    g_mouse_left_clicked = false;
+                }
+                bool sel = (g_selected == module_slots[i]);
+                bool hovered = mouse_over_slot(bx, mod_y, slot_size);
+                CraftCost c = get_module_cost(module_slots[i]);
+                bool can_build = can_afford(c);
+                int key_num = -1;
+                if (i < 4) key_num = (i < 3) ? (7 + i) : 0;
+                if (hovered && !sel) {
+                    render_quad(bx - 2.0f, mod_y - 2.0f, slot_size + 4.0f, slot_size + 4.0f, 0.55f, 0.85f, 0.65f, 0.35f);
+                }
+                draw_minicraft_slot(bx, mod_y, slot_size, sel, module_slots[i], key_num, can_build ? 1 : 0);
             }
-            
-            bool sel = (g_selected == resource_slots[i]);
-            // Highlight se mouse esta sobre o slot
-            bool hovered = mouse_over_slot(bx, hy, slot_size);
-            int count = std::max(0, g_inventory[(int)resource_slots[i]]);
-            
-            // Desenhar com efeito de hover
-            if (hovered && !sel) {
-                render_quad(bx - 2.0f, hy - 2.0f, slot_size + 4.0f, slot_size + 4.0f, 0.55f, 0.65f, 0.85f, 0.35f);
-            }
-            draw_minicraft_slot(bx, hy, slot_size, sel, resource_slots[i], i + 1, count);
-        }
-        
-        // Separador visual entre recursos e modulos
-        if (!module_slots.empty()) {
-            float sep_x = hx + res_count * (slot_size + slot_gap) - slot_gap * 0.5f;
-            render_quad(sep_x - 1.0f, hy + 4.0f, 2.0f, slot_size - 8.0f, 0.40f, 0.40f, 0.45f, 0.80f);
-        }
-        
-        // Desenhar slots de modulos
-        for (int i = 0; i < (int)module_slots.size(); ++i) {
-            float bx = hx + (res_count + i) * (slot_size + slot_gap);
-            
-            // Detectar clique do mouse no slot de modulo
-            if (g_mouse_left_clicked && mouse_over_slot(bx, hy, slot_size) && g_state == GameState::Playing) {
-                g_selected = module_slots[i];
-                bounce_hotbar_slot(res_count + i);
-                g_mouse_left_clicked = false;
-            }
-            
-            bool sel = (g_selected == module_slots[i]);
-            bool hovered = mouse_over_slot(bx, hy, slot_size);
-            CraftCost c = get_module_cost(module_slots[i]);
-            bool can_build = can_afford(c);
-            int key_num = -1;
-            if (i < 4) key_num = (i < 3) ? (7 + i) : 0;
-            
-            // Desenhar com efeito de hover
-            if (hovered && !sel) {
-                render_quad(bx - 2.0f, hy - 2.0f, slot_size + 4.0f, slot_size + 4.0f, 0.55f, 0.65f, 0.85f, 0.35f);
-            }
-            draw_minicraft_slot(bx, hy, slot_size, sel, module_slots[i], key_num, can_build ? 1 : 0);
         }
 
-        // === CLUSTER DE ACAO (Ferramenta / Arma) - separado da hotbar de materiais/modulos =====
+        // ---- BARRA DE ELEMENTOS (fileira de baixo, com rolagem) ----
+        draw_hud_panel(hx - 8.0f, hy - 8.0f, elem_w + 16.0f, slot_size + 16.0f, 0.55f, 0.60f, 0.75f);
+
+        int scroll = hud_elements_scroll();
+        int max_scroll = elem_total - elem_visible;
+        if (max_scroll < 0) max_scroll = 0;
+
+        // Setas: existem porque rolagem so' por roda do mouse nao seria descobrivel - nao ha nenhum
+        // outro elemento de UI rolavel no jogo pro jogador inferir o gesto.
+        auto draw_arrow = [&](float ax, bool left, bool enabled) -> bool {
+            bool hovered = enabled && mouse_over_rect(ax, hy, arrow_w, slot_size);
+            float br = enabled ? (hovered ? 0.85f : 0.60f) : 0.28f;
+            render_quad(ax, hy, arrow_w, slot_size, 0.10f, 0.12f, 0.16f, 0.85f);
+            // Triangulo montado com quads de alturas crescentes (nao ha primitivo de triangulo 2D).
+            for (int k = 0; k < 8; ++k) {
+                float t = (float)k / 7.0f;
+                float hh = 2.0f + t * 14.0f;
+                float px = left ? (ax + 5.0f + (float)k * 1.5f) : (ax + arrow_w - 6.5f - (float)k * 1.5f);
+                render_quad(px, hy + slot_size * 0.5f - hh * 0.5f, 1.6f, hh, br, br, br * 1.05f, 0.95f);
+            }
+            return hovered;
+        };
+        bool can_left = scroll > 0;
+        bool can_right = scroll < max_scroll;
+        float first_slot_x = hx + arrow_w + slot_gap;
+        float right_arrow_x = first_slot_x + (float)elem_visible * (slot_size + slot_gap);
+        bool hl = draw_arrow(hx, true, can_left);
+        bool hr = draw_arrow(right_arrow_x, false, can_right);
+        if (g_mouse_left_clicked && g_state == GameState::Playing) {
+            if (hl && can_left) { hud_elements_scroll_by(-1); g_mouse_left_clicked = false; }
+            else if (hr && can_right) { hud_elements_scroll_by(1); g_mouse_left_clicked = false; }
+        }
+
+        for (int v = 0; v < elem_visible; ++v) {
+            int idx = scroll + v;
+            if (idx >= elem_total) break;
+            Block eb = kElementSlots[idx];
+            float bx = first_slot_x + (float)v * (slot_size + slot_gap);
+            if (g_mouse_left_clicked && mouse_over_slot(bx, hy, slot_size) && g_state == GameState::Playing) {
+                g_selected = eb;
+                bounce_hotbar_slot(v);
+                g_mouse_left_clicked = false;
+            }
+            bool sel = (g_selected == eb);
+            bool hovered = mouse_over_slot(bx, hy, slot_size);
+            int count = std::max(0, g_inventory[(int)eb]);
+            if (hovered && !sel) {
+                render_quad(bx - 2.0f, hy - 2.0f, slot_size + 4.0f, slot_size + 4.0f, 0.55f, 0.65f, 0.85f, 0.35f);
+            }
+            // O numero mostrado e' a POSICAO VISIVEL (1-6), nao o indice no vetor: as teclas 1-6
+            // selecionam sempre o que esta na tela, entao rolar muda o que elas fazem - o
+            // comportamento esperado de uma barra rolavel, e preserva a memoria muscular das teclas.
+            draw_minicraft_slot(bx, hy, slot_size, sel, eb, v + 1, count);
+        }
+
+        // Indicador de posicao - sem isso a rolagem nao tem pista nenhuma de que ha mais elementos.
+        {
+            char pos[48];
+            int last = scroll + elem_visible;
+            if (last > elem_total) last = elem_total;
+            snprintf(pos, sizeof(pos), "%d-%d de %d  (roda do mouse)", scroll + 1, last, elem_total);
+            float pw = estimate_text_w_px(pos);
+            draw_text(win_w * 0.5f - pw * 0.5f, hy + slot_size + 20.0f, pos,
+                      0.60f, 0.64f, 0.72f, 0.80f);
+        }
+
+        // Marca se o cursor esta sobre a barra de elementos - lido por process_input_events
+        // (win32_platform.cpp) pra a roda do mouse ROLAR A BARRA em vez de dar zoom na camera.
+        g_hud_pointer_over_elements =
+            mouse_over_rect(hx - 8.0f, hy - 8.0f, elem_w + 16.0f, slot_size + 16.0f) &&
+            g_state == GameState::Playing;
+
+        // === CLUSTER DE ACAO (Arma) - separado das barras de elementos/modulos =====
+        // ATENCAO: este bloco vive DEPOIS das duas barras e e' facil de perder de vista num splice
+        // grande em ui_hud.cpp - ele ja foi apagado uma vez junto com a reescrita da hotbar, e o
+        // efeito foi a arma ficar inselecionavel (a pistola continuava no inventario, mas nao havia
+        // mais botao pra equipar). Ele tambem e' o UNICO lugar que escreve g_hud_pointer_over_button,
+        // que impede o tiro de disparar ao clicar na HUD.
         // Pedido do jogador com screenshot de referencia (Last Day on Earth): botoes redondos
         // dedicados de "punho"/arma num canto da tela, nao misturados com os icones de
         // materiais. So' existe o icone da Pistola (nenhuma outra arma no jogo ainda) - o
@@ -888,6 +955,16 @@ void render_hud(int win_w, int win_h) {
                     g_mouse_left_clicked = false;
                 }
                 draw_action_button(cluster_cx, gun_cy, btn_radius, Block::LaserPistol, gun_selected);
+                // Nivel da arma sob o botao (Mk I/II/III) - o unico jeito de o jogador saber em que
+                // nivel esta sem abrir nada. Fica FORA do circulo, entao nao mexe no layout dele.
+                // Ouro quando o legado esta completo (recompensa cosmetica da missao 13).
+                {
+                    const char* lv = weapon_level_name();
+                    float lw = estimate_text_w_px(lv);
+                    bool legacy = objectives_legacy_complete();
+                    draw_text(cluster_cx - lw * 0.5f, gun_cy + btn_radius + 14.0f, lv,
+                              legacy ? 0.98f : 0.45f, legacy ? 0.85f : 0.92f, legacy ? 0.35f : 1.0f, 0.95f);
+                }
             }
         }
 
@@ -900,19 +977,68 @@ void render_hud(int win_w, int win_h) {
                 } else {
                     s += " - " + cost_string(get_module_cost(g_selected));
                 }
+            } else if (g_selected == Block::LaserPistol) {
+                // A contagem do inventario da pistola E' o nivel dela (ver weapon_level, creatures.h),
+                // entao "x2" leria como "duas pistolas". Mostra o nivel.
+                s += std::string(" ") + weapon_level_name();
             } else {
                 s += " x" + std::to_string(std::max(0, g_inventory[(int)g_selected]));
             }
             float tw = estimate_text_w_px(s);
-            // Fundo do texto
-            render_quad(win_w * 0.5f - tw * 0.5f - 8.0f, hy - 26.0f, tw + 16.0f, 18.0f, 0.0f, 0.0f, 0.0f, 0.65f);
-            draw_text(win_w * 0.5f - tw * 0.5f, hy - 12.0f, s, 0.95f, 0.95f, 0.95f, 0.95f);
+            // Ancorado em bars_top, nao em hy: com a barra de modulos ocupando a fileira de cima, um
+            // texto em hy-26 cairia POR BAIXO dela.
+            render_quad(win_w * 0.5f - tw * 0.5f - 8.0f, bars_top - 34.0f, tw + 16.0f, 18.0f, 0.0f, 0.0f, 0.0f, 0.65f);
+            draw_text(win_w * 0.5f - tw * 0.5f, bars_top - 20.0f, s, 0.95f, 0.95f, 0.95f, 0.95f);
+        }
+
+        // ============= FEEDBACK DE DANO NO JOGADOR =============
+        // Antes, ser atingido dava so' um toast e o HP caindo - o jogador nao sabia de onde veio.
+        // Aqui: seta na borda da tela apontando pra origem do golpe + pulso vermelho discreto nessa
+        // borda + o valor do dano. Nada de tela inteira vermelha (pedido explicito).
+        if (g_player_hit_timer > 0.0f) {
+            float t = clamp01(g_player_hit_timer / 0.55f);
+            // Direcao do golpe projetada no plano da camera: converte pra angulo de tela.
+            float cam_yaw = g_camera.yaw * (kPi / 180.0f);
+            float fx = -std::sin(cam_yaw), fz = -std::cos(cam_yaw);   // frente da camera no plano XZ
+            float rx = std::cos(cam_yaw), rz = -std::sin(cam_yaw);    // direita
+            float along = g_player_hit_dir_x * fx + g_player_hit_dir_z * fz;
+            float side   = g_player_hit_dir_x * rx + g_player_hit_dir_z * rz;
+            float ang = std::atan2(side, along);   // 0 = na frente, +/-pi = atras
+
+            float cx = win_w * 0.5f, cy = win_h * 0.5f;
+            float rad = std::min(win_w, win_h) * 0.30f;
+            float ix = cx + std::sin(ang) * rad;
+            float iy = cy - std::cos(ang) * rad;
+            // Cunha apontando pra fora, montada com quads de largura decrescente.
+            for (int k = 0; k < 6; ++k) {
+                float kt = (float)k / 5.0f;
+                float w = 26.0f * (1.0f - kt);
+                render_quad(ix - w * 0.5f, iy - 10.0f + kt * 12.0f, w, 3.0f,
+                            1.0f, 0.28f, 0.22f, t * 0.85f);
+            }
+            // Pulso na borda mais proxima da direcao - reforca "veio de tras" sem cobrir a tela.
+            float edge = t * 0.16f;
+            if (std::fabs(ang) > 2.0f) {          // atras
+                render_quad(0.0f, win_h - 10.0f, (float)win_w, 10.0f, 0.95f, 0.2f, 0.16f, edge);
+            } else if (ang > 0.6f) {              // direita
+                render_quad(win_w - 10.0f, 0.0f, 10.0f, (float)win_h, 0.95f, 0.2f, 0.16f, edge);
+            } else if (ang < -0.6f) {             // esquerda
+                render_quad(0.0f, 0.0f, 10.0f, (float)win_h, 0.95f, 0.2f, 0.16f, edge);
+            } else {                              // frente
+                render_quad(0.0f, 0.0f, (float)win_w, 10.0f, 0.95f, 0.2f, 0.16f, edge);
+            }
+            // Valor do dano recebido, junto da cunha.
+            char hb[24];
+            snprintf(hb, sizeof(hb), "-%d", g_player_hit_amount);
+            float hbw = estimate_text_w_px(hb);
+            draw_text(ix - hbw * 0.5f, iy + 22.0f, hb, 1.0f, 0.45f, 0.38f, t * 0.95f);
         }
 
         // Popups de coleta (feedback acima da hotbar)
         if (!g_collect_popups.empty()) {
             float base_x = win_w * 0.5f;
-            float base_y = hy - 42.0f;
+            // Idem: acima das DUAS barras (ver bars_top), nao so' da de elementos.
+            float base_y = bars_top - 50.0f;
             float line_h = 18.0f;
 
             int n = (int)g_collect_popups.size();
@@ -1102,4 +1228,27 @@ void render_hud(int win_w, int win_h) {
             kColorTextPrimary[0], kColorTextPrimary[1], kColorTextPrimary[2], alpha);
     }
 
+}
+
+// ============= Barra de elementos - ver comentario em ui_hud.h =============
+const Block kElementSlots[kElementSlotCount] = {
+    // Os 6 de sempre, na mesma ordem - a vista inicial (scroll 0) e' identica a barra antiga.
+    Block::Dirt, Block::Stone, Block::Iron, Block::Copper, Block::Coal, Block::Wood,
+    // Os que nao tinham slot nenhum na barra.
+    Block::Sand, Block::Ice, Block::Crystal, Block::Metal, Block::Components,
+    Block::Organic, Block::RefinedAlloy,
+};
+
+bool g_hud_pointer_over_elements = false;
+
+static int g_elem_scroll = 0;
+
+int hud_elements_scroll() { return g_elem_scroll; }
+
+void hud_elements_scroll_by(int delta) {
+    int max_scroll = kElementSlotCount - kElementVisibleSlots;
+    if (max_scroll < 0) max_scroll = 0;
+    g_elem_scroll += delta;
+    if (g_elem_scroll < 0) g_elem_scroll = 0;
+    if (g_elem_scroll > max_scroll) g_elem_scroll = max_scroll;
 }

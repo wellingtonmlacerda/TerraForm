@@ -1,5 +1,7 @@
 #pragma once
 
+#include "blocks.h"   // Block (kElementSlots - barra de elementos)
+
 // ============= HUD Rendering =============
 // Extracted verbatim from main.cpp's render_world() (original lines ~1707-2451): the
 // switch from 3D to 2D/ortho projection, the vignette effect, the lightmap/lights debug
@@ -38,3 +40,23 @@ float hud_right_panel_bottom_y();
 // Atualizado 1x por frame por render_hud(); os botoes sao estaticos, entao um frame de atraso e'
 // irrelevante.
 extern bool g_hud_pointer_over_button;
+
+// ============= Barra de elementos (rolagem) =============
+// FONTE UNICA da lista de elementos colecionaveis mostrada na barra de baixo. Antes a lista dos 6
+// recursos estava DUPLICADA em ui_hud.cpp (desenho) e main.cpp (teclas 1-6) - duas copias que
+// fatalmente discordariam, o footgun que este projeto ja documentou em outros lugares.
+//
+// 13 entradas: os 6 originais primeiro (a vista inicial fica identica a de antes, sem quebrar a
+// memoria muscular), depois os que nao tinham slot nenhum. Madeira/Organico so' aparecem depois da
+// terraformacao e Liga Refinada so' sai da Oficina - continuam listados, com contagem 0, porque um
+// slot que aparece e desaparece embaralharia as posicoes das teclas.
+extern const Block kElementSlots[];
+constexpr int kElementSlotCount = 13;
+constexpr int kElementVisibleSlots = 6;   // quantos cabem na tela de uma vez
+
+int  hud_elements_scroll();                 // indice do primeiro slot visivel
+void hud_elements_scroll_by(int delta);     // clampado em [0, total - visiveis]
+
+// True enquanto o cursor esta sobre a barra de elementos. Lido por process_input_events
+// (win32_platform.cpp) pra a roda do mouse rolar a barra em vez de dar zoom na camera.
+extern bool g_hud_pointer_over_elements;

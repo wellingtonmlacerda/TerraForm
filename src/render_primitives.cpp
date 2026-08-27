@@ -914,3 +914,52 @@ void render_box_oriented_3d(Vec3 center, float sx, float sy, float sz, float yaw
     rlVertex3f(ftl.x, ftl.y, ftl.z); rlVertex3f(btl.x, btl.y, btl.z);
     rlEnd();
 }
+
+// Ver comentario da declaracao em render_primitives.h.
+void render_box_tilted_3d(Vec3 center, float sx, float sy, float sz, float yaw_rad, float pitch_rad,
+                          float r, float g, float b, float a) {
+    float cy = std::cos(yaw_rad), sy_ = std::sin(yaw_rad);
+    float cp = std::cos(pitch_rad), sp = std::sin(pitch_rad);
+
+    // Base local: direita (nao afetada pelo pitch), frente e cima giradas pelo pitch em volta da
+    // direita. Mesma convencao de frente/direita de render_box_oriented_3d.
+    Vec3 right = { cy, 0.0f, -sy_ };
+    Vec3 fwd   = { sy_ * cp, sp, cy * cp };
+    Vec3 up    = { -sy_ * sp, cp, -cy * sp };
+
+    float hx = sx * 0.5f, hy = sy * 0.5f, hz = sz * 0.5f;
+    float cr = r, cg = g, cb = b;
+    apply_frame_fog(center.x, center.y, center.z, cr, cg, cb);
+
+    auto V = [&](float f, float rr, float u) {
+        return Vec3{ center.x + fwd.x * (hz * f) + right.x * (hx * rr) + up.x * (hy * u),
+                     center.y + fwd.y * (hz * f) + right.y * (hx * rr) + up.y * (hy * u),
+                     center.z + fwd.z * (hz * f) + right.z * (hx * rr) + up.z * (hy * u) };
+    };
+    Vec3 ftr = V( 1.0f,  1.0f,  1.0f), ftl = V( 1.0f, -1.0f,  1.0f);
+    Vec3 fbr = V( 1.0f,  1.0f, -1.0f), fbl = V( 1.0f, -1.0f, -1.0f);
+    Vec3 btr = V(-1.0f,  1.0f,  1.0f), btl = V(-1.0f, -1.0f,  1.0f);
+    Vec3 bbr = V(-1.0f,  1.0f, -1.0f), bbl = V(-1.0f, -1.0f, -1.0f);
+
+    const float kTop = 1.00f, kSide = 0.72f, kDark = 0.52f;
+    rlBegin(RL_QUADS);
+    rlColor4f(cr * kTop, cg * kTop, cb * kTop, a);
+    rlVertex3f(btl.x, btl.y, btl.z); rlVertex3f(btr.x, btr.y, btr.z);
+    rlVertex3f(ftr.x, ftr.y, ftr.z); rlVertex3f(ftl.x, ftl.y, ftl.z);
+    rlColor4f(cr * kDark, cg * kDark, cb * kDark, a);
+    rlVertex3f(fbl.x, fbl.y, fbl.z); rlVertex3f(fbr.x, fbr.y, fbr.z);
+    rlVertex3f(bbr.x, bbr.y, bbr.z); rlVertex3f(bbl.x, bbl.y, bbl.z);
+    rlColor4f(cr * kSide, cg * kSide, cb * kSide, a);
+    rlVertex3f(fbl.x, fbl.y, fbl.z); rlVertex3f(fbr.x, fbr.y, fbr.z);
+    rlVertex3f(ftr.x, ftr.y, ftr.z); rlVertex3f(ftl.x, ftl.y, ftl.z);
+    rlColor4f(cr * kDark, cg * kDark, cb * kDark, a);
+    rlVertex3f(bbr.x, bbr.y, bbr.z); rlVertex3f(bbl.x, bbl.y, bbl.z);
+    rlVertex3f(btl.x, btl.y, btl.z); rlVertex3f(btr.x, btr.y, btr.z);
+    rlColor4f(cr * kSide, cg * kSide, cb * kSide, a);
+    rlVertex3f(fbr.x, fbr.y, fbr.z); rlVertex3f(bbr.x, bbr.y, bbr.z);
+    rlVertex3f(btr.x, btr.y, btr.z); rlVertex3f(ftr.x, ftr.y, ftr.z);
+    rlColor4f(cr * kSide * 0.88f, cg * kSide * 0.88f, cb * kSide * 0.88f, a);
+    rlVertex3f(bbl.x, bbl.y, bbl.z); rlVertex3f(fbl.x, fbl.y, fbl.z);
+    rlVertex3f(ftl.x, ftl.y, ftl.z); rlVertex3f(btl.x, btl.y, btl.z);
+    rlEnd();
+}

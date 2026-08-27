@@ -9,7 +9,8 @@
 #include "modules_building.h"   // ConstructionJob, g_construction_queue, generate_base
 #include "inventory_crafting.h" // g_inventory, g_selected
 #include "objectives.h"         // reset_objectives (new game)
-#include "creatures.h"          // notify_player_respawned
+#include "creatures.h"          // notify_player_respawned, reset_creature_state (novo jogo)
+#include "minimap.h"            // reset_poi_discovery (novo jogo)
 #include "interiors.h"          // interior_ceiling_at (o unico teto do jogo)
 
 #include <algorithm>
@@ -268,6 +269,10 @@ void spawn_player_new_game(World& world) {
     // generate_base() ja marca o painel solar inicial como construido (notify_module_built)
     // - se a ordem fosse invertida, esse reset apagaria a marcacao que acabou de ser feita.
     reset_objectives();
+    // Mesma razao de ordem que reset_objectives: as missoes de combate/exploracao leem estes
+    // contadores, e generate_base() logo abaixo ja marca coisas como construidas.
+    reset_creature_state();
+    reset_poi_discovery();
 
     // Generate base first (sets g_base_x and g_base_y)
     generate_base(world);

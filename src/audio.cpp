@@ -375,6 +375,158 @@ Sound synth_jetpack() {
 
 } // namespace
 
+// ============= Combate com criaturas - ver comentarios em audio.h =============
+namespace {
+
+Sound g_hit_light_sound{};
+Sound g_hit_armored_sound{};
+Sound g_death_sound{};
+Sound g_windup_sound{};
+Sound g_attack_hit_sound{};
+
+// Impacto em corpo mole: estalo curto de ruido com corpo medio - "thwack" seco.
+Sound synth_hit_light() {
+    const float duration = 0.13f;
+    unsigned int n = (unsigned int)(duration * (float)kSampleRate);
+    Wave w = make_wave(n);
+    int16_t* s = (int16_t*)w.data;
+    uint32_t seed = 777u;
+    for (unsigned int i = 0; i < n; ++i) {
+        float t = (float)i / (float)kSampleRate;
+        float p = (float)i / (float)n;
+        seed = seed * 1664525u + 1013904223u;
+        float noise = ((float)(seed & 0xFFFFu) / 32768.0f) - 1.0f;
+        float body = std::sin(kPi2 * (340.0f - p * 190.0f) * t);
+        float env = std::pow(1.0f - p, 3.0f);
+        s[i] = to_sample((noise * 0.5f + body * 0.55f) * env * 9500.0f);
+    }
+    Sound snd = LoadSoundFromWave(w);
+    UnloadWave(w);
+    return snd;
+}
+
+// Impacto em carapaca: "clank" metalico - dois parciais inarmonicos + ruido filtrado, com cauda
+// mais longa que o impacto mole. E' o que faz o jogador OUVIR que aquele bicho e' blindado.
+Sound synth_hit_armored() {
+    const float duration = 0.26f;
+    unsigned int n = (unsigned int)(duration * (float)kSampleRate);
+    Wave w = make_wave(n);
+    int16_t* s = (int16_t*)w.data;
+    uint32_t seed = 4242u;
+    float lp = 0.0f;
+    for (unsigned int i = 0; i < n; ++i) {
+        float t = (float)i / (float)kSampleRate;
+        float p = (float)i / (float)n;
+        seed = seed * 1664525u + 1013904223u;
+        float noise = ((float)(seed & 0xFFFFu) / 32768.0f) - 1.0f;
+        lp += (noise - lp) * 0.35f;
+        // Parciais inarmonicos = timbre de chapa, nao de tom musical.
+        float m1 = std::sin(kPi2 * 620.0f * t);
+        float m2 = std::sin(kPi2 * 947.0f * t) * 0.6f;
+        float thud = std::sin(kPi2 * (150.0f - p * 60.0f) * t) * 0.7f;
+        float ring = std::pow(1.0f - p, 1.5f);
+        float click = std::pow(1.0f - p, 9.0f);
+        s[i] = to_sample(((m1 + m2) * 0.34f * ring + thud * ring + lp * 0.6f * click) * 8200.0f);
+    }
+    Sound snd = LoadSoundFromWave(w);
+    UnloadWave(w);
+    return snd;
+}
+
+// Morte: guincho descendente + colapso grave. O ponto e' o jogador ter certeza de que MATOU, em
+// vez de a criatura simplesmente desaparecer.
+Sound synth_creature_death() {
+    const float duration = 0.55f;
+    unsigned int n = (unsigned int)(duration * (float)kSampleRate);
+    Wave w = make_wave(n);
+    int16_t* s = (int16_t*)w.data;
+    uint32_t seed = 31337u;
+    for (unsigned int i = 0; i < n; ++i) {
+        float t = (float)i / (float)kSampleRate;
+        float p = (float)i / (float)n;
+        seed = seed * 1664525u + 1013904223u;
+        float noise = ((float)(seed & 0xFFFFu) / 32768.0f) - 1.0f;
+        // Guincho: frequencia caindo rapido (glissando descendente).
+        float squeal = std::sin(kPi2 * (760.0f * std::pow(1.0f - p, 1.6f) + 90.0f) * t);
+        float collapse = std::sin(kPi2 * (110.0f - p * 55.0f) * t);
+        float env = std::pow(1.0f - p, 1.8f);
+        s[i] = to_sample((squeal * 0.45f + collapse * 0.5f + noise * 0.22f) * env * 8800.0f);
+    }
+    Sound snd = LoadSoundFromWave(w);
+    UnloadWave(w);
+    return snd;
+}
+
+// Telegrafe do golpe: inspiracao/rosnado curto SUBINDO - sinal de "vai vir algo", que e' o que da
+// ao jogador a chance de sair de perto.
+Sound synth_creature_windup() {
+    const float duration = 0.30f;
+    unsigned int n = (unsigned int)(duration * (float)kSampleRate);
+    Wave w = make_wave(n);
+    int16_t* s = (int16_t*)w.data;
+    uint32_t seed = 909u;
+    float lp = 0.0f;
+    for (unsigned int i = 0; i < n; ++i) {
+        float t = (float)i / (float)kSampleRate;
+        float p = (float)i / (float)n;
+        seed = seed * 1664525u + 1013904223u;
+        float noise = ((float)(seed & 0xFFFFu) / 32768.0f) - 1.0f;
+        lp += (noise - lp) * 0.16f;
+        float growl = std::sin(kPi2 * (95.0f + p * 130.0f) * t);
+        float env = std::sin(kPi * p);   // sobe e desce: le como "carregando"
+        s[i] = to_sample((growl * 0.6f + lp * 0.7f) * env * 7200.0f);
+    }
+    Sound snd = LoadSoundFromWave(w);
+    UnloadWave(w);
+    return snd;
+}
+
+// Criatura acertou o jogador: impacto abafado e grave (soco no traje) + estalo do capacete.
+Sound synth_attack_hit() {
+    const float duration = 0.24f;
+    unsigned int n = (unsigned int)(duration * (float)kSampleRate);
+    Wave w = make_wave(n);
+    int16_t* s = (int16_t*)w.data;
+    uint32_t seed = 5150u;
+    float lp = 0.0f;
+    for (unsigned int i = 0; i < n; ++i) {
+        float t = (float)i / (float)kSampleRate;
+        float p = (float)i / (float)n;
+        seed = seed * 1664525u + 1013904223u;
+        float noise = ((float)(seed & 0xFFFFu) / 32768.0f) - 1.0f;
+        lp += (noise - lp) * 0.22f;
+        float thud = std::sin(kPi2 * (120.0f - p * 45.0f) * t);
+        float clack = std::sin(kPi2 * 430.0f * t) * std::pow(1.0f - p, 12.0f);
+        float env = std::pow(1.0f - p, 2.4f);
+        s[i] = to_sample((thud * 0.85f + lp * 0.45f + clack * 0.4f) * env * 10500.0f);
+    }
+    Sound snd = LoadSoundFromWave(w);
+    UnloadWave(w);
+    return snd;
+}
+
+// Toca com jitter de pitch e volume. Sem isso, dez tiros seguidos no mesmo bicho soam como um
+// loop travado - foi pedido explicitamente evitar repeticao.
+void play_varied(Sound& snd, float pitch, float vol_mul) {
+    if (!g_audio_ready || !g_sfx_enabled) return;
+    static uint32_t seed = 12345u;
+    seed = seed * 1664525u + 1013904223u;
+    float j1 = ((float)((seed >> 8) & 0xFFFFu) / 65535.0f) - 0.5f;   // -0.5..0.5
+    seed = seed * 1664525u + 1013904223u;
+    float j2 = ((float)((seed >> 8) & 0xFFFFu) / 65535.0f) - 0.5f;
+    SetSoundPitch(snd, std::max(0.25f, pitch * (1.0f + j1 * 0.14f)));
+    SetSoundVolume(snd, g_sfx_volume * vol_mul * (1.0f + j2 * 0.16f));
+    PlaySound(snd);
+}
+
+} // namespace
+
+void play_creature_hit_light_sound(float pitch)   { play_varied(g_hit_light_sound, pitch, 0.85f); }
+void play_creature_hit_armored_sound(float pitch) { play_varied(g_hit_armored_sound, pitch, 0.95f); }
+void play_creature_death_sound(float pitch)       { play_varied(g_death_sound, pitch, 1.0f); }
+void play_creature_windup_sound(float pitch)      { play_varied(g_windup_sound, pitch, 0.7f); }
+void play_creature_attack_hit_sound(float pitch)  { play_varied(g_attack_hit_sound, pitch, 1.0f); }
+
 void init_game_audio() {
     InitAudioDevice();
     if (!IsAudioDeviceReady()) return;
@@ -383,6 +535,11 @@ void init_game_audio() {
     g_laser_impact_sound = synth_laser_impact();
     g_meteor_impact_sound = synth_meteor_impact();
     g_steam_hiss_sound = synth_steam_hiss();
+    g_hit_light_sound = synth_hit_light();
+    g_hit_armored_sound = synth_hit_armored();
+    g_death_sound = synth_creature_death();
+    g_windup_sound = synth_creature_windup();
+    g_attack_hit_sound = synth_attack_hit();
     g_ambient_sound = synth_ambient();
     g_jetpack_sound = synth_jetpack();
     g_audio_ready = true;
@@ -494,3 +651,4 @@ void play_steam_hiss_sound() {
     SetSoundVolume(g_steam_hiss_sound, g_sfx_volume);
     PlaySound(g_steam_hiss_sound);
 }
+

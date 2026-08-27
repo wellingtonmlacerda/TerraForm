@@ -29,21 +29,13 @@
 //      - so a later redesign of the construction/placement system (Fase 2 of the plan) has
 //      real functions to call/test instead of inline capturing lambdas.
 //
-// render_build_menu()/update_build_menu_input()/update_mining_and_placement() lost "static"
-// by construction: they are defined here and called from render_world()/update_game() in
-// main.cpp, which is a different translation unit - same pattern as every other
-// render_*()/update_*() entry point declared in the other extracted headers.
-void render_build_menu(int win_w, int win_h);
-
-// Returns true if g_show_build_menu was open and this frame's input was fully consumed by
-// the build menu's own navigation (mirrors the original code's unconditional "return;" at
-// the end of the "if (g_show_build_menu) { ... }" block) - update_game() should itself
-// return immediately when this is true, exactly as before. Returns false when the build
-// menu isn't open (g_show_build_menu is false), meaning update_game() should fall through
-// to its own Playing-state input code below. Takes no parameters: grep-confirmed the
-// original block never reads dt/hwnd, only g_show_build_menu/g_build_menu_selection/
-// key_down() and the module/construction-queue/build-slot globals.
-bool update_build_menu_input();
+// render_build_menu()/update_build_menu_input() foram MOVIDAS para ui_build_menu.h/.cpp (menu de
+// construcao reescrito: categorias + cards + painel de detalhes). Quem chamava as duas continua
+// chamando os mesmos nomes, so' muda o include.
+//
+// update_mining_and_placement() perdeu "static" por construcao: e' definida aqui e chamada de
+// update_game() em main.cpp, outra unidade de traducao - mesmo padrao de todo outro
+// render_*()/update_*() declarado nos headers extraidos.
 
 // Mouse targeting (mining/placement raycast), mining action, item pickup, placement action
 // and particle simulation for one frame. Dropped the HWND parameter (raylib migration): the

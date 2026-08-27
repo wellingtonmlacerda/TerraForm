@@ -11,6 +11,7 @@
 #include "textures.h"
 #include "font.h"
 #include "audio.h"
+#include "ui_hud.h"             // g_hud_pointer_over_elements / hud_elements_scroll_by (roda na barra)
 #include "lighting.h"
 #include "terrain_mesh.h"
 
@@ -60,7 +61,12 @@ static void process_input_events() {
     // 0.005*120=0.6) to preserve the same real-world zoom/distance change per wheel notch.
     float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) {
-        if (g_minimap.world_map_open) {
+        // Cursor sobre a barra de elementos: a roda ROLA A BARRA (13 elementos, 6 visiveis) em vez
+        // de dar zoom na camera. Precisa vir antes dos outros dois ramos, senao a roda seria sempre
+        // consumida pelo zoom e a rolagem so' funcionaria pelas setas.
+        if (g_hud_pointer_over_elements) {
+            hud_elements_scroll_by(wheel > 0.0f ? -1 : 1);
+        } else if (g_minimap.world_map_open) {
             float zoom_delta = wheel * 0.12f;
             g_minimap.world_zoom += zoom_delta;
             g_minimap.world_zoom = std::clamp(g_minimap.world_zoom,

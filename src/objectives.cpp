@@ -3,9 +3,12 @@
 #include "game_state.h"
 #include "modules_building.h"    // Module, g_modules (UpgradeThreeModules)
 #include "inventory_crafting.h"  // g_inventory (BankRefinedAlloy)
+#include "creatures.h"           // creature_kills / weapon_level / weapon_level_name (combate + arma)
+#include "minimap.h"             // poi_ever_found (missao de exploracao)
 
 #include <algorithm>
 #include <array>
+#include <string>
 
 // g_terraform/g_victory/g_phase are still owned by main.cpp (already non-static there for
 // other extracted modules, e.g. world.cpp) - same "own local extern" pattern used
@@ -15,19 +18,19 @@ extern bool g_victory;
 extern TerraPhase g_phase;
 
 static const ObjectiveDef kObjectives[kObjectiveCount] = {
-    {"Gerar energia", "Construa um Painel Solar ou Gerador de Energia.", Block::SolarPanel},
-    {"Extrair agua", "Construa um Extrator de Agua.", Block::WaterExtractor},
-    {"Gerar oxigenio", "Construa um Gerador de Oxigenio.", Block::OxygenGenerator},
-    {"Cultivar comida", "Construa uma Estufa.", Block::Greenhouse},
-    {"Aquecer o planeta", "Construa uma Fabrica de CO2.", Block::CO2Factory},
-    {"Descongelar Marte", "Aguarde a temperatura subir ate a fase Degelo.", Block::Air},
-    {"Abrigar a colonia", "Construa um Habitat.", Block::Habitat},
-    {"Verdejar o planeta", "Construa um Terraformer Beacon.", Block::TerraformerBeacon},
-    {"Tornar Marte habitavel", "Aguarde temperatura e atmosfera alcancarem a fase Habitavel.", Block::Air},
-    {"Terraformar Marte", "Continue espalhando vegetacao ate completar a terraformacao.", Block::Air},
+    {"Restabelecer energia", "Construa um Painel Solar ou Gerador de Energia.", Block::SolarPanel},
+    {"Encontrar agua", "Construa um Extrator de Agua.", Block::WaterExtractor},
+    {"Respirar", "Construa um Gerador de Oxigenio.", Block::OxygenGenerator},
+    {"Sinais na poeira", "Use o scanner (T) e va ate um destroco no mapa.", Block::Air},
+    {"Primeiro contato", "Derrote uma criatura alienigena com a pistola de laser.", Block::Air},
+    {"Semear a colonia", "Construa uma Estufa e mantenha-a produzindo (precisa de agua e energia).", Block::Greenhouse},
+    {"Nucleo Laser Mk II", "Construa uma Oficina e aprimore a pistola (tecla U perto dela).", Block::Workshop},
+    {"Proteger a colonia", "Construa um Habitat e elimine 5 criaturas.", Block::Habitat},
+    {"Despertar o planeta", "Construa a Fabrica de CO2 e o Terraformer Beacon, e alcance a fase Degelo.", Block::CO2Factory},
+    {"Terraformar Marte", "Alcance a fase Terraformado com 6 tipos de modulo construidos.", Block::Air},
     // Trilho de legado (pos-vitoria) - ver comentario em objectives.h.
-    {"Estabelecer uma oficina", "Construa uma Oficina.", Block::Workshop},
-    {"Aprimorar a colonia", "Aprimore (tecla R) pelo menos 3 modulos diferentes.", Block::Air},
+    {"Arsenal completo", "Aprimore a pistola ate o Mk III (tecla U perto da Oficina).", Block::Air},
+    {"Aprimorar a colonia", "Aprimore (tecla R) pelo menos 3 modulos.", Block::Air},
     {"Refinar um legado", "Produza 20 unidades de Liga Refinada (tecla G, mirando uma Oficina).", Block::Air},
 };
 
@@ -77,30 +80,53 @@ void objectives_load_state(int current_index, const bool* ever_built, int ever_b
     g_legacy_celebration = 0.0f;
 }
 
+// Quantos TIPOS DISTINTOS de modulo o jogador ja construiu ao menos uma vez. Deriva de g_ever_built,
+// que e' monotonico e ja salvo (v7) - de proposito NAO usa g_modules.size(): aquele vetor e'
+// reconstruido a partir dos tiles do mundo a cada load e DIMINUI se um modulo for destruido, o que
+// faria a missao final poder "desconcluir".
+static int distinct_modules_built() {
+    static const Block kCountable[] = {
+        Block::SolarPanel, Block::EnergyGenerator, Block::WaterExtractor, Block::OxygenGenerator,
+        Block::Greenhouse, Block::CO2Factory, Block::Habitat, Block::Workshop,
+        Block::TerraformerBeacon,
+    };
+    int n = 0;
+    for (Block b : kCountable) {
+        if (g_ever_built[(size_t)b]) ++n;
+    }
+    return n;
+}
+
+static constexpr int kProtectColonyKills = 5;
+static constexpr int kTerraformModuleTypes = 6;
+static constexpr int kLegacyAlloyTarget = 20;
+
 static bool check_objective(int index) {
     switch ((ObjectiveId)index) {
         case ObjectiveId::BuildFirstPower:
             return g_ever_built[(size_t)Block::SolarPanel] || g_ever_built[(size_t)Block::EnergyGenerator];
-        case ObjectiveId::BuildWaterExtractor:
-            return g_ever_built[(size_t)Block::WaterExtractor];
-        case ObjectiveId::BuildOxygenGenerator:
-            return g_ever_built[(size_t)Block::OxygenGenerator];
-        case ObjectiveId::BuildGreenhouse:
-            return g_ever_built[(size_t)Block::Greenhouse];
-        case ObjectiveId::BuildCO2Factory:
-            return g_ever_built[(size_t)Block::CO2Factory];
-        case ObjectiveId::ReachThawing:
-            return (int)g_phase >= (int)TerraPhase::Thawing;
-        case ObjectiveId::BuildHabitat:
-            return g_ever_built[(size_t)Block::Habitat];
-        case ObjectiveId::BuildTerraformerBeacon:
-            return g_ever_built[(size_t)Block::TerraformerBeacon];
-        case ObjectiveId::ReachHabitable:
-            return (int)g_phase >= (int)TerraPhase::Habitable;
+        case ObjectiveId::BuildWaterExtractor:   return g_ever_built[(size_t)Block::WaterExtractor];
+        case ObjectiveId::BuildOxygenGenerator:  return g_ever_built[(size_t)Block::OxygenGenerator];
+        // Exploracao: latch de minimap.cpp (nunca volta a false).
+        case ObjectiveId::FindWreck:             return poi_ever_found();
+        // Combate: abate de verdade, nao posse de arma. creature_kills() e' monotonico.
+        case ObjectiveId::FirstHunt:             return creature_kills() >= 1;
+        // Construir E usar: g_greenhouse_output > 0 exige estufa nao-danificada COM agua e energia.
+        // Como a missao trava ao concluir, uma estufa que depois pare por falta de agua nao desfaz.
+        case ObjectiveId::GreenhouseRunning:
+            return g_ever_built[(size_t)Block::Greenhouse] && g_greenhouse_output > 0.0f;
+        case ObjectiveId::WeaponMkII:
+            return g_ever_built[(size_t)Block::Workshop] && weapon_level() >= 2;
+        case ObjectiveId::ProtectColony:
+            return g_ever_built[(size_t)Block::Habitat] && creature_kills() >= kProtectColonyKills;
+        case ObjectiveId::AwakenPlanet:
+            return g_ever_built[(size_t)Block::CO2Factory] &&
+                   g_ever_built[(size_t)Block::TerraformerBeacon] &&
+                   (int)g_phase >= (int)TerraPhase::Thawing;
         case ObjectiveId::TerraformComplete:
-            return g_phase == TerraPhase::Terraformed;
-        case ObjectiveId::BuildWorkshop:
-            return g_ever_built[(size_t)Block::Workshop];
+            return g_phase == TerraPhase::Terraformed &&
+                   distinct_modules_built() >= kTerraformModuleTypes;
+        case ObjectiveId::WeaponMkIII:           return weapon_level() >= kWeaponMaxLevel;
         case ObjectiveId::UpgradeThreeModules: {
             int upgraded = 0;
             for (const Module& m : g_modules) {
@@ -109,9 +135,38 @@ static bool check_objective(int index) {
             return upgraded >= 3;
         }
         case ObjectiveId::BankRefinedAlloy:
-            return g_inventory[(size_t)Block::RefinedAlloy] >= 20;
+            return g_inventory[(size_t)Block::RefinedAlloy] >= kLegacyAlloyTarget;
     }
     return false;
+}
+
+// Ver o comentario da declaracao em objectives.h. String vazia = missao sem contagem.
+std::string objective_progress_string(int index) {
+    auto frac = [](int have, int need) {
+        return std::to_string(std::min(have, need)) + "/" + std::to_string(need);
+    };
+    switch ((ObjectiveId)index) {
+        case ObjectiveId::FirstHunt:
+            return frac(creature_kills(), 1);
+        case ObjectiveId::ProtectColony:
+            return frac(creature_kills(), kProtectColonyKills);
+        case ObjectiveId::WeaponMkII:
+        case ObjectiveId::WeaponMkIII:
+            return std::string(weapon_level_name());
+        case ObjectiveId::TerraformComplete:
+            return frac(distinct_modules_built(), kTerraformModuleTypes) + " tipos";
+        case ObjectiveId::UpgradeThreeModules: {
+            int upgraded = 0;
+            for (const Module& m : g_modules) {
+                if (m.upgraded) ++upgraded;
+            }
+            return frac(upgraded, 3);
+        }
+        case ObjectiveId::BankRefinedAlloy:
+            return frac(std::max(0, g_inventory[(int)Block::RefinedAlloy]), kLegacyAlloyTarget);
+        default:
+            return std::string();
+    }
 }
 
 void update_objectives(float dt) {

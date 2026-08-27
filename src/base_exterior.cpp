@@ -70,9 +70,14 @@ const ExtPiece kExterior[] = {
     { ExtShape::Mast, -26, -20,   0.45f, 10.0f, 0, 0, 0, 0, kNoDoor, 0.50f },
 
     // ---- PAINEIS SOLARES: fazenda de energia, so' desenho (pernas finas nao viram casca) ----
-    { ExtShape::Solar, -22, -26,  3.5f, 2.2f, 14.0f,  90.0f, 0, 0, kNoDoor, 0.0f },
-    { ExtShape::Solar,  22,  26,  3.5f, 2.2f, 14.0f,  90.0f, 0, 0, kNoDoor, 0.0f },
-    { ExtShape::Solar, -30,  10,  3.5f, 2.2f, 14.0f,   0.0f, 0, 0, kNoDoor, 0.0f },
+    // OS 3 PAINEIS SOLARES DECORATIVOS FORAM REMOVIDOS. Eram geometria pura (14 tiles de
+    // comprimento cada) que produzia ZERO energia - base_annex_contains ate os pula. O jogador
+    // abria o menu, construia um Painel Solar e nao conseguia dizer o que havia mudado, porque a
+    // base ja estava cercada de paineis: "esta confuso, pois ao redor da base ja tem paineis
+    // solares! E o que muda quando construo um?".
+    // Agora o UNICO painel solar que existe no mundo e' um que o jogador construiu, e ele aparece
+    // num slot do anel que estava visivelmente vazio. Custo: a base perde 3 pecas de decoracao -
+    // continua com tambores, domos, tubos, tanques, mastros e escotilhas.
 };
 const int kExteriorCount = (int)(sizeof(kExterior) / sizeof(kExterior[0]));
 

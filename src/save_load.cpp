@@ -11,6 +11,8 @@
 #include "game_state.h"          // UnlockProgress (type)
 #include "config_types.h"        // MiniMapRuntime, MapWaypoint (types of g_minimap)
 #include "objectives.h"          // kObjectiveCount, objectives_ever_built_snapshot/objectives_current_index/objectives_load_state
+#include "creatures.h"           // creature_kills/creature_stats_load (bloco v11)
+#include "minimap.h"             // poi_ever_found/poi_discovery_load (bloco v11)
 
 #include <algorithm>
 #include <array>
@@ -77,7 +79,7 @@ static constexpr float kEnergyMax = 500.0f;
 // jogo ("Continuar", ui_menu.cpp) nunca funcionou, e os blocos "if (version >= 6..10)" mais abaixo
 // eram codigo morto inalcancavel. Uma constante unica pros dois lados torna impossivel os limites
 // se separarem de novo.
-static constexpr uint32_t kSaveVersion = 10;
+static constexpr uint32_t kSaveVersion = 11;
 
 bool save_game(const char* path) {
     if (!g_world) return false;
@@ -85,7 +87,7 @@ bool save_game(const char* path) {
     if (!f) return false;
 
     const char magic[4] = {'T', 'F', '3', 'D'};  // Atualizado para 3D
-    uint32_t version = kSaveVersion;  // v10 - adds ice/crystal/metal/organic/components unlock totals
+    uint32_t version = kSaveVersion;  // v11 - adds creature kills + wreck-discovery latch (missoes)
     uint32_t w = (uint32_t)g_world->w;
     uint32_t h = (uint32_t)g_world->h;
     uint32_t seed = (uint32_t)g_world->seed;
@@ -233,6 +235,15 @@ bool save_game(const char* path) {
     f.write((const char*)&g_unlocks.total_metal, sizeof(g_unlocks.total_metal));
     f.write((const char*)&g_unlocks.total_organic, sizeof(g_unlocks.total_organic));
     f.write((const char*)&g_unlocks.total_components, sizeof(g_unlocks.total_components));
+
+    // Version 11: progresso das missoes de combate e exploracao. As duas condicoes precisam ser
+    // MONOTONICAS e sobreviver a um reload, senao o marco atual poderia desconcluir.
+    // O NIVEL DA ARMA nao entra aqui de proposito: ele mora em g_inventory[LaserPistol] (ver
+    // weapon_level em creatures.h), e o inventario ja e' salvo inteiro logo no comeco deste arquivo.
+    uint32_t creature_kills_v = (uint32_t)creature_kills();
+    f.write((const char*)&creature_kills_v, sizeof(creature_kills_v));
+    uint8_t poi_found_v = poi_ever_found() ? 1 : 0;
+    f.write((const char*)&poi_found_v, sizeof(poi_found_v));
 
     return (bool)f;
 }
@@ -611,6 +622,21 @@ bool load_game(const char* path) {
         f.read((char*)&g_unlocks.total_metal, sizeof(g_unlocks.total_metal));
         f.read((char*)&g_unlocks.total_organic, sizeof(g_unlocks.total_organic));
         f.read((char*)&g_unlocks.total_components, sizeof(g_unlocks.total_components));
+    }
+
+    // Version 11: abates e descoberta de destroco. Saves <11 ficam em 0/false - "ainda nao cacou,
+    // ainda nao explorou", mesmo fallback honesto da v7. As duas funcoes tambem limpam g_creatures
+    // (criaturas sao efemeras, nunca salvas - padrao de g_meteors).
+    if (version >= 11) {
+        uint32_t creature_kills_v = 0;
+        f.read((char*)&creature_kills_v, sizeof(creature_kills_v));
+        uint8_t poi_found_v = 0;
+        f.read((char*)&poi_found_v, sizeof(poi_found_v));
+        creature_stats_load((int)creature_kills_v);
+        poi_discovery_load(poi_found_v != 0);
+    } else {
+        creature_stats_load(0);
+        poi_discovery_load(false);
     }
 
     return true;

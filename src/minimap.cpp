@@ -51,10 +51,65 @@ static float g_scan_cooldown = 0.0f;
 // Atualizar fog of war baseado na posicao do jogador. Recebe dt agora (nao recebia antes)
 // so pra decrementar o cooldown do scanner (g_scan_cooldown, abaixo) - reaproveita a unica
 // chamada incondicional 1x/frame ja existente em vez de criar outro ponto de update.
+
+// ============= DESCOBERTA DE DESTROCO (missao de exploracao) =============
+// Latch persistente: true depois que o jogador chegou perto de um sitio de destroco (POI) de verdade.
+//
+// Por que aqui e nao em objectives.cpp: os POIs NAO existem como lista depois de World::gen() - o
+// vetor poi_centers e local do bloco de geracao e morre com ele, e nao ha flag de "visitado" em
+// lugar nenhum. Sobram apenas os TILES. Este arquivo ja roda 1x por frame (update_fog_of_war) e ja
+// tem g_world, g_player, is_base_structure, base_annex_contains e interior_at - exatamente o
+// predicado triplo que scan_for_points_of_interest() usa pra distinguir POI da propria base. Colocar
+// a deteccao em objectives.cpp exigiria replicar todos esses externs.
+static bool g_poi_found = false;
+
+bool poi_ever_found() { return g_poi_found; }
+void poi_discovery_load(bool found) { g_poi_found = found; }
+void reset_poi_discovery() { g_poi_found = false; }
+
+namespace {
+
+// Varredura local barata (11x11) em volta do jogador. Roda so' enquanto o latch esta desligado, ou
+// seja: para de custar qualquer coisa assim que a missao de exploracao e' cumprida.
+void poi_discovery_tick() {
+    if (g_poi_found || !g_world) return;
+
+    constexpr int kNearRadius = 5;
+    const float base_excl = 2.0f * kDomeWallRadius;   // mesmo raio de exclusao do scanner
+    const float base_excl2 = base_excl * base_excl;
+
+    int px = (int)g_player.pos.x;
+    int py = (int)g_player.pos.y;
+    for (int dy = -kNearRadius; dy <= kNearRadius; ++dy) {
+        for (int dx = -kNearRadius; dx <= kNearRadius; ++dx) {
+            int x = px + dx, y = py + dy;
+            if (!g_world->in_bounds(x, y)) continue;
+            Block b = g_world->get(x, y);
+            if (!is_base_structure(b)) continue;
+            // As 3 exclusoes do scanner: o disco da base, a pegada do exterior (kExterior) e o
+            // distrito de interiores. Sem elas, o jogador cumpriria a missao parado na propria base -
+            // o piso e a casca da instalacao tambem sao is_base_structure.
+            float bx = (float)(x - g_base_x), by = (float)(y - g_base_y);
+            if (bx * bx + by * by <= base_excl2) continue;
+            if (base_annex_contains(bx, by)) continue;
+            if (interior_at((float)x, (float)y) >= 0) continue;
+            g_poi_found = true;
+            add_alert("Destroco encontrado - registrado no diario da colonia.", 0.55f, 0.85f, 1.0f);
+            return;
+        }
+    }
+}
+
+} // namespace
+
 void update_fog_of_war(float dt) {
     if (!g_world) return;
 
     if (g_scan_cooldown > 0.0f) g_scan_cooldown = std::max(0.0f, g_scan_cooldown - dt);
+
+    // Deteccao de destroco (missao de exploracao) - antes do early-return de interior abaixo por
+    // clareza: ela tem a propria exclusao do distrito, nao depende dessa.
+    poi_discovery_tick();
 
     // Dentro de uma sala do distrito de interiores o mapa NAO revela nada: o distrito e' "backstage"
     // (fica a ~1200 tiles da base, ver interiors.h), e revelar aquele canto deixaria uma mancha
@@ -297,8 +352,11 @@ static void get_minimap_color(int x, int y, float& r, float& g, float& b) {
     // Recursos especiais
     if (tile == Block::Crystal) { r = 0.8f; g = 0.3f; b = 0.9f; return; }
     if (tile == Block::Coal) { r = 0.2f; g = 0.2f; b = 0.2f; return; }
-    if (tile == Block::Iron) { r = 0.7f; g = 0.5f; b = 0.4f; return; }
-    if (tile == Block::Copper) { r = 0.9f; g = 0.6f; b = 0.3f; return; }
+    // Ferro e cobre eram (0.7,0.5,0.4) e (0.9,0.6,0.3) - dois laranja-marrom quase iguais, e no
+    // minimapa (1 pixel por tile) ficavam identicos: "no mapa aparece metal e ferro, mas nao tem
+    // cobre". Agora ferro e' cinza-marrom dessaturado e cobre e' laranja saturado.
+    if (tile == Block::Iron) { r = 0.52f; g = 0.42f; b = 0.38f; return; }
+    if (tile == Block::Copper) { r = 1.0f; g = 0.48f; b = 0.12f; return; }
 
     // Terreno
     switch (ground) {

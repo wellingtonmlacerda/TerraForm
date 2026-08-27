@@ -33,3 +33,17 @@ void play_meteor_impact_sound();
 // Tocado quando a agua apaga um tile de lava (ver update_water_flow(), world.cpp) - chiado de vapor.
 // Respeita sfx_enabled/sfx_volume.
 void play_steam_hiss_sound();
+
+// ============= Combate com criaturas =============
+// Sintetizados como todo o resto deste modulo (nao ha arquivo WAV no projeto). `pitch` vem de
+// EnemyArchetype::sound_pitch: grave nos pesados (0.48 no Alpha), agudo nos leves (1.35 no
+// Crawler) - e' o mesmo som de base reaproveitado, com pitch/volume variados, em vez de dezenas
+// de arquivos. Cada chamada aplica ainda um jitter pequeno pra o tiro repetido nao soar identico.
+//
+// Antes NAO existia som nenhum ao acertar criatura nem ao ser atingido por ela - o jogador so'
+// via o numero de HP mudar.
+void play_creature_hit_light_sound(float pitch);    // impacto em corpo mole (Crawler/Stalker)
+void play_creature_hit_armored_sound(float pitch);  // impacto em carapaca (Brute/Alpha)
+void play_creature_death_sound(float pitch);        // morte
+void play_creature_windup_sound(float pitch);       // telegrafe: criatura iniciando o golpe
+void play_creature_attack_hit_sound(float pitch);   // criatura ACERTOU o jogador

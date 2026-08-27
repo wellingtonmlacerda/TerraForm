@@ -68,8 +68,8 @@ void block_color(Block b, int y, int world_h, float& r, float& g, float& bl, flo
             break;
         }
         case Block::Coal:   r = 0.12f; g = 0.12f; bl = 0.14f; break;  // Mais escuro
-        case Block::Iron:   r = 0.70f; g = 0.55f; bl = 0.40f; break;  // Mais contrastante
-        case Block::Copper: r = 0.90f; g = 0.50f; bl = 0.20f; break;  // Laranja vivo
+        case Block::Iron:   r = 0.58f; g = 0.40f; bl = 0.34f; break;  // Rust escuro (hematita)
+        case Block::Copper: r = 1.00f; g = 0.52f; bl = 0.16f; break;  // Laranja-cobre vivo
         case Block::Crystal: r = 0.70f; g = 0.25f; bl = 1.0f; break;  // Roxo brilhante
         case Block::Metal: r = 0.75f; g = 0.78f; bl = 0.82f; break;  // Metal mais claro
         // Antes era verde puro (0.30,0.75,0.18) - lia como grama de Terra num planeta que
@@ -367,15 +367,50 @@ static void tile_generate_all(std::vector<uint8_t>& atlas) {
     tile_noise(atlas, Tile::CoalOre, c8(110, 114, 120), 20, 0x50u);
     tile_add_specks(atlas, Tile::CoalOre, c8(18, 18, 20), 38, 0x501u);
 
-    tile_noise(atlas, Tile::IronOre, c8(110, 114, 120), 20, 0x51u);
-    tile_add_specks(atlas, Tile::IronOre, c8(202, 128, 70), 32, 0x511u);
+    // FERRO x COBRE: as duas artes eram a MESMA rocha cinza com pintas laranja quase iguais -
+    // ferro (202,128,70) e cobre (235,135,55). Diferenca de ~33 no vermelho e 7 no verde: no tamanho
+    // de um bloco, com luz e neblina, sao indistinguiveis. Com o ferro agora 13x mais comum, tudo que
+    // era laranja passou a ler como ferro e o jogador reportou "o cobre agora e' ferro".
+    //
+    // Ferro = hematita: pintas rust ESCURAS e desaturadas sobre rocha cinza.
+    tile_noise(atlas, Tile::IronOre, c8(108, 112, 118), 20, 0x51u);
+    tile_add_specks(atlas, Tile::IronOre, c8(148, 90, 72), 34, 0x511u);
 
-    tile_noise(atlas, Tile::CopperOre, c8(110, 114, 120), 20, 0x52u);
-    tile_add_specks(atlas, Tile::CopperOre, c8(235, 135, 55), 32, 0x521u);
+    // Cobre = cobre nativo + PATINA. As duas passadas sao o que torna o cobre inconfundivel: o
+    // laranja-cobre vivo por si so' ainda brigaria com o rust do ferro, mas verde-malaquita nao
+    // aparece em nenhum outro minerio do jogo, entao o olho separa na hora.
+    tile_noise(atlas, Tile::CopperOre, c8(112, 116, 122), 20, 0x52u);
+    tile_add_specks(atlas, Tile::CopperOre, c8(246, 132, 44), 30, 0x521u);
+    tile_add_specks(atlas, Tile::CopperOre, c8(52, 168, 118), 18, 0x522u);
 
     tile_noise(atlas, Tile::CrystalOre, c8(110, 114, 120), 20, 0x53u);
     tile_add_specks(atlas, Tile::CrystalOre, c8(200, 80, 255), 26, 0x531u);
 
+    // MINERIO DE METAL BRUTO: matriz de rocha ESCURA (mais escura que a dos outros minerios, pra
+    // ler como rocha rica em metal) com veios/laminas metalicas irregulares por cima, em 2 tons.
+    // Antes Block::Metal reusava Tile::Metal - a chapa clara lisa (200,205,212, ruido 10) do piso da
+    // base - e no chao aquilo parecia placa industrial polida em vez de minerio.
+    tile_noise_2layer(atlas, Tile::MetalOre, c8(82, 84, 90), 16, 20, 0x63u);
+    // Veios: tracos curtos em direcoes alternadas (nao specks redondos como os outros minerios -
+    // metal nativo aparece em laminas/filetes, e e' isso que da a leitura de "bruto").
+    {
+        uint32_t s = 0x631u;
+        auto rnd = [&s]() { s = s * 1664525u + 1013904223u; return (s >> 16) & 0x7fffu; };
+        for (int v = 0; v < 22; ++v) {
+            int vx = (int)(rnd() % (uint32_t)kAtlasTileSize);
+            int vy = (int)(rnd() % (uint32_t)kAtlasTileSize);
+            int len = 2 + (int)(rnd() % 3u);
+            bool horiz = (rnd() & 1u) != 0;
+            bool bright = (rnd() & 1u) != 0;
+            Color8 c = bright ? c8(196, 202, 210) : c8(140, 146, 155);
+            for (int k = 0; k < len; ++k) {
+                int px = horiz ? vx + k : vx;
+                int py = horiz ? vy : vy + k;
+                if (px < 0 || px >= kAtlasTileSize || py < 0 || py >= kAtlasTileSize) continue;
+                tile_set_px(atlas, Tile::MetalOre, px, py, c);
+            }
+        }
+    }
     tile_noise(atlas, Tile::Metal, c8(200, 205, 212), 10, 0x60u);
     tile_noise(atlas, Tile::Organic, c8(90, 200, 80), 26, 0x61u);
     tile_noise(atlas, Tile::Components, c8(40, 130, 55), 20, 0x62u);
@@ -483,6 +518,121 @@ static void tile_generate_all(std::vector<uint8_t>& atlas) {
             tile_set_px(atlas, t, x, (x + i) % (kAtlasTileSize - 2) + 1, c8(0, 0, 0, a));
         }
     }
+    // ============= ARTE DE ITEM (icone de inventario) =============
+    // Ver o comentario do bloco ItemIron..ItemPistol em textures.h pro motivo. Resumo: os 5
+    // minerios compartilham a mesma matriz de rocha cinza (correto no mundo - minerio esta dentro
+    // da pedra), e como icone de 26px isso virava 5 quadrados iguais. Aqui cada item ganha uma
+    // SILHUETA propria com fundo transparente.
+    {
+        // Fundo vazado. tile_fill com alpha 0 - o atlas e' RGBA, entao da' pra ter silhueta de
+        // verdade em vez de um quadrado cheio.
+        auto clear_tile = [&](Tile t) { tile_fill(atlas, t, c8(0, 0, 0, 0)); };
+
+        // Escreve uma linha horizontal de pixels (x0..x1 inclusive) numa linha y.
+        auto row = [&](Tile t, int y, int x0, int x1, Color8 c) {
+            for (int x = x0; x <= x1; ++x) tile_set_px(atlas, t, x, y, c);
+        };
+
+        // LINGOTE: a forma compartilhada por Ferro/Cobre/Metal. Face de topo mais estreita que a
+        // base (perspectiva de lingote fundido), realce em cima, sombra embaixo, contorno escuro.
+        // Compartilhar a forma e variar a COR e' de proposito: os tres sao metais em barra, e o que
+        // precisa diferenciar e' a cor, que era exatamente o que faltava.
+        auto ingot = [&](Tile t, Color8 base, Color8 hi, Color8 lo, Color8 edge) {
+            clear_tile(t);
+            row(t, 4,  6, 10, edge);
+            row(t, 5,  5, 11, hi);
+            row(t, 6,  4, 12, hi);
+            row(t, 7,  3, 13, base);
+            row(t, 8,  2, 14, base);
+            row(t, 9,  2, 14, base);
+            row(t, 10, 2, 14, lo);
+            row(t, 11, 3, 13, lo);
+            row(t, 12, 5, 11, edge);
+            // Contorno lateral.
+            for (int y = 5; y <= 11; ++y) {
+                tile_set_px(atlas, t, 2, y, edge);
+                tile_set_px(atlas, t, 14, y, edge);
+            }
+            // Brilho especular pequeno na face de topo.
+            tile_set_px(atlas, t, 6, 6, c8(255, 255, 255, 210));
+            tile_set_px(atlas, t, 7, 6, c8(255, 255, 255, 150));
+        };
+
+        ingot(Tile::ItemIron,   c8(126, 82, 66), c8(168, 112, 90), c8(88, 56, 44), c8(44, 28, 22));
+        ingot(Tile::ItemCopper, c8(214, 118, 46), c8(246, 164, 84), c8(150, 76, 26), c8(70, 34, 12));
+        ingot(Tile::ItemMetal,  c8(178, 186, 198), c8(226, 232, 240), c8(120, 128, 140), c8(52, 56, 64));
+
+        // CARVAO: massa angular preta com facetas mais claras - nada de barra, pra nao confundir
+        // com os metais.
+        {
+            Tile t = Tile::ItemCoal;
+            clear_tile(t);
+            Color8 body = c8(38, 38, 44), face = c8(74, 74, 84), edge = c8(14, 14, 18);
+            row(t, 3,  6, 9,  edge);
+            row(t, 4,  5, 10, body);
+            row(t, 5,  4, 11, body);
+            row(t, 6,  3, 12, body);
+            row(t, 7,  3, 12, body);
+            row(t, 8,  2, 13, body);
+            row(t, 9,  3, 12, body);
+            row(t, 10, 4, 11, body);
+            row(t, 11, 5, 10, edge);
+            row(t, 12, 7, 9,  edge);
+            // Facetas: dois planos claros dao volume a uma massa que seria uma bolha preta.
+            row(t, 5,  6, 8,  face);
+            row(t, 6,  5, 7,  face);
+            tile_set_px(atlas, t, 10, 8, face);
+            tile_set_px(atlas, t, 11, 8, face);
+        }
+
+        // CRISTAL: gema facetada em losango - a unica silhueta pontuda do conjunto.
+        {
+            Tile t = Tile::ItemCrystal;
+            clear_tile(t);
+            Color8 body = c8(150, 72, 214), lit = c8(214, 158, 250), edge = c8(66, 26, 104);
+            row(t, 2,  7, 8,  edge);
+            row(t, 3,  6, 9,  body);
+            row(t, 4,  5, 10, body);
+            row(t, 5,  4, 11, body);
+            row(t, 6,  3, 12, body);
+            row(t, 7,  3, 12, body);
+            row(t, 8,  4, 11, body);
+            row(t, 9,  5, 10, body);
+            row(t, 10, 6, 9,  body);
+            row(t, 11, 7, 8,  edge);
+            // Faceta iluminada na metade esquerda + reflexo.
+            row(t, 4,  6, 7,  lit);
+            row(t, 5,  5, 7,  lit);
+            row(t, 6,  4, 6,  lit);
+            row(t, 7,  4, 5,  lit);
+            tile_set_px(atlas, t, 9, 5, c8(255, 255, 255, 220));
+        }
+
+        // PISTOLA: a arma usava a arte de ANTENA tintada de ciano (Tile::Antenna) - o icone nao
+        // parecia nem de longe uma pistola. Silhueta lateral simples: ferrolho, cano, cabo e um
+        // ponto de emissor aceso na ponta.
+        {
+            Tile t = Tile::ItemPistol;
+            clear_tile(t);
+            Color8 body = c8(88, 96, 110), dark = c8(44, 50, 60), lit = c8(120, 232, 255);
+            row(t, 4,  3, 11, dark);
+            row(t, 5,  3, 12, body);   // ferrolho
+            row(t, 6,  3, 12, body);
+            row(t, 7,  3, 6,  body);   // corpo
+            row(t, 8,  4, 6,  body);
+            row(t, 9,  4, 6,  body);   // cabo
+            row(t, 10, 4, 7,  body);
+            row(t, 11, 5, 7,  dark);
+            // Guarda-mato.
+            tile_set_px(atlas, t, 7, 8, dark);
+            tile_set_px(atlas, t, 8, 8, dark);
+            // Celula de energia e emissor acesos - o que faz ler como arma de energia.
+            row(t, 5,  8, 10, lit);
+            tile_set_px(atlas, t, 13, 5, lit);
+            tile_set_px(atlas, t, 13, 6, lit);
+            tile_set_px(atlas, t, 12, 5, c8(220, 250, 255, 255));
+        }
+    }
 }
 
 void init_texture_atlas() {
@@ -526,7 +676,7 @@ BlockTex block_tex(Block b) {
         case Block::Iron:  t = {Tile::IronOre, Tile::IronOre, Tile::IronOre, false, false, false}; break;
         case Block::Copper:t = {Tile::CopperOre, Tile::CopperOre, Tile::CopperOre, false, false, false}; break;
         case Block::Crystal:t = {Tile::CrystalOre, Tile::CrystalOre, Tile::CrystalOre, false, false, false}; break;
-        case Block::Metal: t = {Tile::Metal, Tile::Metal, Tile::Metal, false, false, false}; break;
+        case Block::Metal: t = {Tile::MetalOre, Tile::MetalOre, Tile::MetalOre, false, false, false}; break;
         case Block::Organic:t = {Tile::Organic, Tile::Organic, Tile::Organic, false, false, false}; break;
         case Block::Components:t = {Tile::Components, Tile::Components, Tile::Components, false, false, false}; break;
 
@@ -579,5 +729,30 @@ BlockTex block_tex(Block b) {
 
         default: t = {Tile::Missing, Tile::Missing, Tile::Missing, false, false, false}; break;
     }
+    return t;
+}
+
+// Ver comentario da declaracao em textures.h.
+BlockTex block_icon_tex(Block b) {
+    BlockTex t = block_tex(b);   // herda is_water/transparent/uses_tint e serve de fallback
+    Tile item = Tile::Missing;
+    switch (b) {
+        case Block::Iron:        item = Tile::ItemIron; break;
+        case Block::Copper:      item = Tile::ItemCopper; break;
+        case Block::Metal:       item = Tile::ItemMetal; break;
+        case Block::Coal:        item = Tile::ItemCoal; break;
+        case Block::Crystal:     item = Tile::ItemCrystal; break;
+        case Block::LaserPistol: item = Tile::ItemPistol; break;
+        // Liga Refinada reusa o lingote de Metal com o tint dourado que block_color ja da' -
+        // mesma tecnica de antes, mas agora sobre uma forma de lingote em vez de chapa lisa.
+        case Block::RefinedAlloy: item = Tile::ItemMetal; break;
+        default: return t;
+    }
+    t.top = item;
+    t.side = item;
+    t.bottom = item;
+    // A silhueta ja traz a cor: tintar de novo (o caso de LaserPistol/RefinedAlloy em block_tex)
+    // lavaria o desenho. Excecao: Liga Refinada, cujo dourado E' o que a distingue do Metal.
+    t.uses_tint = (b == Block::RefinedAlloy);
     return t;
 }

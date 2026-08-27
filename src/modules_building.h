@@ -1,5 +1,7 @@
 #pragma once
 
+#include "inventory_crafting.h"   // CraftCost, ResourceReq (catalogo/desdobramentos)
+
 #include "blocks.h"
 
 #include <string>
@@ -111,6 +113,11 @@ bool try_upgrade_module(int tx, int ty);
 // nao houver Workshop ali, estiver danificado, faltar recurso, ou ainda em cooldown.
 bool try_refine_at_workshop(int tx, int ty);
 
+// Upgrade da Pistola de Laser (tecla U). Passe o alvo do raycast quando houver (has_aim); se nao
+// houver - o caso normal com a arma equipada, ver o comentario da definicao - cai para a Oficina mais
+// proxima do jogador. Cobra get_weapon_upgrade_cost e chama weapon_level_up (creatures.h).
+bool try_upgrade_weapon(int aim_x, int aim_y, bool has_aim);
+
 // Fabricacao "de campo" da Pistola de Laser (tecla P, main.cpp, funciona em qualquer lugar,
 // sem exigir Oficina) - gasta get_weapon_cost(), seta g_inventory[Block::LaserPistol]=1
 // (posse, nao lote). Retorna false sem custar nada se faltar recurso ou o jogador ja
@@ -208,3 +215,47 @@ void base_spawn_tile(int& out_x, int& out_z);
 // visual das plantas: pedido explicito do jogador - "quero que de fato seja visivel que sao plantas
 // e que estao produzindo alimento e oxigenio para a base".
 extern float g_greenhouse_output;
+
+// ============= Catalogo de construcoes (fonte unica) =============
+// A lista de modulos construiveis estava DUPLICADA em building_interaction.cpp: uma copia em
+// render_build_menu() e outra em update_build_menu_input(), com um comentario admitindo que a
+// segunda "matches render order". Duas listas manuais que teriam divergido na primeira mudanca -
+// e a UI ficava sendo dona de um dado de gameplay. Agora ha uma so, aqui na camada de dados.
+enum class BuildCategory {
+    Energy = 0,
+    LifeSupport,
+    Infrastructure,
+    Terraforming,
+};
+constexpr int kBuildCategoryCount = 4;
+
+struct Buildable {
+    Block type;
+    BuildCategory category;
+};
+
+// Ordenada POR CATEGORIA: o menu navega "proximo/anterior dentro da categoria" so' andando no
+// indice, sem precisar de um mapa auxiliar.
+extern const Buildable kBuildables[];
+extern const int kBuildableCount;
+
+const char* build_category_name(BuildCategory c);
+
+// Requisito de DESBLOQUEIO desdobrado por recurso (o que ja foi coletado na vida vs o exigido),
+// para a UI desenhar linha por linha em vez de imprimir unlock_progress_string(). Mesma razao de
+// module_cost_breakdown (inventory_crafting.h). Devolve quantas linhas preencheu.
+int module_unlock_breakdown(Block module_type, ResourceReq* out, int max_out);
+
+// ============= Balanco liquido da colonia (por minuto) =============
+// Taxa REAL medida, nao estimada a partir de tabelas: update_modules soma e subtrai as reservas em
+// ~12 lugares espalhados (producao por modulo, custo de energia de cada um, dreno constante,
+// recarga do jogador na base, penalidade de respawn...). Somar isso a mao numa formula paralela
+// divergiria na primeira mudanca. Aqui o valor sai de um snapshot no inicio do tick e a diferenca
+// no fim, convertida pra minuto e suavizada.
+//
+// Existe porque o jogador nao conseguia perceber o que muda ao construir: um Painel Solar da
+// +3 Energia/min, e olhar "Energia 98/500" nao mostra isso. O balanco mostra.
+extern float g_rate_energy;   // +/- por minuto
+extern float g_rate_water;
+extern float g_rate_oxygen;
+extern float g_rate_food;

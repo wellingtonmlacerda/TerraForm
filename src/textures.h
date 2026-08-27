@@ -76,8 +76,29 @@ enum class Tile : int {
     // Idem Lava0..3: acrescentados no FIM. O resto do codigo faz aritmetica de indice sobre
     // Water0..3 / Crack1..8 / Lava0..3 - mexer na ordem quebraria aquilo. O atlas tem 256 slots
     // e menos de 60 em uso, sobra de sobra.
+    // Idem: acrescentado no FIM. Block::Metal usava Tile::Metal - a MESMA chapa clara e lisa
+    // (c8(200,205,212), ruido 10) do piso da base, da mobilia e da Liga Refinada. Como minerio
+    // bruto no chao aquilo lia como placa industrial polida, nao como veio de metal na rocha
+    // (reclamacao do jogador: "queria que parecesse algo mais bruto"). Tile proprio em vez de
+    // mexer em Tile::Metal, que continua servindo o material REFINADO.
     BaseFloor,    // Chapa metalica clara do piso interno da base
     PlanterBed,   // Terra revirada em sulcos, com brotos, para os canteiros da estufa
+    MetalOre,     // Rocha escura com veios metalicos irregulares - minerio bruto
+
+    // ---- ARTE DE ITEM (icone de inventario) ----
+    // Acrescentados no FIM, como todo o resto. Existem porque o ICONE de inventario nao pode ser a
+    // mesma arte do BLOCO no mundo: Carvao, Ferro, Cobre, Cristal e Metal sao todos "rocha cinza
+    // com pintas de cor" (proposital no mundo - minerio esta dentro da pedra), e num icone de 26px
+    // isso da CINCO quadrados cinza indistinguiveis na barra e no menu de construcao. Reclamacao
+    // direta do jogador: "a imagem dos itens nao combina com os que coleto".
+    // Sao silhuetas com FUNDO TRANSPARENTE (o atlas e' RGBA) - so' usadas por block_icon_tex(),
+    // nunca como face de bloco, onde um fundo vazado ficaria errado.
+    ItemIron,
+    ItemCopper,
+    ItemMetal,
+    ItemCoal,
+    ItemCrystal,
+    ItemPistol,
 };
 
 struct UvRect {
@@ -117,3 +138,15 @@ BlockTex block_tex(Block b);
 
 // ============= Block Colors =============
 void block_color(Block b, int y, int world_h, float& r, float& g, float& bl, float& a);
+
+// ============= Arte de ICONE (inventario/UI) =============
+// Igual a block_tex() para quase tudo, MAS devolve a silhueta de item (ItemIron..ItemPistol) pros
+// blocos cujo icone nao pode ser a arte do mundo. Motivo medido, nao estetico: Carvao/Ferro/Cobre/
+// Cristal/Metal compartilham a matriz de rocha cinza (correto num bloco - o minerio esta dentro da
+// pedra) e num icone de 26px isso dava cinco quadrados cinza iguais na hotbar e no menu de
+// construcao. A Pistola de Laser usava a arte de ANTENA.
+//
+// Funcao separada em vez de mudar block_tex(): a arte de item tem fundo TRANSPARENTE e como face de
+// cubo no mundo ficaria vazada. Quem desenha no mundo continua em block_tex(), quem desenha icone
+// usa esta.
+BlockTex block_icon_tex(Block b);

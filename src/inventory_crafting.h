@@ -68,6 +68,26 @@ CraftCost get_refine_cost();
 // Metal/Componentes/Cristal.
 CraftCost get_weapon_cost();
 
+// Custo do upgrade da Pistola de Laser por nivel destino (2 ou 3) - ver try_upgrade_weapon
+// (modules_building.h) e kWeaponTiers (creatures.cpp).
+CraftCost get_weapon_upgrade_cost(int to_level);
+
 bool can_afford(const CraftCost& c);
 void spend_cost(const CraftCost& c);
 void refund_cost(const CraftCost& c);
+
+// ============= Desdobramento de custo por recurso =============
+// Uma linha por recurso exigido, com o que o jogador TEM e o que PRECISA. Existe porque a UI do
+// menu de construcao precisa desenhar "check Ferro 30/30" / "x Cobre 12/25" com marca e cor por
+// linha - antes ela recebia a string ja montada por module_cost_string() e so' podia imprimir
+// "Ferro:30(!)", que era metade do motivo do menu parecer tela de debug. A UI nao deve saber
+// QUAIS campos existem em CraftCost; ela so' percorre as linhas.
+struct ResourceReq {
+    Block block;      // pra desenhar o icone (block_tex)
+    const char* name;
+    int have;
+    int need;
+};
+
+// Preenche `out` com as linhas do custo de construcao (apenas campos > 0) e devolve quantas.
+int module_cost_breakdown(Block module_type, ResourceReq* out, int max_out);

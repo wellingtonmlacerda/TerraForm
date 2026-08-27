@@ -8,6 +8,8 @@
 #include "noise.h"              // lerp
 #include "player_physics.h"     // g_player
 #include "objectives.h"         // notify_module_built, update_objectives
+#include "minimap.h"            // remove_nearest_waypoint (limpa o marcador da obra concluida)
+#include "creatures.h"          // weapon_level/weapon_level_up (upgrade da pistola, tecla U)
 #include "items_particles.h"    // spawn_block_particles (efeito visual do upgrade)
 #include "base_interior.h"     // kFurniture/base_interior_stamp_furniture (mobilia com fisica)
 #include "interiors.h"         // kInteriors (alcovas de porta) / build_interiors (distrito)
@@ -91,6 +93,7 @@ std::vector<Module> g_modules;
 
 // Ver comentarios das declaracoes em modules_building.h.
 float g_greenhouse_output = 0.0f;
+float g_rate_energy = 0.0f, g_rate_water = 0.0f, g_rate_oxygen = 0.0f, g_rate_food = 0.0f;
 
 bool base_annex_contains(float dx, float dy) {
     // "Anexo" = a pegada das pecas do exterior. Le a MESMA tabela kExterior[] que desenha o modelo e
@@ -393,6 +396,34 @@ void generate_base(World& world) {
     // propria garantia, nao uma lista de excecoes.
 
     base_interior_stamp_furniture(world);
+    // ===== INSTRUMENTACAO TEMPORARIA (REMOVER) - inspecao visual =====
+    {
+        int cx0 = g_base_x, cz0 = surface + 34;
+        int16_t h0 = world.height_at(cx0, cz0);
+        for (int dz = -32; dz <= 32; ++dz)
+            for (int dx = -32; dx <= 32; ++dx) {
+                int tx = cx0 + dx, tz = cz0 + dz;
+                if (!world.in_bounds(tx, tz)) continue;
+                world.set_height(tx, tz, h0);
+                world.set_ground(tx, tz, Block::Sand);
+                world.set(tx, tz, Block::Air);
+            }
+        // Um de cada tipo em arco na frente do spawn.
+        for (int i = 0; i < kEnemyTypeCount; ++i) {
+            Creature c;
+            float a = -0.6f + (float)i * 0.40f;
+            // 26 tiles: alem do maior detect_range (Alpha, 24), entao nao perseguem e ficam posando.
+            c.x = (float)cx0 + std::cos(a) * 26.0f;
+            c.z = (float)cz0 + std::sin(a) * 26.0f;
+            c.y = (float)h0 * kHeightScale;
+            c.type = (EnemyType)i;
+            const EnemyArchetype& ar = enemy_archetype(c.type);
+            c.hp = ar.max_hp; c.max_hp = ar.max_hp;
+            c.yaw = 3.14159f * 1.5f;
+            c.wander_target_x = c.x; c.wander_target_z = c.z;
+            g_creatures.push_back(c);
+        }
+    }
     world.rebuild_surface_cache();
 }
 
@@ -628,6 +659,71 @@ bool try_refine_at_workshop(int tx, int ty) {
     return false;
 }
 
+// ============= UPGRADE DA PISTOLA DE LASER (tecla U) =============
+// Espelha try_upgrade_module/try_refine_at_workshop: localizar -> guarda de "ja no maximo" ->
+// get_*_cost -> can_afford (alerta + return, SEM gastar) -> spend_cost -> mutar -> add_alert ->
+// particulas.
+//
+// Por que aceita DUAS vias de encontrar a Oficina em vez de so' o alvo mirado: com a pistola
+// equipada, update_mining_and_placement (building_interaction.cpp) retorna no ramo de disparo ANTES
+// de rodar o raycast, e g_has_target acabou de ser limpo no topo da funcao. Ou seja, um handler
+// "if (u_pressed && g_has_target && ...)" seria SEMPRE FALSO com a arma na mao - e o jogador
+// naturalmente vai querer melhorar a arma justamente estando com ela equipada. Entao: usa o alvo
+// mirado quando ele e' uma Oficina (arma desequipada, comportamento identico ao R/G), e senao cai
+// para a Oficina nao-danificada mais proxima dentro de kWeaponUpgradeRange do jogador.
+static constexpr float kWeaponUpgradeRange = 6.0f;
+
+bool try_upgrade_weapon(int aim_x, int aim_y, bool has_aim) {
+    if (g_inventory[(int)Block::LaserPistol] <= 0) {
+        set_toast("Voce nao tem a Pistola de Laser.", 1.5f);
+        return false;
+    }
+    if (weapon_level() >= kWeaponMaxLevel) {
+        set_toast("Pistola de Laser ja esta no Mk III (nivel maximo).", 1.5f);
+        return false;
+    }
+
+    Module* shop = nullptr;
+    if (has_aim) {
+        for (Module& m : g_modules) {
+            if (m.x == aim_x && m.y == aim_y && m.type == Block::Workshop) { shop = &m; break; }
+        }
+    }
+    if (!shop) {
+        float best2 = kWeaponUpgradeRange * kWeaponUpgradeRange;
+        for (Module& m : g_modules) {
+            if (m.type != Block::Workshop) continue;
+            float dx = tile_center(m.x) - g_player.pos.x;
+            float dy = tile_center(m.y) - g_player.pos.y;
+            float d2 = dx * dx + dy * dy;
+            if (d2 <= best2) { best2 = d2; shop = &m; }
+        }
+    }
+    if (!shop) {
+        set_toast("Chegue perto de uma Oficina construida para aprimorar a arma.", 2.0f);
+        return false;
+    }
+    if (shop->status == ModuleStatus::Damaged) {
+        add_alert("Oficina danificada - repare antes de aprimorar a arma!", 1.0f, 0.4f, 0.2f);
+        return false;
+    }
+
+    int to_level = weapon_level() + 1;
+    CraftCost cost = get_weapon_upgrade_cost(to_level);
+    if (!can_afford(cost)) {
+        add_alert("Recursos insuficientes pro upgrade da arma! (" + module_cost_string(cost) + ")",
+                  1.0f, 0.3f, 0.3f);
+        return false;
+    }
+
+    spend_cost(cost);
+    if (!weapon_level_up()) return false;   // nao deveria acontecer (guarda acima), mas nao gasta em vao
+    add_alert(std::string("Pistola de Laser aprimorada: ") + weapon_level_name() + "!", 0.4f, 0.95f, 1.0f);
+    show_unlock_popup("Arma aprimorada!", std::string("Nucleo Laser ") + weapon_level_name());
+    if (g_world) spawn_block_particles(Block::Crystal, tile_center(shop->x), tile_center(shop->y), g_world->h);
+    return true;
+}
+
 // Fabricacao "de campo" da Pistola de Laser (tecla P, main.cpp, funciona em qualquer lugar -
 // pedido do jogador: a versao original exigia mirar uma Oficina construida, mas isso
 // virava um tech avancado de meio-jogo pra uma ameaca que devia ser leve/opcional desde
@@ -679,7 +775,9 @@ static UnlockRequirement get_unlock_requirement(Block b) {
         case Block::SolarPanel:       break;  // Ja desbloqueado (primeiro modulo do jogo)
         case Block::WaterExtractor:   r.ice = 18; r.metal = 12; r.copper = 9; break;
         case Block::OxygenGenerator:  r.ice = 30; r.iron = 30; r.copper = 12; break;
-        case Block::Greenhouse:       r.organic = 24; r.iron = 15; r.ice = 15; break;
+        // Sem gate de organico: nao ha organico no planeta antes da terraformacao (ver world.cpp).
+        // Mantem a convencao de ~60% do custo de construcao dos outros.
+        case Block::Greenhouse:       r.ice = 30; r.iron = 18; r.copper = 9; break;
         case Block::CO2Factory:       r.iron = 36; r.coal = 30; r.copper = 18; break;
         case Block::Habitat:          r.stone = 48; r.iron = 36; r.copper = 24; r.metal = 18; break;
         case Block::TerraformerBeacon: r.iron = 60; r.crystal = 30; r.components = 24; r.copper = 36; break;
@@ -771,6 +869,11 @@ std::string unlock_progress_string(Block b) {
 }
 
 void update_modules(World& world, float dt) {
+    // Snapshot pro balanco liquido (ver g_rate_* em modules_building.h). Tem que ser a PRIMEIRA
+    // coisa do tick: qualquer soma/subtracao daqui pra frente entra na conta.
+    float rate_e0 = g_base_energy, rate_w0 = g_base_water;
+    float rate_o0 = g_base_oxygen, rate_f0 = g_base_food;
+
     g_day_time += dt;
 
     float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
@@ -825,7 +928,24 @@ void update_modules(World& world, float dt) {
                 }
 
                 ModuleStats stats = get_module_stats(job.module_type);
-                add_alert("Construido: " + std::string(stats.name), 0.3f, 1.0f, 0.5f, 4.0f);
+                // FEEDBACK DO GANHO. Antes era so' "Construido: X" - o jogador nao tinha como saber
+                // o que aquilo mudou na colonia. Agora a mensagem diz a producao concreta, que e'
+                // exatamente o numero que passa a aparecer no BALANCO do menu de construcao.
+                std::string gain;
+                char g1[48];
+                if (stats.energy_production > 0.0f) { snprintf(g1, sizeof(g1), "+%.0f Energia/min", stats.energy_production); gain = g1; }
+                else if (stats.oxygen_production > 0.0f) { snprintf(g1, sizeof(g1), "+%.1f O2/min", stats.oxygen_production); gain = g1; }
+                else if (stats.water_production > 0.0f) { snprintf(g1, sizeof(g1), "+%.1f Agua/min", stats.water_production); gain = g1; }
+                else if (stats.food_production > 0.0f) { snprintf(g1, sizeof(g1), "+%.1f Comida/min", stats.food_production); gain = g1; }
+                else if (stats.integrity_bonus > 0.0f) { snprintf(g1, sizeof(g1), "+%.0f Reparo/min", stats.integrity_bonus); gain = g1; }
+                else gain = "acelera a terraformacao";
+                add_alert(std::string(stats.name) + " ativo: " + gain, 0.3f, 1.0f, 0.5f, 6.0f);
+                // A obra terminou: tira o marcador que o menu de construcao deixou no mapa, senao o
+                // minimapa acumularia um waypoint por modulo construido.
+                if (job.slot_index >= 0 && job.slot_index < (int)g_build_slots.size()) {
+                    remove_nearest_waypoint(g_build_slots[job.slot_index].x,
+                                            g_build_slots[job.slot_index].y);
+                }
             }
         } else {
             add_alert("Construcao parada - Sem energia!", 1.0f, 0.5f, 0.2f);
@@ -1207,6 +1327,17 @@ void update_modules(World& world, float dt) {
 
     // Update phase based on current conditions
     update_phase();
+    // Fecha o balanco liquido do tick. Suavizado (media exponencial ~1s) porque as reservas mudam
+    // em passos discretos - sem isso o numero na tela tremeria.
+    if (dt > 0.0001f) {
+        float inv = 60.0f / dt;
+        float k = std::min(1.0f, dt * 1.0f);
+        g_rate_energy += ((g_base_energy - rate_e0) * inv - g_rate_energy) * k;
+        g_rate_water  += ((g_base_water  - rate_w0) * inv - g_rate_water)  * k;
+        g_rate_oxygen += ((g_base_oxygen - rate_o0) * inv - g_rate_oxygen) * k;
+        g_rate_food   += ((g_base_food   - rate_f0) * inv - g_rate_food)   * k;
+    }
+
     update_objectives(dt);
 
     // Melt ice globally when temperature rises above freezing
@@ -1224,4 +1355,62 @@ void update_modules(World& world, float dt) {
             }
         }
     }
+}
+
+// ============= Catalogo de construcoes - ver comentario em modules_building.h =============
+// 4 categorias densas em vez de 8 esparsas: com 9 modulos, "Energia/Agua/Oxigenio/Alimentacao/
+// Habitacao/Industria/Terraformacao/Infraestrutura" deixaria SEIS categorias com um item unico,
+// o que faz a coluna de categorias parecer um indice quebrado. Suporte Vital agrupa O2/agua/comida
+// (agrupamento padrao de colonia espacial) e Infraestrutura agrupa Habitat/Oficina.
+const Buildable kBuildables[] = {
+    { Block::SolarPanel,        BuildCategory::Energy },
+    { Block::EnergyGenerator,   BuildCategory::Energy },
+    { Block::OxygenGenerator,   BuildCategory::LifeSupport },
+    { Block::WaterExtractor,    BuildCategory::LifeSupport },
+    { Block::Greenhouse,        BuildCategory::LifeSupport },
+    { Block::Habitat,           BuildCategory::Infrastructure },
+    { Block::Workshop,          BuildCategory::Infrastructure },
+    { Block::CO2Factory,        BuildCategory::Terraforming },
+    { Block::TerraformerBeacon, BuildCategory::Terraforming },
+};
+const int kBuildableCount = (int)(sizeof(kBuildables) / sizeof(kBuildables[0]));
+
+const char* build_category_name(BuildCategory c) {
+    switch (c) {
+        case BuildCategory::Energy:         return "ENERGIA";
+        case BuildCategory::LifeSupport:    return "SUPORTE VITAL";
+        case BuildCategory::Infrastructure: return "INFRAESTRUTURA";
+        case BuildCategory::Terraforming:   return "TERRAFORMACAO";
+    }
+    return "?";
+}
+
+// Ver comentario da declaracao. Le a MESMA get_unlock_requirement que check_unlocks() usa, entao
+// nao existe uma segunda tabela de requisitos pra divergir.
+int module_unlock_breakdown(Block module_type, ResourceReq* out, int max_out) {
+    UnlockRequirement r = get_unlock_requirement(module_type);
+    struct Row { Block b; int need; int have; };
+    const Row rows[] = {
+        { Block::Stone,      r.stone,      g_unlocks.total_stone },
+        { Block::Iron,       r.iron,       g_unlocks.total_iron },
+        { Block::Coal,       r.coal,       g_unlocks.total_coal },
+        { Block::Copper,     r.copper,     g_unlocks.total_copper },
+        { Block::Wood,       r.wood,       g_unlocks.total_wood },
+        { Block::Ice,        r.ice,        g_unlocks.total_ice },
+        { Block::Crystal,    r.crystal,    g_unlocks.total_crystal },
+        { Block::Metal,      r.metal,      g_unlocks.total_metal },
+        { Block::Organic,    r.organic,    g_unlocks.total_organic },
+        { Block::Components, r.components, g_unlocks.total_components },
+    };
+    int n = 0;
+    for (const Row& row : rows) {
+        if (n >= max_out) break;
+        if (row.need <= 0) continue;
+        out[n].block = row.b;
+        out[n].name = block_name(row.b);
+        out[n].have = row.have;
+        out[n].need = row.need;
+        ++n;
+    }
+    return n;
 }

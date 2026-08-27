@@ -119,7 +119,7 @@ void apply_perspective(float fov_degrees, float aspect, float near_plane, float 
 // Calcular direcao do ray a partir da posicao do mouse na tela
 Vec3 get_mouse_ray_direction(int mouse_x, int mouse_y, int win_w, int win_h) {
     // FOV e aspect ratio usados na projecao
-    const float kFov = 74.0f;
+    const float kFov = kCameraFovDegrees;
     float aspect = (float)win_w / (float)win_h;
     float fov_rad = kFov * (kPi / 180.0f);
     float tan_half_fov = std::tan(fov_rad / 2.0f);
@@ -526,4 +526,29 @@ void update_camera_for_frame() {
         0.0f, 1.0f);
     g_camera_obstruction = lerp(g_camera_obstruction, final_occlusion, 0.24f);
     update_camera_occluder_fade(occ_tiles, frame_dt);
+}
+
+// Ver comentario da declaracao em camera.h.
+bool world_to_screen(Vec3 world, int win_w, int win_h, float& out_x, float& out_y) {
+    Vec3 cam_forward = vec3_normalize(vec3_sub(g_camera.target, g_camera.position));
+    Vec3 world_up = {0.0f, 1.0f, 0.0f};
+    Vec3 cam_right = vec3_normalize(vec3_cross(cam_forward, world_up));
+    Vec3 cam_up = vec3_cross(cam_right, cam_forward);
+
+    Vec3 rel = vec3_sub(world, g_camera.position);
+    // Coordenadas no espaco da camera. z_view > 0 = na frente (mesma convencao do -cam_forward
+    // usado em get_mouse_ray_direction).
+    float x_view = vec3_dot(rel, cam_right);
+    float y_view = vec3_dot(rel, cam_up);
+    float z_view = vec3_dot(rel, cam_forward);
+    if (z_view <= 0.0001f) return false;
+
+    float aspect = (float)win_w / (float)std::max(1, win_h);
+    float tan_half = std::tan(kCameraFovDegrees * (kPi / 180.0f) * 0.5f);
+    float ndc_x = (x_view / z_view) / (tan_half * aspect);
+    float ndc_y = (y_view / z_view) / tan_half;
+
+    out_x = ((ndc_x + 1.0f) * 0.5f) * (float)win_w;
+    out_y = ((1.0f - ndc_y) * 0.5f) * (float)win_h;
+    return true;
 }

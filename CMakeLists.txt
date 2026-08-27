@@ -44,6 +44,7 @@ add_executable(terraformer WIN32
   src/ui_hud.cpp
   src/ui_menu.cpp
   src/building_interaction.cpp
+  src/ui_build_menu.cpp
   src/input.cpp
   src/win32_platform.cpp
   src/objectives.cpp
@@ -53,6 +54,7 @@ add_executable(terraformer WIN32
   src/base_interior.cpp
   src/interiors.cpp
   src/base_exterior.cpp
+  src/module_models.cpp
 )
 
 if(MSVC)

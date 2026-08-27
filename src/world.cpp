@@ -768,36 +768,74 @@ void World::gen() {
             float ore1 = fbm(fx * 0.11f + 200.0f, fy * 0.11f + 200.0f, 3);
             float ore2 = fbm(fx * 0.09f + 300.0f, fy * 0.09f + 300.0f, 3);
             float ore3 = fbm(fx * 0.14f + 400.0f, fy * 0.14f + 400.0f, 2);
+            // FERRO GANHOU CAMPO DE RUIDO PROPRIO. Antes ferro e carvao liam o MESMO ore1 (ferro
+            // > 0.88, carvao > 0.85 no else-if logo abaixo), entao ferro era so' a casquinha do topo
+            // de cada mancha de carvao - sempre embrulhado em carvao, e raro. Medido no mapa real
+            // 3072x1536: ferro 0.224% da terra contra carvao 4.468% - CARVAO/FERRO = 20x. No raio
+            // 110 em volta da base o jogador via 87 tiles de ferro e 1470 de carvao. E ferro e' de
+            // longe o recurso mais exigido da campanha (30+40+50+25+60+60+60+100 nos modulos + 20
+            // por refino ~= 445), enquanto carvao e' pedido em UM lugar (Fabrica de CO2, 50).
+            // Campos separados fazem ferro e carvao ocuparem regioes independentes do mapa.
+            float ore_iron = fbm(fx * 0.13f + 700.0f, fy * 0.13f + 700.0f, 3);
+            // Metal tambem: era "ore2 > 0.93 && ore3 > 0.93", a INTERSECAO de duas caudas -
+            // medido, 16 tiles no mapa INTEIRO (0.000%). Metal e' exigido pelos upgrades de modulo,
+            // pelos upgrades da arma e pelo reparo do traje, entao 16 tiles era um defeito, nao
+            // raridade de design. Campo proprio com limiar unico.
+            float ore_metal = fbm(fx * 0.16f + 1100.0f, fy * 0.16f + 1100.0f, 3);
             // Campos de cristal bioluminescente: ruido de baixa frequencia (era minerio
             // esparso via ore3>0.91) vira uma zona contigua e reconhecivel no bioma gelado,
             // em vez de "specks" isolados - ore3 continua intocado (ainda alimenta o limiar
             // de Metal abaixo).
             float crystal_field = fbm(fx * 0.020f + 900.0f, fy * 0.020f + 900.0f, 3);
 
-            if (ore1 > 0.88f && (int)th > sea_h + 2) {
+            // 0.79 (nao 0.76): 0.76 media 3.37% da terra, o que punha ferro como 2o objeto mais comum do
+            // mapa e levava o total de objetos no terreno de 13.2% pra 17% - poluicao visual e custo de
+            // render sem ganho (a campanha exige ~445 de ferro; 0.79 ainda da ~800 tiles so' no raio 110
+            // da base, contra os 87 de antes).
+            if (ore_iron > 0.79f && (int)th > sea_h + 1) {
                 set(x, y, Block::Iron);
-            } else if (ore1 > 0.85f && (int)th > sea_h + 1) {
+            } else if (ore1 > 0.90f && (int)th > sea_h + 1) {
+                // 0.85 -> 0.90: com ferro fora do ore1, o carvao herdaria a cauda inteira e ficaria
+                // ainda MAIS abundante do que os 4.47% de que o jogador reclamou.
                 set(x, y, Block::Coal);
-            } else if (ore2 > 0.89f && (int)th > sea_h + 2) {
+            // 0.89 -> 0.80. Medido depois de dar campo proprio ao ferro: cobre ficou em 0.125% da terra
+            // contra 1.649% do ferro (13x), e no raio 110 da base eram 52 tiles de cobre para uma
+            // demanda de campanha de ~270 (10+25+20+15+15+40+30+40+60 nos modulos + 15 no craft da
+            // arma). Ou seja, ao consertar o ferro eu transformei o COBRE no gargalo - pior do que o
+            // ferro era. Cobre e' o 3o desta cadeia else-if, entao ferro e carvao consomem tiles antes
+            // dele e o valor efetivo fica abaixo do que a varredura do campo sugere.
+            } else if (ore2 > 0.80f && (int)th > sea_h + 2) {
                 set(x, y, Block::Copper);
-            } else if (crystal_field > 0.58f && (g == Block::Snow || (int)th > snow_h - 2)) {
+            // 0.58 -> 0.61: o cristal esta DEPOIS do carvao nesta cadeia, entao subir o limiar do carvao
+            // fez tiles cairem pra ca - medido, cristal saltou de 3.63% pra 6.38% da terra sem eu ter
+            // tocado no campo dele. Este limiar devolve o cristal ao patamar que ele tinha (0.65 corrigia
+            // demais: media 1.94%, abaixo do original).
+
+            } else if (crystal_field > 0.61f && (g == Block::Snow || (int)th > snow_h - 2)) {
                 set(x, y, Block::Crystal);
-            } else if (ore2 > 0.93f && ore3 > 0.93f) {
+            } else if (ore_metal > 0.86f && (int)th > sea_h + 2) {
                 set(x, y, Block::Metal);
-            } else if (fissure < 0.014f && (int)th > sea_h + 3) {
+            } else if (fissure < 0.008f && (int)th > sea_h + 3) {
+                // 0.014 -> 0.008: esta era a SEGUNDA fonte de carvao (fendas escuras), e duas fontes
+                // independentes eram metade do motivo de "carvao tem de mais".
                 set(x, y, Block::Coal); // fendas escuras
             }
 
-            if (get(x, y) == get_ground(x, y) && (int)th > sea_h + 1 && (int)th < snow_h - 2) {
-                float moisture = moist_map[index_of(x, y)];
-                // Bolsoes de flora alienigena: mesmo tratamento - ruido de baixa frequencia
-                // (era org>0.92 a 0.10 de escala) vira clareiras verdes reconheciveis na
-                // faixa temperada/umida, mantendo o mesmo gate de umidade de antes.
-                float organic_field = fbm(fx * 0.018f + 950.0f, fy * 0.018f + 950.0f, 3);
-                if (moisture > 0.70f && organic_field > 0.55f) {
-                    set(x, y, Block::Organic);
-                }
-            }
+            // NENHUMA MATERIA ORGANICA NO PLANETA ANTES DA TERRAFORMACAO (pedido do jogador: "nao
+            // deveria ter materia organica no planeta"). Aqui existiam "bolsoes de flora alienigena"
+            // - manchas de Block::Organic verde-Terra saturado (arte c8(90,200,80)) espalhadas pela
+            // faixa umida. Num planeta em fase Congelado, a -60C, 0% de atmosfera e 0% de
+            // terraformacao, vegetacao verde e' uma contradicao visual direta com tudo que o HUD diz.
+            //
+            // Organico NAO deixa de existir no jogo: continua vindo de minerar Folhas
+            // (drop_item_for_block, items_particles.cpp) - e arvores nascem via try_spawn_tree, que
+            // so' e' chamado com g_phase >= Habitable. Ou seja, materia organica passa a aparecer em
+            // Marte SOMENTE DEPOIS que o jogador terraforma o planeta, o que e' a narrativa correta:
+            // a vida chega porque ele a trouxe, nao porque ja estava la.
+            //
+            // Consequencia obrigatoria: a receita e o unlock da Estufa pediam organico 40 / 24, e sem
+            // fonte inicial isso travaria a campanha na missao 6 - ver get_module_cost e
+            // get_unlock_requirement (inventory_crafting.cpp / modules_building.cpp), ajustados junto.
 
             if (get(x, y) == get_ground(x, y)) {
                 float dry = 1.0f - moist_map[index_of(x, y)];

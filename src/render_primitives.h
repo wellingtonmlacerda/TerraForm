@@ -181,3 +181,14 @@ enum class WallFace { XPos, XNeg, ZPos, ZNeg };
 void render_wall_3d_tex(WallFace face, float x, float z, float y0, float y1, Tile tile,
                          float tint_r, float tint_g, float tint_b, float a, float shade,
                          bool flat = false);
+
+// Caixa orientada com YAW **e PITCH**. render_box_oriented_3d so' gira no eixo Y, o que basta pra
+// tronco/braco/cano, mas nao pra nada INCLINADO - e um painel solar sem inclinacao nao le como
+// painel solar (era o defeito: todo modulo era um cubo texturizado, e o painel virava "caixa azul
+// listrada"). Usado pelos modelos de modulo (module_models.cpp): mesa do painel solar, aletas de
+// radiador, telhado da oficina, prato de antena.
+//
+// pitch_rad > 0 levanta a borda da FRENTE (a face +Z local). Mesma base local e mesmo sombreamento
+// por face de render_box_oriented_3d, entao as duas casam visualmente lado a lado.
+void render_box_tilted_3d(Vec3 center, float sx, float sy, float sz, float yaw_rad, float pitch_rad,
+                          float r, float g, float b, float a = 1.0f);

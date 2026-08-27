@@ -27,7 +27,12 @@ CraftCost get_module_cost(Block b) {
             c.ice = 30; c.metal = 20; c.copper = 15;
             break;
         case Block::Greenhouse:
-            c.organic = 40; c.iron = 25; c.ice = 25;
+            // Organico 40 -> gelo/ferro/cobre. Obrigatorio: com a flora organica removida do planeta
+            // (ver world.cpp, "NENHUMA MATERIA ORGANICA"), nao existe fonte de organico ANTES da
+            // fase Habitavel, e organico 40 travaria a Estufa - e com ela a missao 6 e a campanha
+            // inteira. Tematicamente casa melhor: uma estufa e' estrutura vedada + hidroponia
+            // (agua e tubulacao), e as sementes vieram da Terra com o colono, nao do solo marciano.
+            c.ice = 50; c.iron = 30; c.copper = 15;
             break;
         case Block::Workshop:
             c.iron = 60; c.components = 30; c.copper = 40;
@@ -90,6 +95,20 @@ CraftCost get_weapon_cost() {
     c.metal = 35;
     c.components = 20;
     c.crystal = 15;
+    return c;
+}
+
+// Custo do upgrade da arma, por nivel DESTINO (2 = Mk II, 3 = Mk III). Mesmo bolso
+// Metal/Componentes/Cristal de get_module_upgrade_cost - tecnologia avancada usa recurso
+// refinado, nao minerio bruto. RefinedAlloy NAO entra: nao e' campo de CraftCost
+// (ver kCraftCostFields), entao can_afford/spend_cost nao saberiam cobra-lo.
+CraftCost get_weapon_upgrade_cost(int to_level) {
+    CraftCost c{};
+    if (to_level <= 2) {
+        c.metal = 25; c.components = 15; c.crystal = 10;
+    } else {
+        c.metal = 45; c.components = 30; c.crystal = 25;
+    }
     return c;
 }
 
@@ -167,4 +186,22 @@ std::string cost_string(const CraftCost& c) {
     add("Cu", c.copper);
     add("W", c.wood);
     return s.empty() ? "-" : s;
+}
+
+// Ver comentario da declaracao em inventory_crafting.h. Percorre a MESMA kCraftCostFields que
+// can_afford/spend_cost usam, entao nao ha uma segunda lista de campos pra divergir.
+int module_cost_breakdown(Block module_type, ResourceReq* out, int max_out) {
+    CraftCost c = get_module_cost(module_type);
+    int n = 0;
+    for (const auto& f : kCraftCostFields) {
+        if (n >= max_out) break;
+        int need = c.*f.field;
+        if (need <= 0) continue;
+        out[n].block = f.block;
+        out[n].name = block_name(f.block);
+        out[n].have = g_inventory[(int)f.block];
+        out[n].need = need;
+        ++n;
+    }
+    return n;
 }
