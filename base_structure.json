@@ -1,0 +1,82 @@
+{
+    "base_3d": {
+        "enabled": true,
+        "landing_pad": {
+            "half_width": 22,
+            "half_height": 12,
+            "elevation": 2
+        },
+        "building": {
+            "half_width": 8,
+            "half_height": 6,
+            "wall_height": 3,
+            "offset_z": 2
+        },
+        "entrance": {
+            "width": 3,
+            "position": "front"
+        },
+        "windows": {
+            "enabled": true,
+            "side_spacing": 3,
+            "back_spacing": 3
+        },
+        "interior": {
+            "lights_enabled": true,
+            "light_positions": [
+                {"x": 0, "y": 0},
+                {"x": -4, "y": -3},
+                {"x": 4, "y": -3},
+                {"x": -4, "y": 3},
+                {"x": 4, "y": 3}
+            ]
+        }
+    },
+    "modules": {
+        "slots": {
+            "solar": {
+                "count": 3,
+                "start_x": -12,
+                "spacing": 2,
+                "row": "front"
+            },
+            "water_oxygen": {
+                "positions": [
+                    {"x": 6, "label": "Water Extractor"},
+                    {"x": 8, "label": "O2 Generator"}
+                ],
+                "row": "front"
+            },
+            "greenhouse": {
+                "count": 2,
+                "start_x": -14,
+                "spacing": 2,
+                "row": "back"
+            },
+            "terraform": {
+                "positions": [
+                    {"x": 12, "label": "CO2 Factory"},
+                    {"x": 14, "label": "Terraformer"}
+                ],
+                "row": "back"
+            },
+            "habitat": {
+                "x": -1,
+                "row": "middle"
+            }
+        }
+    },
+    "decorations": {
+        "rocket_wreck": {
+            "enabled": true,
+            "offset_x": 14,
+            "offset_y": -1
+        },
+        "dome_hub": {
+            "enabled": true,
+            "offset_x": -12,
+            "offset_y": -1,
+            "radius": 2
+        }
+    }
+}

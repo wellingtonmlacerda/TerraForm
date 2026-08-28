@@ -67,12 +67,21 @@ if(MSVC)
   # its own ShowCursor() with the same name as user32's WinAPI ShowCursor(), and having two
   # separate reference paths to user32.lib in the same link pulled in conflicting object code
   # for it) - dropping the redundant explicit entries resolves it.
+  #
+  # MERGE upstream: a versao do upstream reintroduzia esses quatro libs explicitamente. Nao foi
+  # aceita justamente por causa do LNK2005 acima - o erro e' reproduzivel e a remocao e' o
+  # conserto. O que a versao do upstream tinha de novo e util era o ramo Linux, preservado abaixo.
   target_link_libraries(terraformer PRIVATE raylib)
   # main() replaces WinMain now; these flags keep the console window from appearing on
   # Windows, matching the WIN32 keyword above on add_executable().
   target_link_options(terraformer PRIVATE "/SUBSYSTEM:WINDOWS" "/ENTRY:mainCRTStartup")
-else()
+elseif(WIN32)
+  # Windows sem MSVC (MinGW): tambem depende so' do alvo do raylib.
   target_link_libraries(terraformer PRIVATE raylib)
+else()
+  # Linux/Unix - vem do upstream. O lado deste branch so' tinha `raylib` aqui, o que nao basta
+  # fora do Windows: sem GL/X11 o link falha em Linux.
+  target_link_libraries(terraformer PRIVATE raylib GL X11)
 endif()
 
 message(STATUS "Configured TerraFormer2D - raylib")
