@@ -1,0 +1,22 @@
+# Build output (CMake / MSVC)
+/Build/
+/build/
+/BuildAgent/
+/out/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.exp
+*.lib
+*.tlog/
+*.log
+/build_log.txt
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+.vs/

@@ -1,12 +1,12 @@
 {
-  "stars_density": 1650.0,
+  "stars_density": 2600.0,
   "stars_parallax": 0.008,
   "nebula_alpha": 0.22,
   "nebula_parallax": 0.016,
   "cloud_alpha": 0.20,
   "cloud_parallax": 0.050,
-  "planet_radius": 160.0,
-  "planet_distance": 1220.0,
+  "planet_radius": 300.0,
+  "planet_distance": 1150.0,
   "planet_orbit_speed": 0.060,
   "planet_parallax": 0.028,
   "sun_radius": 52.0,
@@ -25,8 +25,8 @@
   "atmosphere_zenith_boost": 0.24,
   "horizon_fade": 0.28,
   "fog_start_factor": 0.34,
-  "fog_end_factor": 0.88,
-  "fog_distance_bonus": 36.0,
+  "fog_end_factor": 0.80,
+  "fog_distance_bonus": 15.0,
   "eclipse_frequency_days": 8.0,
   "eclipse_strength": 0.50
 }
