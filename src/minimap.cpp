@@ -10,6 +10,7 @@
 #include "interiors.h"        // interior_at (o distrito nao revela mapa nem gera POI)
 #include "game_state.h"          // set_toast
 #include "font.h"                // draw_text
+#include "creatures.h"            // g_creatures / enemy_archetype (pontos de ameaca no mapa)
 #include "render_primitives.h"   // render_quad, render_circle (render_primitives extraction stage)
 #include "ui_hud.h"              // hud_right_panel_right_x/bottom_y (ancora o minimapa sem duplicar geometria)
 
@@ -47,6 +48,8 @@ void add_alert(const std::string& msg, float r, float g, float b, float duration
 // (antes de update_fog_of_war) porque o decremento roda la, reaproveitando o unico ponto
 // de update incondicional 1x/frame que ja existia, em vez de criar outro.
 static float g_scan_cooldown = 0.0f;
+
+int g_geo_debug_mode = 0;   // ver comentario em minimap.h - so' desenvolvimento (F4)
 
 // Atualizar fog of war baseado na posicao do jogador. Recebe dt agora (nao recebia antes)
 // so pra decrementar o cooldown do scanner (g_scan_cooldown, abaixo) - reaproveita a unica
@@ -410,23 +413,28 @@ void render_minimap(int win_w, int win_h) {
     if (!g_world) return;
 
     float map_size = g_map_cfg.minimap_size;
-    // Ancorado nas mesmas 2 funcoes que ui_hud.cpp usa pra desenhar o painel de Fase/
-    // terraformacao (ver comentario completo em ui_hud.h) - antes o minimapa usava um "y"
-    // fixo (200px) sem nenhuma ligacao com a altura de verdade daquele painel (calculada
-    // separadamente em render_hud()), entao os dois podiam (e chegaram a) se sobrepor.
-    // Tambem alinha a borda direita dos dois, que antes tinham anchors/larguras diferentes.
-    float map_x = hud_right_panel_right_x(win_w) - 3.0f - map_size;
-    float map_y = hud_right_panel_bottom_y() + 12.0f;
+    // CANTO INFERIOR ESQUERDO (pedido do jogador: "coloque no canto inferior esquerdo, como e'
+    // padrao em games"). Antes ficava no canto superior direito, ancorado no painel de Fase.
+    //
+    // Nao colide com nada: o painel TRAJE termina em y~338 e o minimapa comeca bem abaixo; a
+    // hotbar e' centralizada horizontalmente (comeca a ~win_w*0.5 - 190) e o minimapa tem 20px de
+    // margem a esquerda. Em janela estreita o teto de largura abaixo evita a sobreposicao.
+    float margin = 20.0f;
+    // Em janela pequena o minimapa encolhe pra nao cobrir metade da tela nem invadir a hotbar.
+    float max_by_w = (float)win_w * 0.30f;
+    float max_by_h = (float)win_h * 0.34f;
+    if (map_size > max_by_w) map_size = max_by_w;
+    if (map_size > max_by_h) map_size = max_by_h;
+    float map_x = margin;
+    float map_y = (float)win_h - margin - map_size;
     float map_radius = map_size * 0.5f;
     float map_cx = map_x + map_radius;
     float map_cy = map_y + map_radius;
 
-    // Fundo do minimapa (borda) - circular de verdade agora (era um quadrado, sem nenhum
-    // recorte - o "formato estranho" reportado era o contorno arredondado do fog-of-war
-    // (revelado em circulo) contra os cantos quadrados do minimapa, nao um bug de
-    // clipping). 2 circulos concentricos (fundo escuro + anel de borda), mesmo raio geral.
-    render_circle(map_cx, map_cy, map_radius + 3.0f, 0.1f, 0.1f, 0.15f, 0.95f, 32);
-    render_circle(map_cx, map_cy, map_radius + 1.0f, 0.2f, 0.25f, 0.3f, 0.9f, 32);
+    // Moldura: anel externo escuro + anel de borda + 4 marcas cardeais finas. As marcas dao
+    // orientacao (norte pra cima) sem precisar de texto - detalhe que faltava.
+    render_circle(map_cx, map_cy, map_radius + 4.0f, 0.06f, 0.07f, 0.10f, 0.95f, 36);
+    render_circle(map_cx, map_cy, map_radius + 2.0f, 0.22f, 0.30f, 0.38f, 0.92f, 36);
 
     // Calcular viewport do mapa (tiles visiveis)
     int view_tiles = (int)(g_map_cfg.minimap_zoom * 64.0f);
@@ -472,6 +480,21 @@ void render_minimap(int win_w, int win_h) {
             // Obter cor do tile
             float r, g, b;
             get_minimap_color(wx, wy, r, g, b);
+
+            // RELEVO: modula o brilho pela altura relativa do tile. Sem isso o minimapa era um
+            // mosaico de cores planas e nao dava pra ler morro, vale nem cratera - so' bioma.
+            // Barato: le o heightmap que ja esta em memoria.
+            {
+                int16_t hh = g_world->height_at(wx, wy);
+                int16_t hn = g_world->height_at(wx, wy - 1);
+                // Diferenca com o vizinho ao norte = encosta virada pra luz. Clareia subida,
+                // escurece descida - o mesmo truque de hillshade de mapa topografico.
+                float slope = (float)(hh - hn) * 0.06f;
+                slope = std::clamp(slope, -0.28f, 0.28f);
+                r = std::clamp(r * (1.0f + slope), 0.0f, 1.0f);
+                g = std::clamp(g * (1.0f + slope), 0.0f, 1.0f);
+                b = std::clamp(b * (1.0f + slope), 0.0f, 1.0f);
+            }
 
             // Ajustar brilho para ciclo dia/noite
             float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
@@ -580,6 +603,63 @@ void render_minimap(int win_w, int win_h) {
     char zoom_str[32];
     snprintf(zoom_str, sizeof(zoom_str), "Zoom: %.1fx", g_map_cfg.minimap_zoom);
     draw_text(map_x + map_size - 60.0f, map_y + map_size + 14.0f, zoom_str, 0.6f, 0.65f, 0.7f, 0.7f);
+    // ---- MARCAS CARDEAIS ----
+    // 4 tracos finos na moldura (N em cima). Da orientacao sem texto - o mapa e' sempre
+    // alinhado ao norte (nao gira com a camera), entao a marca e' fixa e confiavel.
+    for (int k = 0; k < 4; ++k) {
+        float ang = (float)k * (kPi * 0.5f);
+        float ox = std::sin(ang), oy = -std::cos(ang);
+        float r0 = map_radius + 1.0f, r1 = map_radius + (k == 0 ? 7.0f : 4.5f);
+        render_quad(map_cx + ox * r0 - 1.0f, map_cy + oy * r0 - 1.0f,
+                    2.0f + std::fabs(ox) * (r1 - r0), 2.0f + std::fabs(oy) * (r1 - r0),
+                    k == 0 ? 0.95f : 0.45f, k == 0 ? 0.85f : 0.50f, k == 0 ? 0.45f : 0.58f, 0.9f);
+    }
+
+    // ---- CRIATURAS ----
+    // Pontos vermelhos, com anel maior nas elites. Era a informacao que mais faltava: dava pra ser
+    // perseguido por um Alpha e nao ter nenhuma pista no mapa.
+    for (const Creature& c : g_creatures) {
+        float rx = (c.x - (float)start_x) * tile_px;
+        float ry = (c.z - (float)start_y) * tile_px;
+        float ddx = map_x + rx - map_cx, ddy = map_y + ry - map_cy;
+        if (ddx * ddx + ddy * ddy > map_radius2) continue;
+        const EnemyArchetype& ca = enemy_archetype(c.type);
+        bool hostile = (c.state == Creature::State::Chasing);
+        float dot = ca.elite ? 3.4f : (ca.scale > 1.4f ? 2.8f : 2.0f);
+        if (ca.elite) {
+            render_circle(map_x + rx, map_y + ry, dot + 2.2f, 1.0f, 0.82f, 0.30f, 0.55f, 10);
+        }
+        render_circle(map_x + rx, map_y + ry, dot,
+                      hostile ? 1.0f : 0.85f, hostile ? 0.24f : 0.45f, hostile ? 0.20f : 0.30f,
+                      0.95f, 8);
+    }
+
+    // ---- MODULOS DA COLONIA ----
+    // Quadradinhos cianos: mostram onde a infraestrutura ja foi erguida. Antes so' o icone da base
+    // aparecia, entao os modulos do anel eram invisiveis no mapa.
+    for (const Module& m : g_modules) {
+        float rx = ((float)m.x - (float)start_x) * tile_px;
+        float ry = ((float)m.y - (float)start_y) * tile_px;
+        float ddx = map_x + rx - map_cx, ddy = map_y + ry - map_cy;
+        if (ddx * ddx + ddy * ddy > map_radius2) continue;
+        bool ok = (m.status != ModuleStatus::Damaged && m.status != ModuleStatus::NoPower);
+        render_quad(map_x + rx - 2.0f, map_y + ry - 2.0f, 4.0f, 4.0f,
+                    ok ? 0.35f : 0.95f, ok ? 0.85f : 0.55f, ok ? 0.95f : 0.25f, 0.95f);
+    }
+
+    // ---- ESCALA + COORDENADA ----
+    // Duas linhas discretas abaixo da moldura: quantos tiles o raio cobre e a posicao do jogador.
+    {
+        char sc[48];
+        snprintf(sc, sizeof(sc), "%d tiles", view_tiles);
+        // ACIMA da moldura: map_y + map_size + 14 caia praticamente no rodape da janela e era
+        // cortado, alem de brigar com a linha de debug.
+        draw_text(map_x, map_y - 8.0f, sc, 0.50f, 0.54f, 0.62f, 0.85f);
+        char co[48];
+        snprintf(co, sizeof(co), "%d, %d", (int)g_player.pos.x, (int)g_player.pos.y);
+        float cw = estimate_text_w_px(co);
+        draw_text(map_x + map_size - cw, map_y - 8.0f, co, 0.50f, 0.54f, 0.62f, 0.85f);
+    }
 }
 
 // Renderizar mapa grande (tela cheia, tecla M)
@@ -661,8 +741,51 @@ void render_world_map(int win_w, int win_h) {
             // Cor do tile
             float r, g, b;
             get_minimap_color(world_x, world_y, r, g, b);
+
+            // ---- OVERLAY DE DEBUG GEOLOGICO (F4, so' desenvolvimento) ----
+            // Ver g_geo_debug_mode em minimap.h. Com o modo em 0 este bloco nao faz nada.
+            if (g_geo_debug_mode == 1) {
+                // RECURSOS: terreno dessaturado, minerio em cor forte. Mostra de relance se os
+                // depositos estao aglomerados e em que faixa de relevo cada um caiu.
+                float lum = (r + g + b) * 0.333f * 0.35f;
+                r = g = b = lum;
+                Block o = g_world->get(world_x, world_y);
+                switch (o) {
+                    case Block::Iron:       r = 0.95f; g = 0.55f; b = 0.35f; break;
+                    case Block::Coal:       r = 0.20f; g = 0.20f; b = 0.24f; break;
+                    case Block::Copper:     r = 1.00f; g = 0.35f; b = 0.05f; break;
+                    case Block::Crystal:    r = 0.75f; g = 0.30f; b = 1.00f; break;
+                    case Block::Metal:      r = 0.30f; g = 1.00f; b = 1.00f; break;
+                    case Block::Components: r = 0.30f; g = 1.00f; b = 0.40f; break;
+                    default: break;
+                }
+                Block gr = g_world->get_ground(world_x, world_y);
+                if (o != Block::Iron && o != Block::Coal && o != Block::Copper &&
+                    o != Block::Crystal && o != Block::Metal && o != Block::Components) {
+                    if (gr == Block::Ice)   { r = 0.55f; g = 0.85f; b = 1.00f; }
+                    else if (gr == Block::Sand) { r = 0.85f; g = 0.75f; b = 0.35f; }
+                    else if (gr == Block::Lava) { r = 1.00f; g = 0.40f; b = 0.10f; }
+                }
+            } else if (g_geo_debug_mode == 2) {
+                // ALTITUDE: rampa azul -> verde -> amarelo -> branco. E' a mesma variavel que as
+                // faixas alt_lo/alt_hi das regras usam, entao da pra ver onde cada faixa cai.
+                int16_t hh = g_world->height_at(world_x, world_y);
+                float t = clamp01((float)hh / 160.0f);   // max_height do terrain_config
+                if (t < 0.33f)      { float k = t / 0.33f;        r = 0.10f; g = 0.20f + k * 0.45f; b = 0.75f - k * 0.35f; }
+                else if (t < 0.66f) { float k = (t - 0.33f) / 0.33f; r = 0.10f + k * 0.85f; g = 0.65f + k * 0.25f; b = 0.40f - k * 0.30f; }
+                else                { float k = (t - 0.66f) / 0.34f; r = 0.95f; g = 0.90f; b = 0.10f + k * 0.85f; }
+            }
+
             render_quad(px, py, tile_w, tile_h, r, g, b, 1.0f);
         }
+    }
+
+    // Legenda do overlay de debug (so' aparece com F4 ligado).
+    if (g_geo_debug_mode != 0) {
+        const char* t = (g_geo_debug_mode == 1)
+            ? "[F4] DEBUG RECURSOS  Fe laranja  C escuro  Cu laranja-forte  Cristal roxo  Metal ciano  Comp verde"
+            : "[F4] DEBUG ALTITUDE  azul=baixo  verde=medio  amarelo=alto  branco=pico";
+        draw_text(map_x, map_y - 8.0f, t, 1.0f, 0.85f, 0.35f, 0.95f);
     }
 
     // Converter coordenadas do mundo para coordenadas do mapa
@@ -821,4 +944,15 @@ void render_world_map(int win_w, int win_h) {
     legend_x += 70.0f;
     render_quad(legend_x, legend_item_y, 12.0f, 12.0f, 0.1f, 0.1f, 0.12f, 1.0f);
     draw_text(legend_x + 16.0f, legend_item_y + 10.0f, "Inexplorado", 0.7f, 0.75f, 0.8f, 0.9f);
+}
+
+// Ver comentario da declaracao em minimap.h. Repete o MESMO clamp de render_minimap - mantido
+// junto dele de proposito: os dois estao neste arquivo, lado a lado.
+float minimap_right_edge_x(int win_w, int win_h) {
+    float s = g_map_cfg.minimap_size;
+    float max_by_w = (float)win_w * 0.30f;
+    float max_by_h = (float)win_h * 0.34f;
+    if (s > max_by_w) s = max_by_w;
+    if (s > max_by_h) s = max_by_h;
+    return 20.0f + s;
 }

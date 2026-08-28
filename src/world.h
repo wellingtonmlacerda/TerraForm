@@ -216,3 +216,13 @@ void render_water_fx();
 // entra em tile de cota igual ou maior), nao invade agua/gelo (quem trata esse encontro e' o
 // apagamento) e e' represada por parede construida e por estrutura da base, igual a agua.
 void lava_flood_from(World& world, int x, int y);
+
+// ============= Resfriamento de lava SEM fonte (poca finita) =============
+// Enfileira um tile de lava pra ESFRIAR ate virar Basalto sozinho, aos poucos, sem precisar de
+// agua. Existe porque lava de meteoro nao tem fonte de fluxo continuo: e' o material fundido do
+// impacto, uma quantidade finita que solidifica. Um vulcao tem camara magmatica e continua
+// alimentando o rio - por isso lava vulcanica NAO e' enfileirada aqui e persiste.
+//
+// Diferente do apagamento por agua (lava_quench, world.cpp): aquele e' rapido e solta vapor +
+// chiado; este e' lento e silencioso, formando crosta da borda pro centro.
+void lava_cool_enqueue(World& world, int x, int z);

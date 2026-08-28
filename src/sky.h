@@ -38,3 +38,28 @@ void update_shooting_stars(float dt, float day_phase);
 // vez de recuar corretamente pra baixo no campo de visao (como um relevo distante de verdade
 // faria visto de cima).
 void render_alien_sky(float cam_x, float cam_y, float cam_z, float ground_y, float day_phase, float atmos_factor);
+
+// ============= LUZ DA LUA (fonte unica de verdade) =============
+// As duas luas eram, ate aqui, APENAS geometria de ceu: render_alien_sky as posicionava e desenhava,
+// e o pipeline de iluminacao (lighting.cpp) nao sabia que existiam. O ambiente noturno era o valor
+// fixo LightingSettings::ambient_min, porque compute_daylight() = max(0, sin(...)) e' exatamente
+// ZERO durante metade do ciclo - dai a noite renderizar praticamente preta mesmo com a Lua no ceu.
+//
+// sky_moon_state() devolve a orbita das duas luas AGORA. render_alien_sky() usa esta mesma funcao
+// pra POSICIONAR as luas e lighting.cpp usa pra ILUMINAR: se cada lado calculasse a orbita por
+// conta, a luz poderia vir de uma lua que nao esta no ceu. Uma funcao, dois consumidores.
+struct MoonState {
+    float az1, el1;   // azimute e elevacao (radianos) da lua maior
+    float az2, el2;   // idem da lua menor
+};
+MoonState sky_moon_state();
+
+// Contribuicao de luz combinada das duas luas, 0..1, ponderada por elevacao e porte. NAO inclui o
+// fator de noite: quem multiplica por "esta escuro" e' compute_ambient_light(), que tambem conhece
+// o sol. Assim esta funcao responde so' "quanta luz de lua ha disponivel".
+float sky_moonlight();
+
+// Direcao HORIZONTAL de onde vem a luz da lua dominante (a de maior contribuicao), em radianos.
+// Usada por lighting.cpp pra deslocar a fonte de luz lunar e produzir um lado iluminado / sombra
+// projetada - a unica nocao de direcionalidade que o pipeline 2D deste motor consegue.
+float sky_moonlight_azimuth();

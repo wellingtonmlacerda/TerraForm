@@ -70,8 +70,8 @@ struct SkyConfig {
     float cloud_alpha = 0.20f;
     float cloud_parallax = 0.050f;
 
-    float planet_radius = 160.0f;
-    float planet_distance = 1220.0f;
+    float planet_radius = 300.0f;
+    float planet_distance = 1150.0f;
     float planet_orbit_speed = 0.060f;
     float planet_parallax = 0.028f;
 
@@ -132,6 +132,18 @@ struct CameraConfig {
     // tile por metro andado) isso somava e virava a "tremida" reportada. Valor mais baixo =
     // mais suave (mais atraso), mais alto = segue o jogador mais de perto.
     float step_height_lerp = 0.22f;
+    // Sensibilidade VERTICAL propria (era o literal 0.5 escondido aqui, metade da horizontal).
+    // Junto com o auto-recentrar do adaptativo, isso fazia o olhar vertical parecer morto: o
+    // movimento ja rendia metade e ainda era desfeito em ~1.2s. Com o recentrar corrigido
+    // (camera.cpp), 0.85 deixa cima/baixo quase tao responsivo quanto esquerda/direita, sem ficar
+    // nervoso - o eixo vertical tem menos curso util (127 graus contra 360) e merece um pouco menos.
+    float pitch_sensitivity = 0.85f;
+    // FAIXA DE PITCH, no config pra dar pra ajustar sem recompilar. Ver a nota longa em camera.h:
+    // esta e' uma camera em ORBITA que olha sempre pro jogador, entao pitch negativo = camera ABAIXO
+    // do jogador olhando pra CIMA, que e' o que mostra o ceu. Era travado em 2.0 (nunca descia
+    // abaixo do jogador) e o ceu nunca passava de uma faixa no topo da tela.
+    float min_pitch = -38.0f;
+    float max_pitch = 89.0f;
 
     float cave_depth_start = 0.45f;
     float cave_depth_end = 2.60f;
@@ -231,6 +243,11 @@ struct PhysicsConfig {
     float ground_tolerance = 0.06f;
 
     float step_height = 2.0f;
+    // Quanto o jogador ACOMPANHA o terreno ao descer sem virar queda. Tem que ser > kHeightScale
+    // (0.25): uma unica unidade de heightmap pra baixo e maior que ground_snap (0.20), entao antes
+    // deste campo TODO degrau descendente perdia contato com o chao e virava microqueda - a causa
+    // medida do "microtravamento em terreno irregular". 0.55 cobre 2 unidades com folga.
+    float step_down_snap = 0.55f;
     float step_probe_distance = 0.54f;
 
     float slope_limit_normal_y = 0.70f;

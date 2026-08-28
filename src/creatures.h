@@ -50,11 +50,31 @@ struct EnemyArchetype {
     float attack_windup;       // telegrafe: som + pausa ANTES do golpe, pra o jogador reagir
     float flinch_scale;        // 0 = imovel ao ser atingido, 1 = recuo cheio (massa)
 
+    // ---- ATAQUE A DISTANCIA (ranged_damage = 0 significa "nao tem") ----
+    // Existe porque o Stalker era INOFENSIVO por construcao: keep_distance 4.5 contra attack_range
+    // 1.4, ou seja a IA o mantinha longe justamente do alcance do golpe dele. Medido, 60s
+    // perseguindo um jogador parado: distancia minima 4.34 e dano ZERO (Crawler 180, Brute 184,
+    // Alpha 682 no mesmo teste). Ele circulava sem nunca poder atacar.
+    //
+    // Em vez de encolher keep_distance (o que apagaria a identidade dele - o que ele FAZ e' manter
+    // distancia), o alcance vem pra ele: agora quem recua tem com que atingir de longe.
+    int   ranged_damage;
+    float ranged_range;        // alcance maximo do tiro
+    float ranged_min_range;    // nao atira mais perto que isto (de perto, usa o golpe)
+    float ranged_cooldown;
+    float ranged_windup;       // telegrafe: som + pausa antes de disparar, pra dar pra desviar
+    float projectile_speed;    // velocidade HORIZONTAL do projetil
+    float projectile_gravity;  // 0 = tiro reto; > 0 = arco balistico (o lob do Brute)
+    float projectile_radius;   // tamanho visual e raio de acerto
+
     // ---- movimento / percepcao ----
     float wander_speed;
     float chase_speed;         // referencia: max_speed do jogador = 4.8
     float detect_range;
     float keep_distance;       // > 0: recua se ficar mais perto que isto (Stalker reposiciona)
+
+    float accel;               // u/s2 - quanto mais baixo, mais "peso" (o Brute custa pra engrenar)
+    float turn_rate;           // rad/s - quanto mais baixo, mais lento pra virar
 
     // ---- aparencia ----
     float scale;
@@ -75,6 +95,23 @@ struct EnemyArchetype {
 
 const EnemyArchetype& enemy_archetype(EnemyType t);
 
+
+// ============= PROJETIL DE CRIATURA =============
+// Um vetor efemero, nao salvo - mesmo padrao de g_creatures e dos meteoros. Tudo que define o
+// comportamento (velocidade, gravidade, raio, dano) vem do arquetipo de quem atirou, entao nao ha
+// codigo de projetil por tipo de inimigo: o dardo reto do Stalker e o lob pesado do Brute sao a
+// MESMA rotina com gravidade 0 e 9.0.
+struct CreatureProjectile {
+    float x, y, z;
+    float vx, vy, vz;
+    float gravity;
+    float radius;
+    int   damage;
+    float life;          // segundos restantes antes de expirar sozinho
+    float r, g, b;       // cor (vem do corpo de quem atirou)
+    float spin;          // fase visual
+};
+extern std::vector<CreatureProjectile> g_creature_projectiles;
 struct Creature {
     float x = 0.0f, z = 0.0f, y = 0.0f;
     EnemyType type = EnemyType::Crawler;
@@ -85,15 +122,45 @@ struct Creature {
     float wander_timer = 0.0f;
     float yaw = 0.0f;
     float anim_timer = 0.0f;
+    // ---- MARCHA REGIDA POR DISTANCIA, nao por tempo ----
+    // gait_phase avanca em proporcao ao DESLOCAMENTO NO CHAO (speed*dt/stride), nao com o relogio.
+    // Antes a animacao vinha de `anim_timer += dt` com um multiplicador binario (1.0 parado/vagando,
+    // 1.7 perseguindo), o que produzia os dois defeitos que fazem ler como "boneco duro":
+    //   - parado, as pernas continuavam ciclando: marchava no lugar;
+    //   - correndo, a cadencia nao acompanhava a velocidade: os pes PATINAVAM no chao.
+    // Com fase por distancia, o pe pousa e sai no ritmo do chao, e parado a marcha para de verdade.
+    float gait_phase = 0.0f;
+    // Velocidade horizontal do frame anterior, pra derivar aceleracao (inclinacao pra frente) e
+    // taxa de giro (inclinacao lateral na curva). Sem isso o corpo nao tem peso: ele muda de direcao
+    // sem nenhum sinal de inercia.
+    float prev_vel_x = 0.0f, prev_vel_z = 0.0f;
+    float lean_pitch = 0.0f;   // inclinacao pra frente/tras, suavizada
+    float lean_roll = 0.0f;    // inclinacao lateral, suavizada
+    float last_yaw_rate = 0.0f;   // rad/s do frame anterior (alimenta a inclinacao lateral)
     // Throttle do golpe (nao e' um "tick" por segundo cheio, e' por encontro).
     float contact_cooldown = 0.0f;
     // Telegrafe: > 0 significa "golpe carregando". O som toca no inicio da carga e o dano so' sai
     // no fim - e' o que da ao jogador a chance de sair de perto, sobretudo dos pesados.
     float windup = 0.0f;
+    // Ataque a distancia: cronometro proprio, separado do golpe corpo-a-corpo. Assim um Brute pode
+    // estar recarregando o lob enquanto ainda golpeia de perto, sem os dois se atrapalharem.
+    float ranged_cd = 0.0f;
+    float ranged_windup_t = 0.0f;
     // Reacao ao dano: cronometro do recuo/piscada. Escala por flinch_scale, entao um Brute quase
     // nao reage e um Crawler e' jogado pra tras.
     float flinch = 0.0f;
     float flinch_dx = 0.0f, flinch_dz = 0.0f;
+    // Velocidade suavizada. Antes a criatura ia de 0 a velocidade maxima no MESMO frame e parava
+    // seco - o movimento lia como teleporte em passos, sobretudo nos pesados. Com inercia, o Brute
+    // demora pra engrenar e pra parar (massa) e o Crawler e' agil.
+    float vel_x = 0.0f, vel_z = 0.0f;
+    // Altura suavizada: seguir o terreno direto fazia a criatura pular a cada degrau de tile.
+    float smooth_y = 0.0f;
+    bool  y_init = false;
+    // Lado do strafe do Stalker. Guardado na criatura (nao derivado de anim_timer a cada frame),
+    // senao o alvo de movimento mudava de lado no meio do passo e ele tremia no lugar.
+    float strafe_side = 1.0f;
+    float strafe_timer = 0.0f;
     // Barra de vida: aparece ao receber dano e some depois. Nao ha barra permanente sobre todo
     // bicho do mapa - poluiria a tela (pedido explicito).
     float hp_bar_timer = 0.0f;
@@ -179,8 +246,3 @@ extern int   g_player_hit_amount;
 
 // Abates por tipo (arquitetura pronta pra objetivos como "derrote 3 Brutes"). Indice = EnemyType.
 int creature_kills_of(EnemyType t);
-
-// TESTE TEMPORARIO (REMOVER)
-int weapon_damage_for_test();
-float weapon_cooldown_for_test();
-EnemyType pick_spawn_type_for_test();

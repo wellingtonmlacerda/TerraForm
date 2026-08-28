@@ -24,6 +24,10 @@ extern bool g_debug;
 // Extracted verbatim from main.cpp (original lines ~204-546 and ~648-825).
 GameCamera g_camera;
 
+// Folga minima entre a camera e o topo do terreno no XZ dela (ver o clamp em
+// update_camera_position). Pequena de proposito: so o suficiente pra nao renderizar de dentro do
+// bloco - maior que isso empurraria a camera pra fora do chao em qualquer descida de terreno.
+static constexpr float kCameraGroundMargin = 0.35f;
 static float g_camera_adapt_pitch = 0.0f;
 static float g_camera_adapt_distance_scale = 1.0f;
 static float g_camera_adapt_target_lift = 0.0f;
@@ -69,7 +73,25 @@ static void update_camera_position() {
     float rad_yaw = g_camera.yaw * (kPi / 180.0f);
     float adaptive_pitch = std::clamp(g_camera.pitch + g_camera_adapt_pitch, g_camera.min_pitch, g_camera.max_pitch);
     float rad_pitch = adaptive_pitch * (kPi / 180.0f);
-    float dist = std::clamp(g_camera.effective_distance * g_camera_adapt_distance_scale, g_camera.min_distance, g_camera.max_distance);
+    // Piso da distancia: normalmente min_distance (o limite de zoom do jogador). Mas quando a
+    // COLISAO pediu menos que isso, ela ganha - senao a camera nao consegue sair da rocha.
+    // Medido olhando pra cima em terreno aberto: a colisao pedia effective_distance 1.59 e o clamp
+    // em min_distance 2.20 recusava, deixando a camera ENTERRADA no chao (era o "consigo ver pelo
+    // chao e embaixo dele"). min_collision_distance (0.70) e' o piso proprio da colisao.
+    float collision_floor = std::max(0.35f, g_camera_cfg.min_collision_distance);
+    float dist_lo = (g_camera.effective_distance < g_camera.min_distance) ? collision_floor
+                                                                         : g_camera.min_distance;
+    float dist = std::clamp(g_camera.effective_distance * g_camera_adapt_distance_scale,
+                            dist_lo, g_camera.max_distance);
+
+    // OLHANDO PRA CIMA (pitch negativo) a camera fica ABAIXO do jogador. Encurtar a orbita faz ela
+    // subir por tras da cabeca em vez de cavar - evita entrar na rocha em vez de so' reagir depois.
+    // Aplicado DEPOIS do clamp e com o piso da colisao, senao o min_distance anulava o encurtamento
+    // (era o caso: 2.2 * 0.40 = 0.88 voltava pra 2.2 e o encurtamento nao fazia nada).
+    if (adaptive_pitch < 0.0f) {
+        float t = clamp01(-adaptive_pitch / 38.0f);
+        dist = std::max(collision_floor, dist * lerp(1.0f, 0.40f, t));
+    }
 
     // Posicao da camera em coordenadas esfericas relativas ao target
     float x = dist * std::cos(rad_pitch) * std::sin(rad_yaw);
@@ -79,6 +101,28 @@ static void update_camera_position() {
     g_camera.position.x = g_camera.target.x + x;
     g_camera.position.y = g_camera.target.y + y;
     g_camera.position.z = g_camera.target.z + z;
+
+    // ============ A CAMERA NUNCA FICA ABAIXO DO CHAO ============
+    // Teste geometrico direto, no XZ da propria camera. E' o que impede "olhar pra cima dentro de um
+    // buraco e ver por baixo do chao" (pedido do jogador), e vale pra buraco de qualquer tamanho.
+    //
+    // Por que nao usar pit_factor pra isso: aquela deteccao sonda so' +-3 tiles em volta do JOGADOR.
+    // Medido - um poco de 9x9 com 10 unidades (2.5 de mundo) de fundo da pit_factor 0.00, porque o
+    // 7x7 de sondagem cai inteiro dentro do proprio poco e le "chao plano mais baixo". Heuristica de
+    // enclausuramento nao responde "a camera esta dentro da rocha"; a altura do terreno responde.
+    //
+    // Levantar Y mantendo o alvo faz a camera olhar um pouco menos pra cima, que e' exatamente o
+    // comportamento desejado: dentro de um poco estreito ela sobe pra borda e olha pra dentro, em vez
+    // de atravessar o piso. Em terreno aberto nao dispara (medido: olhando pra cima no limite a
+    // camera fica 0.67 acima dos pes do jogador, bem acima da margem).
+    if (g_world) {
+        int cam_tx = world_to_tile(g_camera.position.x);
+        int cam_tz = world_to_tile(g_camera.position.z);
+        if (g_world->in_bounds(cam_tx, cam_tz)) {
+            float floor_y = stack_top_height_at(*g_world, cam_tx, cam_tz) + kCameraGroundMargin;
+            if (g_camera.position.y < floor_y) g_camera.position.y = floor_y;
+        }
+    }
 }
 
 // Aplicar matriz de view (gluLookAt manual)
@@ -450,6 +494,19 @@ void update_camera_for_frame() {
     float occlusion_factor = std::clamp(
         vis_probe.total_ratio * 0.80f + vis_probe.blocked_ray_ratio * 0.35f,
         0.0f, 1.0f);
+    // REALIMENTACAO: occlusion_factor vem de tracos da PROPRIA CAMERA. Quando o jogador escolhe
+    // olhar pra cima (pitch < 0) a camera desce abaixo dele e naturalmente se ve ocluida pelo chao -
+    // o modo virava SEMI, o que mexia em distance_scale/target_lift, o que movia a camera, o que
+    // mudava a oclusao... Medido, jogador PARADO em terreno aberto (pit=0.00, enclosed=0.00):
+    //   pitch  24: camera anda 0.0003/frame (max 0.0090),   0 trocas de modo em 239 frames
+    //   pitch -38: camera anda 0.0626/frame (max 3.1037), 129 trocas de modo em 360 frames
+    // 129 trocas em 6s com saltos de 3.1 unidades num frame - era a "tela tremendo".
+    //
+    // Olhando pra cima, quem decide o modo passam a ser SO' os fatores de TERRENO (pit_factor e
+    // enclosed_factor, medidos em volta do JOGADOR, nao da camera). Isso corta a realimentacao e,
+    // de quebra, e' o que mantem a restricao dentro de um buraco: num poco fundo pit_factor e alto,
+    // o modo vira Caverna e o piso de pitch impede olhar pra cima atravessando o chao.
+    if (g_camera.pitch < 0.0f) occlusion_factor = 0.0f;
     float cave_score = std::max(std::max(pit_factor, enclosed_factor), occlusion_factor);
 
     if (vis_probe.primary_blocked || vis_probe.blocked_ray_ratio > 0.62f) {
@@ -473,7 +530,9 @@ void update_camera_for_frame() {
 
     if (desired_mode == GameCameraMode::SemiClosed) {
         float t = smoothstep01(0.30f, 0.72f, cave_score);
-        desired_pitch_abs = lerp(g_camera_cfg.open_pitch, g_camera_cfg.semi_pitch, t);
+        // Base min_pitch (nao open_pitch): assim o piso sobe de "nenhum" ate semi_pitch conforme o
+        // lugar fecha, sem um degrau de 26 graus no instante em que o modo troca de Aberto pra Semi.
+        desired_pitch_abs = lerp(g_camera.min_pitch, g_camera_cfg.semi_pitch, t);
         desired_scale = lerp(g_camera_cfg.open_distance_scale, g_camera_cfg.semi_distance_scale, t);
         desired_lift = lerp(g_camera_cfg.open_target_lift, g_camera_cfg.semi_target_lift, t);
     } else if (desired_mode == GameCameraMode::Cave) {
@@ -487,10 +546,36 @@ void update_camera_for_frame() {
         desired_lift = g_camera_cfg.emergency_target_lift;
     }
 
-    float desired_pitch_offset = desired_pitch_abs - g_camera.pitch;
-    float min_off = g_camera.min_pitch - g_camera.pitch;
+    // ============ O ADAPTATIVO E' UM PISO, NAO UM ALVO ABSOLUTO ============
+    // Era `desired_pitch_offset = desired_pitch_abs - g_camera.pitch`, ou seja o offset era
+    // calculado pra o pitch EFETIVO virar desired_pitch_abs seja qual for o pitch do jogador.
+    // Em terreno aberto isso significa 26 graus sempre, anulando o mouse. Medido:
+    //
+    //   frame | pitch(mouse) | adapt  | EFETIVO
+    //      20 |         2.00 |   1.90 |    3.90   jogador olha pra cima
+    //      89 |         2.00 |  24.00 |   26.00   voltou sozinho
+    //      90 |        89.00 |  24.00 |   89.00   jogador olha pra baixo
+    //     160 |        89.00 | -63.00 |   26.00   voltou sozinho
+    //
+    // Toda olhada era desfeita em ~1.2s. Era a causa de "nao consigo olhar para cima e nem
+    // para o chao": a faixa de pitch estava tecnicamente livre, mas a camera nao deixava ficar.
+    //
+    // Agora o modo adaptativo so' impede que o jogador olhe MENOS pra baixo do que o ambiente
+    // exige - o que era o proposito real dele (numa caverna ou num poco, sem inclinar pra baixo
+    // nao se ve nada). Em terreno aberto o piso e' min_pitch, entao o offset e' zero e o jogador
+    // manda na camera. Quanto mais fechado o lugar, mais alto o piso.
+    // O piso volta a valer em QUALQUER modo fechado, inclusive olhando pra cima - pedido explicito
+    // do jogador: "no buraco nao deveria deixar mexer a camera, pois ai eu consigo ver pelo chao e
+    // embaixo dele". Num poco fundo pit_factor e alto (medido a partir do terreno em volta do
+    // JOGADOR, nao da camera), o modo vira Semi/Caverna e o piso impede o pitch negativo.
+    //
+    // A excecao "nao aplicar piso quando pitch < 0" que estava aqui foi o conserto errado: ela
+    // existia pra contornar a realimentacao de oclusao, que agora e' cortada na raiz mais acima -
+    // e de tabela ela desligava a restricao exatamente onde o jogador quer que exista.
+    float floor_pitch = (desired_mode == GameCameraMode::Open) ? g_camera.min_pitch : desired_pitch_abs;
+    float desired_pitch_offset = std::max(0.0f, floor_pitch - g_camera.pitch);
     float max_off = g_camera.max_pitch - g_camera.pitch;
-    desired_pitch_offset = std::clamp(desired_pitch_offset, min_off, max_off);
+    desired_pitch_offset = std::clamp(desired_pitch_offset, 0.0f, std::max(0.0f, max_off));
 
     float pitch_lerp_t = clamp01(g_camera_cfg.pitch_lerp);
     float dist_lerp_t = clamp01(g_camera_cfg.distance_lerp);

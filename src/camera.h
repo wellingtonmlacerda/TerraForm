@@ -27,10 +27,18 @@ struct GameCamera {
     float distance = 4.8f;      // Distancia do jogador
     float yaw = 180.0f;         // Rotacao horizontal (graus) - sem limite, gira 360 livre
     float pitch = 18.0f;        // Rotacao vertical (mais baixa para ver o horizonte)
-    // Faixa alargada quase ate os polos (perto de 0 = ver o horizonte/ceu de perto, perto de
-    // 90 = ver quase de cima, proximo dos pes) - antes 8/88 deixava a sensacao de nao
-    // conseguir olhar pro ceu nem pros pes mesmo a faixa sendo tecnicamente livre no yaw.
-    float min_pitch = 2.0f;
+    // FAIXA DE PITCH. Esta e' uma camera em ORBITA que olha SEMPRE para o jogador, entao o pitch
+    // e' a elevacao da camera em volta dele, nao uma direcao de olhar:
+    //   pitch > 0  -> camera ACIMA do jogador, olhando pra baixo (89 = quase de cima)
+    //   pitch = 0  -> camera na altura do jogador, olhando na horizontal (horizonte)
+    //   pitch < 0  -> camera ABAIXO do jogador, olhando pra CIMA -> e' isto que mostra o ceu
+    //
+    // min_pitch era 2.0, ou seja a camera nunca descia abaixo do jogador e o ceu nunca passava de
+    // uma faixa no topo da tela - "nao consigo olhar para cima e admirar o ceu". Com -38 e o FOV
+    // de 74 graus, o enquadramento no limite cobre de -1 ate 75 graus acima da horizontal: ceu
+    // ocupando quase toda a tela. update_camera_position() encurta a orbita quando o pitch fica
+    // negativo, pra a camera subir por tras da cabeca em vez de enterrar no chao.
+    float min_pitch = -38.0f;
     float max_pitch = 89.0f;
     float min_distance = 2.2f;
     float max_distance = 90.0f;

@@ -26,6 +26,7 @@
   "ground_tolerance": 0.06,
   "step_height": 2.0,
   "step_probe_distance": 0.54,
+  "step_down_snap": 0.55,
   "slope_limit_normal_y": 0.70,
   "slope_slide_accel": 7.5,
   "slope_uphill_speed_mult": 0.82,

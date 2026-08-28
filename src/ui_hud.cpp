@@ -421,6 +421,10 @@ void render_hud(int win_w, int win_h) {
         // manuais do calculo de distancia que existiam aqui, em update_modules e em main.cpp foram
         // substituidas por esta chamada - com o anexo existindo, elas fatalmente discordariam.
         bool at_base = player_in_base_complex();
+    // ---- COLUNA DE TEXTO DE ALVO/DEBUG ----
+    // Saiu de x=20 pra depois do minimapa, que passou a ocupar o canto inferior esquerdo. Antes o
+    // "Alvo: <bloco>" e a linha de upgrade ficavam POR CIMA do mapa.
+    const float kInfoX = minimap_right_edge_x(win_w, win_h) + 22.0f;
         
         // === FUNDO TRANSPARENTE DO HUD ESQUERDO ===
         float left_panel_h = bar_gap * 11 + 100.0f;  // Altura aproximada do painel esquerdo (incluindo jetpack + traje)
@@ -1099,7 +1103,7 @@ void render_hud(int win_w, int win_h) {
             if (b != Block::Air) {
                 float rr = g_target_in_range ? 0.85f : 0.95f;
                 float gg = g_target_in_range ? 0.95f : 0.35f;
-                draw_text(20.0f, win_h - 100.0f, std::string("Alvo: ") + block_name(b), rr, gg, 0.25f, 0.95f);
+                draw_text(kInfoX, win_h - 100.0f, std::string("Alvo: ") + block_name(b), rr, gg, 0.25f, 0.95f);
 
                 // Upgrade de modulo (tecla R) - so mostra a dica quando mirando um modulo
                 // ja construido em alcance (mesmo padrao de "Alvo:" acima).
@@ -1107,11 +1111,11 @@ void render_hud(int win_w, int win_h) {
                     for (const Module& m : g_modules) {
                         if (m.x != g_target_x || m.y != g_target_y) continue;
                         if (m.upgraded) {
-                            draw_text(20.0f, win_h - 82.0f, "Aprimorado", 0.55f, 0.90f, 0.55f, 0.90f);
+                            draw_text(kInfoX, win_h - 82.0f, "Aprimorado", 0.55f, 0.90f, 0.55f, 0.90f);
                         } else {
                             CraftCost uc = get_module_upgrade_cost(b);
                             bool affordable = can_afford(uc);
-                            draw_text(20.0f, win_h - 82.0f, "[R] Aprimorar (" + module_cost_string(uc) + ")",
+                            draw_text(kInfoX, win_h - 82.0f, "[R] Aprimorar (" + module_cost_string(uc) + ")",
                                 affordable ? 0.85f : 0.95f, affordable ? 0.95f : 0.35f, 0.25f, 0.90f);
                         }
                         break;
@@ -1156,11 +1160,11 @@ void render_hud(int win_w, int win_h) {
                 g_camera.yaw, g_camera.pitch, g_camera.distance,
                 camera_mode_name(g_camera_mode), g_camera_mode_reason.c_str(),
                 g_camera_obstruction, g_camera_enclosed);
-            draw_text(20.0f, win_h - 100.0f, buf, 0.85f, 0.85f, 0.90f, 0.95f);
+            draw_text(kInfoX, win_h - 100.0f, buf, 0.85f, 0.85f, 0.90f, 0.95f);
 
             snprintf(buf, sizeof(buf), "Phys: dt=%.4f alpha=%.2f cam_hide=%.2fs cam_rays=%d",
                 g_physics_cfg.fixed_timestep, g_physics.alpha, g_camera_hidden_time, g_camera_debug_ray_count);
-            draw_text(20.0f, win_h - 82.0f, buf, 0.85f, 0.85f, 0.90f, 0.95f);
+            draw_text(kInfoX, win_h - 82.0f, buf, 0.85f, 0.85f, 0.90f, 0.95f);
         }
     }
 

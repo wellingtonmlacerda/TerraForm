@@ -335,6 +335,7 @@ static bool g_prev_c = false;
 static bool g_prev_f = false; // Reparar traje (ver g_suit_integrity) - R ja e "remover waypoint" so com o mapa aberto
 static bool g_prev_g = false; // Refinar na Oficina (ver try_refine_at_workshop())
 static bool g_prev_t = false; // Scanner (ver scan_for_points_of_interest(), minimap.cpp)
+static bool g_prev_f4 = false; // Debug de distribuicao geologica no mapa (ver g_geo_debug_mode)
 static bool g_prev_p = false; // Fabricar Pistola de Laser (ver try_craft_laser_pistol())
 static bool g_prev_u = false; // Aprimorar a Pistola de Laser (ver try_upgrade_weapon())
 
@@ -597,6 +598,11 @@ bool reload_camera_config(bool create_if_missing) {
     bool loaded = reload_config<CameraConfig>("camera_config.json", g_camera_cfg, create_if_missing,
                                                write_default_camera_config, apply_camera_config_overrides,
                                                &g_camera_config_path);
+    // A faixa de pitch mora no config e e' copiada pra o objeto vivo da camera aqui - g_camera
+    // guarda min_pitch/max_pitch porque o input de mouse (win32_platform.cpp) e a projecao os leem
+    // toda hora, mas quem MANDA e' o camera_config.json.
+    g_camera.min_pitch = g_camera_cfg.min_pitch;
+    g_camera.max_pitch = g_camera_cfg.max_pitch;
     g_camera.distance = std::clamp(g_camera.distance, g_camera.min_distance, g_camera.max_distance);
     g_camera.pitch = std::clamp(g_camera.pitch, g_camera.min_pitch, g_camera.max_pitch);
     return loaded;
@@ -1576,6 +1582,33 @@ void render_world(int win_w, int win_h) {
                         wtint_g = std::min(1.0f, wtint_g + 0.03f);
                     }
 
+
+                    // === PAREDE DE AGUA/GELO = MARGEM DE TERRA, nao agua ===
+                    // Mesma classe do penhasco de lava logo acima: a parede de desnivel usava a
+                    // textura do PROPRIO solo, entao uma coluna de agua mais alta que a vizinha
+                    // desenhava literalmente uma "parede de agua" de varias unidades de altura
+                    // (sintoma reportado). Fisicamente a borda de um lago e' um barranco de terra
+                    // submersa - a agua e' a superficie, nao o paredao.
+                    //
+                    // Isto e' rede de seguranca visual: com o gelo virando fonte de inundacao
+                    // (water_flood_from) o buraco enche e o desnivel desaparece, mas ENQUANTO enche
+                    // - e em qualquer caso onde a agua fique represada acima do vizinho - a parede
+                    // agora le como barranco.
+                    if (surface == Block::Water || surface == Block::Ice) {
+                        wall_tile = block_tex(Block::Dirt).side;
+                        float br, bg, bb, ba;
+                        block_color(Block::Dirt, tz, g_world->h, br, bg, bb, ba);
+                        wtint_r = br * shade; wtint_g = bg * shade; wtint_b = bb * shade;
+                        if (g_lighting.enabled) {
+                            float lr2, lg2, lb2;
+                            sample_lightmap((float)tx, (float)tz, lr2, lg2, lb2);
+                            float df2 = compute_depth_factor(base_y, rpy);
+                            wtint_r *= lr2 * df2; wtint_g *= lg2 * df2; wtint_b *= lb2 * df2;
+                            apply_color_grading(wtint_r, wtint_g, wtint_b);
+                        }
+                        // Escurece um pouco: barranco molhado/submerso e' mais escuro que terra seca.
+                        wtint_r *= 0.72f; wtint_g *= 0.76f; wtint_b *= 0.82f;
+                    }
                     // === LATERAIS (paredes) para diferenca de altura ===
                     bool do_walls = (dist2 <= wall_radius2);
                     if (!do_walls) {
@@ -2781,11 +2814,12 @@ void render_world(int win_w, int win_h) {
         }
     }
     
-    // HUD de combate (barra de vida das criaturas, nome do tipo, numeros de dano). ANTES do HUD
-    // principal: os paineis fixos devem ficar por cima das barras flutuantes, nao o contrario.
-    render_creature_hud(win_w, win_h);
-
     render_hud(win_w, win_h);
+
+    // HUD de combate (painel de ameacas + numeros de dano). Tem que vir DEPOIS de render_hud: e'
+    // render_hud que troca a projecao pra ortho 2D. Chamado antes, o painel era desenhado com a
+    // projecao PERSPECTIVA ainda ativa - por isso a barra de vida "nao aparecia corretamente".
+    render_creature_hud(win_w, win_h);
 
     // DIAGNOSTICO TEMPORARIO (remover depois) - jogador reportou voo infinito + piscar do
     // chao de novo mesmo apos o ajuste de smooth_passes/detail_weight. Mostra FPS real +
@@ -3036,6 +3070,43 @@ static void update_meteors(float dt) {
                 }
 
                 g_surface_dirty = true;
+
+                // ================= SEMEIA O FLUIDO NA CRATERA =================
+                // A cratera abria um buraco ao lado de um lago ou de um rio de lava e o fluido
+                // FICAVA PARADO: a simulacao de agua/lava e' orientada a eventos e so' era semeada
+                // pela escavacao MANUAL (building_interaction.cpp semeia o tile cavado + os 4
+                // vizinhos). O meteoro nao semeava nada, entao a agua ficava encostada num poco sem
+                // nunca escorrer pra dentro - foi o bug reportado ("a agua bugou e nao preencheu o
+                // buraco").
+                //
+                // Semeia toda a area da cratera: water_flood_from/lava_flood_from se
+                // autofiltram (nao fazem nada num tile que nao e' liquido nem tem liquido vizinho),
+                // entao chamar pra ~625 tiles uma vez no impacto e' barato e nao precisa de teste
+                // de adjacencia duplicado aqui. Objetos nao represam fluido (water_flow_blocked so'
+                // olha pilha e estrutura da base), entao os veios de ferro meteorico continuam no
+                // lugar e o buraco enche por cima deles.
+                for (int cz = iz - scan_r; cz <= iz + scan_r; ++cz) {
+                    for (int cx = ix - scan_r; cx <= ix + scan_r; ++cx) {
+                        if (!g_world->in_bounds(cx, cz)) continue;
+                        float sdx = (float)(cx - ix), sdz = (float)(cz - iz);
+                        float sd2 = sdx * sdx + sdz * sdz;
+                        if (sd2 > kCraterRimRadius * kCraterRimRadius) continue;
+                        water_flood_from(*g_world, cx, cz);
+                        // LAVA DO METEORO NAO ESPALHA - ELA ESFRIA.
+                        // O nucleo derretido do impacto e' uma quantidade FINITA: nao ha camara
+                        // magmatica alimentando nada, ao contrario de um vulcao. Enfileira pra
+                        // ESFRIAR (lava_cool_enqueue, world.h): a crosta de basalto avanca da borda
+                        // pro centro em ~23s, e a lava continua coletavel enquanto esta liquida.
+                        //
+                        // E NAO semeia lava_flood_from em NENHUM tile da cratera. Duas tentativas
+                        // anteriores erraram aqui: semear em toda a area fez o nucleo ir de 19 pra 53
+                        // tiles; restringir a "fora do nucleo" nao resolveu, porque esses tiles sao
+                        // VIZINHOS do nucleo - lava_flood_from num tile seco procura vizinho de lava
+                        // e se enfileira, entao continuava semeando fluxo a partir do proprio derrame
+                        // do meteoro (medido: 21 -> 96 tiles). Um impacto nao deve fazer lava correr.
+                        lava_cool_enqueue(*g_world, cx, cz);
+                    }
+                }
             }
 
             // FERRO, nao cristal (pedido do jogador: "o meteorito deveria deixar ferro"). Faz sentido
@@ -3119,6 +3190,7 @@ void update_game(float dt) {
     bool t_pressed = key_pressed(KEY_T, g_prev_t);
     bool p_pressed = key_pressed(KEY_P, g_prev_p);
     bool u_pressed = key_pressed(KEY_U, g_prev_u);
+    bool f4_pressed = key_pressed(KEY_F4, g_prev_f4);
     bool v_pressed = key_pressed(KEY_V, g_prev_v);   // transicao exterior<->interior (interiors.h)
     
     // === MAPA GRANDE (tecla M) ===
@@ -3380,7 +3452,11 @@ void update_game(float dt) {
     // deslizando no gelo (soltou o movimento, corpo ainda escorregando por inercia) precisa
     // parecer deslizar de pe' parado, nao continuar o ciclo de passada. Suavizado (nao um
     // corte seco) pra nao "travar" as pernas de repente ao soltar o movimento.
-    float walk_blend_target = (has_input && g_player.is_moving) ? 1.0f : 0.0f;
+    // SO' anda quem esta NO CHAO. Antes bastava ter input + velocidade horizontal, entao voar com o
+    // jetpack segurando WASD tocava o ciclo de passada e as pernas balancavam no ar (relato do
+    // jogador: "meu personagem parece andar quando esta voando"). Nadar tambem nao e' caminhar.
+    bool grounded_for_walk = g_player.on_ground && !g_player.jetpack_active && !g_physics.in_water;
+    float walk_blend_target = (has_input && g_player.is_moving && grounded_for_walk) ? 1.0f : 0.0f;
     float walk_blend_rate = 9.0f * dt;
     if (g_player.walk_blend < walk_blend_target) g_player.walk_blend = std::min(walk_blend_target, g_player.walk_blend + walk_blend_rate);
     else g_player.walk_blend = std::max(walk_blend_target, g_player.walk_blend - walk_blend_rate);
@@ -3617,6 +3693,14 @@ void update_game(float dt) {
     // equipada o raycast nem roda (ver o comentario da definicao em modules_building.cpp).
     if (u_pressed) {
         try_upgrade_weapon(g_target_x, g_target_y, g_has_target && g_target_in_range);
+    }
+
+    // F4: cicla o overlay de debug de distribuicao geologica no mapa completo (M). Ferramenta de
+    // desenvolvimento - ver g_geo_debug_mode em minimap.h.
+    if (f4_pressed) {
+        g_geo_debug_mode = (g_geo_debug_mode + 1) % kGeoDebugModeCount;
+        const char* names[kGeoDebugModeCount] = {"desligado", "RECURSOS", "ALTITUDE"};
+        set_toast(std::string("[F4] Debug geologico: ") + names[g_geo_debug_mode], 2.0f);
     }
 }
 

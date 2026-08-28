@@ -31,3 +31,23 @@ bool scan_for_points_of_interest();
 bool poi_ever_found();
 void poi_discovery_load(bool found);   // save/load (bloco v11)
 void reset_poi_discovery();            // novo jogo
+
+// ============= Geometria do minimapa (fonte unica) =============
+// Borda DIREITA do minimapa em pixels. Existe pelo mesmo motivo de hud_right_panel_right_x/
+// bottom_y (ui_hud.h): o minimapa passou pro canto inferior esquerdo e o texto de "Alvo:"/debug
+// ficava por cima dele. Quem precisa desviar do mapa pergunta aqui, em vez de recalcular o
+// tamanho (que e' clampado por largura/altura da janela) e divergir na primeira mudanca.
+float minimap_right_edge_x(int win_w, int win_h);
+
+// ============= Debug de distribuicao geologica (SO' desenvolvimento) =============
+// Sobrepoe o mapa completo (M) com uma leitura da distribuicao, pra facilitar o balanceamento das
+// regras de resource_geology.cpp sem precisar recompilar e medir por instrumentacao.
+//   0 = desligado (o mapa normal)
+//   1 = RECURSOS: cada minerio em cor forte sobre terreno acinzentado - mostra os depositos
+//   2 = ALTITUDE: rampa de cor pelo heightmap - mostra as faixas que as regras usam
+//
+// Ciclado pela tecla F4. Nao aparece de forma nenhuma no jogo normal: sem apertar F4 o modo e' 0
+// e nem um pixel muda. Le apenas dados JA armazenados (tiles e heightmap), entao nao recalcula
+// nenhum ruido - um overlay de temperatura/umidade exigiria refazer fbm em 4.7M tiles por frame.
+extern int g_geo_debug_mode;
+constexpr int kGeoDebugModeCount = 3;

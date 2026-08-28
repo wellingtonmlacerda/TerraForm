@@ -291,6 +291,23 @@ void bake_tile(MeshBuild& mb, int tx, int tz, float rpy) {
         wtint_r = std::min(1.0f, wtint_r + 0.10f);
         wtint_g = std::min(1.0f, wtint_g + 0.03f);
     }
+    // Idem pra AGUA/GELO: a borda de um lago e' barranco de terra, nao um paredao de agua. Precisa
+    // estar nos dois caminhos (perto e longe) pelo mesmo motivo do basalto acima - senao aparece
+    // costura na fronteira entre o modo imediato e o chunk cacheado.
+    if (surface == Block::Water || surface == Block::Ice) {
+        side_tile = block_tex(Block::Dirt).side;
+        float br, bg, bb, ba;
+        block_color(Block::Dirt, tz, g_world->h, br, bg, bb, ba);
+        wtint_r = br * shade; wtint_g = bg * shade; wtint_b = bb * shade;
+        if (g_lighting.enabled) {
+            float lr2, lg2, lb2;
+            sample_lightmap(world_x, world_z, lr2, lg2, lb2);
+            float df2 = compute_depth_factor(base_y, rpy);
+            wtint_r *= lr2 * df2; wtint_g *= lg2 * df2; wtint_b *= lb2 * df2;
+            apply_color_grading(wtint_r, wtint_g, wtint_b);
+        }
+        wtint_r *= 0.72f; wtint_g *= 0.76f; wtint_b *= 0.82f;
+    }
     UvRect uv_side = atlas_uv(side_tile);
     UvRect uv_flat = uv_side;
     uv_flat.u1 = uv_flat.u0 = (uv_side.u0 + uv_side.u1) * 0.5f;

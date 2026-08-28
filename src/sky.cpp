@@ -5,6 +5,7 @@
 #include "noise.h"              // lerp, perlin
 #include "camera.h"             // GameCamera, g_camera
 #include "config_types.h"       // SkyConfig (type of g_sky_cfg below)
+#include "world.h"              // kWorldWidth/kWorldHeight (ancoragem do ceu, ver sky_anchor)
 #include "items_particles.h"    // ShootingStar (type only - g_shooting_stars itself is NOT
                                  // declared extern there, see comment below)
 #include "game_state.h"         // rng_next_u32, rng_next_f01
@@ -34,6 +35,42 @@ extern std::vector<ShootingStar> g_shooting_stars;
 static float hash01(float v) {
     float h = std::sin(v * 12.9898f + 78.233f) * 43758.5453f;
     return std::fmod(std::fabs(h), 1.0f);
+}
+
+// ============= LUZ DA LUA =============
+// Ver a nota longa em sky.h. A orbita das duas luas vive AQUI e em nenhum outro lugar:
+// render_alien_sky() chama esta funcao pra desenhar, lighting.cpp chama pra iluminar.
+MoonState sky_moon_state() {
+    float sky_days = g_day_time / kDayLength;
+    float moon_phase = sky_days * std::max(0.0f, g_sky_cfg.moon_orbit_speed) * 0.08f;
+    float moon2_phase = sky_days * std::max(0.0f, g_sky_cfg.moon2_orbit_speed) * 0.10f;
+    float a1 = moon_phase * 2.0f * kPi + 1.1f;
+    float a2 = moon2_phase * 2.0f * kPi + 2.7f;
+    MoonState m;
+    m.az1 = 1.7f + std::sin(a1) * 0.75f;
+    m.el1 = 0.38f + std::sin(a1 * 0.83f) * 0.15f;
+    m.az2 = 2.5f + std::sin(a2) * 0.92f;
+    m.el2 = 0.46f + std::sin(a2 * 0.71f) * 0.13f;
+    return m;
+}
+
+float sky_moonlight() {
+    MoonState m = sky_moon_state();
+    // sin(elevacao) = quanto da luz chega no chao (lei do cosseno). Ambas as elevacoes ficam em
+    // 0.23..0.59 rad neste ceu (as luas nunca se poem, por construcao da orbita), entao a variacao
+    // e real mas suave - a noite tem noites mais e menos claras, sem apagar de vez.
+    float l1 = clamp01(std::sin(std::max(0.0f, m.el1)));
+    float l2 = clamp01(std::sin(std::max(0.0f, m.el2)));
+    // Peso por porte: a lua maior (raio 36, dist 940) domina; a menor (raio 22, dist 1010)
+    // contribui menos. Razao de area aparente ~0.43 - e' de onde vem o 0.45.
+    return clamp01((l1 + l2 * 0.45f) * 0.62f);
+}
+
+float sky_moonlight_azimuth() {
+    MoonState m = sky_moon_state();
+    float l1 = clamp01(std::sin(std::max(0.0f, m.el1)));
+    float l2 = clamp01(std::sin(std::max(0.0f, m.el2))) * 0.45f;
+    return (l1 >= l2) ? m.az1 : m.az2;
 }
 
 SkyPalette compute_sky_palette(float day_phase, float atmos_factor) {
@@ -269,8 +306,26 @@ static void render_lit_sphere(const Vec3& center, float radius, const Vec3& ligh
 // uma simplificacao aceitavel pra um ceu estilizado (sem oclusao correta do lado de tras).
 // Alpha decai da borda externa (cheio) pra interna (mais fraco) pra parecer um leque de
 // particulas/poeira em vez de um disco solido uniforme.
+// Anel do planeta, desenhado em METADES SEPARADAS.
+//
+// `half`: 0 = tudo (compatibilidade), 1 = so a metade DISTANTE da camera, 2 = so a metade PROXIMA.
+//
+// Por que dividir: o ceu inteiro e' pintado de tras pra frente com o teste de profundidade
+// DESLIGADO (render_alien_sky). O anel era um passe unico depois do corpo do planeta, entao a parte
+// dele que passa POR TRAS do planeta era pintada por cima do disco - o anel atravessava o planeta
+// como se fosse transparente. Bug relatado: "os aneis deveriam sumir ao passar por tras dele".
+//
+// Ligar o teste de profundidade so' pra esses dois objetos resolveria, mas mexer no estado de
+// profundidade no meio de um passe que existe justamente por nao ter profundidade e' arriscado (o
+// domo, as estrelas e a nebulosa dependem de nao ter). Dividir em metades da o mesmo resultado sem
+// tocar em estado nenhum: a metade distante e' desenhada ANTES do corpo (o disco a cobre onde se
+// sobrepoem, e ela continua visivel fora da silhueta, que e' o certo) e a metade proxima DEPOIS.
+//
+// A classificacao e' por profundidade ao longo do eixo camera->planeta: um ponto do anel esta atras
+// quando a projecao dele nesse eixo passa da projecao do centro do planeta.
 static void render_planet_ring(const Vec3& center, float inner_r, float outer_r, float tilt_deg,
-                                float r, float g, float b, float alpha, int segments = 72) {
+                               float r, float g, float b, float alpha,
+                               const Vec3& cam_pos, int half, int segments = 120) {
     float tilt = tilt_deg * (kPi / 180.0f);
     float ct = std::cos(tilt), st = std::sin(tilt);
     auto ring_point = [&](float radius, float angle) -> Vec3 {
@@ -278,15 +333,27 @@ static void render_planet_ring(const Vec3& center, float inner_r, float outer_r,
         float z0 = radius * std::sin(angle);
         return vec3_add(center, Vec3{x, z0 * st, z0 * ct});
     };
+    Vec3 axis = vec3_sub(center, cam_pos);
+    float center_depth = vec3_length(axis);
+    if (center_depth < 1e-4f) return;
+    axis = vec3_scale(axis, 1.0f / center_depth);
+    // Um segmento pertence a metade distante quando o MEIO dele esta mais longe que o centro do
+    // planeta ao longo do eixo de visao.
+    auto seg_is_far = [&](float a0, float a1) -> bool {
+        float am = (a0 + a1) * 0.5f;
+        Vec3 mid = ring_point((inner_r + outer_r) * 0.5f, am);
+        return vec3_dot(vec3_sub(mid, cam_pos), axis) > center_depth;
+    };
 
     rlBegin(RL_TRIANGLES);
     Vec3 prev_in{}, prev_out{};
+    float prev_a = 0.0f;
     bool have_prev = false;
     for (int i = 0; i <= segments; ++i) {
         float a = (float)i / (float)segments * 2.0f * kPi;
         Vec3 pin = ring_point(inner_r, a);
         Vec3 pout = ring_point(outer_r, a);
-        if (have_prev) {
+        if (have_prev && (half == 0 || (seg_is_far(prev_a, a) ? (half == 1) : (half == 2)))) {
             rlColor4f(r, g, b, alpha * 0.20f); rlVertex3f(prev_in.x, prev_in.y, prev_in.z);
             rlColor4f(r, g, b, alpha);         rlVertex3f(prev_out.x, prev_out.y, prev_out.z);
             rlColor4f(r, g, b, alpha);         rlVertex3f(pout.x, pout.y, pout.z);
@@ -295,7 +362,7 @@ static void render_planet_ring(const Vec3& center, float inner_r, float outer_r,
             rlColor4f(r, g, b, alpha);         rlVertex3f(pout.x, pout.y, pout.z);
             rlColor4f(r, g, b, alpha * 0.20f); rlVertex3f(pin.x, pin.y, pin.z);
         }
-        prev_in = pin; prev_out = pout; have_prev = true;
+        prev_in = pin; prev_out = pout; prev_a = a; have_prev = true;
     }
     rlEnd();
 }
@@ -325,13 +392,41 @@ static void render_point_billboard(float x, float y, float z, float half_size, f
     rlVertex3f(p3.x, p3.y, p3.z);
 }
 
+// ============= ANCORAGEM DO CEU =============
+// Todo corpo e toda camada do ceu era ancorada em `cam * parallax`. A intencao era dar um parallax
+// leve (o ceu se desloca um pouquinho quando o jogador anda), mas o efeito real e' o OPOSTO: com
+// parallax 0.028 o corpo acompanha a camera a 2.8% da velocidade dela, ou seja fica praticamente
+// PREGADO NA ORIGEM DO MUNDO. Num mapa de 3072x1536, a 1472 tiles da origem o planeta ficava 1428
+// unidades atras da camera.
+//
+// Medido, camera em (1472, 19, 757):
+//   planeta em (-640, 478, 853)  <- x NEGATIVO, do outro lado do mapa
+//   distancia camera->planeta = 2163, plano de corte (far) = 2200
+//   borda distante do planeta  = 2463  -> CORTADA
+// Com a distancia parada em cima do limite, qualquer giro de camera fazia o planeta cruzar o far
+// plane e piscar - o bug de "o planeta some quando viro a camera".
+//
+// A correcao ancora na CAMERA e desloca de leve rumo ao CENTRO DO MUNDO. Assim:
+//   - a distancia camera->corpo fica constante (= `dist`), longe do plano de corte;
+//   - ainda existe parallax de verdade, mas LIMITADO: no centro do mapa o deslocamento e' zero e na
+//     borda e' parallax * meia-extensao (0.028 * 1536 = ~43 unidades) em vez de crescer sem teto.
+static float sky_anchor(float cam, float parallax, float world_center) {
+    return cam + (world_center - cam) * parallax;
+}
+static float sky_anchor_x(float cam_x, float parallax) {
+    return sky_anchor(cam_x, parallax, (float)kWorldWidth * 0.5f);
+}
+static float sky_anchor_z(float cam_z, float parallax) {
+    return sky_anchor(cam_z, parallax, (float)kWorldHeight * 0.5f);
+}
+
 static void render_star_layer(float cam_x, float cam_z, float day_phase, float night_alpha) {
     if (night_alpha < 0.03f) return;
     int star_count = (int)std::lround(g_sky_cfg.stars_density);
     star_count = std::clamp(star_count, 120, 4000);
 
-    float origin_x = cam_x * g_sky_cfg.stars_parallax;
-    float origin_z = cam_z * g_sky_cfg.stars_parallax;
+    float origin_x = sky_anchor_x(cam_x, g_sky_cfg.stars_parallax);
+    float origin_z = sky_anchor_z(cam_z, g_sky_cfg.stars_parallax);
 
     constexpr float kStarHalfSize = 0.9f; // roughly matches the old glPointSize(1.4f) look
     rlBegin(RL_QUADS);
@@ -366,8 +461,8 @@ static void render_star_layer(float cam_x, float cam_z, float day_phase, float n
 static void render_nebula_layer(float cam_x, float cam_z, float day_phase, float night_alpha) {
     float alpha = night_alpha * g_sky_cfg.nebula_alpha;
     if (alpha < 0.01f) return;
-    float origin_x = cam_x * g_sky_cfg.nebula_parallax;
-    float origin_z = cam_z * g_sky_cfg.nebula_parallax;
+    float origin_x = sky_anchor_x(cam_x, g_sky_cfg.nebula_parallax);
+    float origin_z = sky_anchor_z(cam_z, g_sky_cfg.nebula_parallax);
 
     rlSetBlendMode(RL_BLEND_ADDITIVE);
     for (int i = 0; i < 5; ++i) {
@@ -391,8 +486,8 @@ static void render_nebula_layer(float cam_x, float cam_z, float day_phase, float
 static void render_cloud_layer(float cam_x, float cam_z, float day_phase, float atmos_factor) {
     float alpha = g_sky_cfg.cloud_alpha * (0.35f + atmos_factor * 0.65f);
     if (alpha < 0.01f) return;
-    float origin_x = cam_x * g_sky_cfg.cloud_parallax;
-    float origin_z = cam_z * g_sky_cfg.cloud_parallax;
+    float origin_x = sky_anchor_x(cam_x, g_sky_cfg.cloud_parallax);
+    float origin_z = sky_anchor_z(cam_z, g_sky_cfg.cloud_parallax);
 
     rlSetBlendMode(RL_BLEND_ALPHA);
     for (int i = 0; i < 6; ++i) {
@@ -540,7 +635,6 @@ void render_alien_sky(float cam_x, float cam_y, float cam_z, float ground_y, flo
     rlSetTexture(0);
 
     render_sky_gradient_dome(cam_x, cam_z, palette);
-    render_distant_mountains(cam_x, cam_z, ground_y, palette);
     render_star_layer(cam_x, cam_z, day_phase, night_alpha);
     render_nebula_layer(cam_x, cam_z, day_phase, night_alpha);
 
@@ -562,9 +656,9 @@ void render_alien_sky(float cam_x, float cam_y, float cam_z, float ground_y, flo
     auto body_from_spherical = [&](float az, float el, float dist, float parallax) -> Vec3 {
         float cos_el = std::cos(el);
         return {
-            cam_x * parallax + std::cos(az) * cos_el * dist,
+            sky_anchor_x(cam_x, parallax) + std::cos(az) * cos_el * dist,
             70.0f + std::sin(el) * dist,
-            cam_z * parallax + std::sin(az) * cos_el * dist
+            sky_anchor_z(cam_z, parallax) + std::sin(az) * cos_el * dist
         };
     };
     Vec3 planet_pos = body_from_spherical(planet_az, planet_el, g_sky_cfg.planet_distance, g_sky_cfg.planet_parallax);
@@ -575,30 +669,120 @@ void render_alien_sky(float cam_x, float cam_y, float cam_z, float ground_y, flo
         planet_az += (sun_dir.x >= 0.0f) ? -0.95f : 0.95f;
         planet_pos = body_from_spherical(planet_az, planet_el, g_sky_cfg.planet_distance, g_sky_cfg.planet_parallax);
     }
-    // Gigante gasoso estilo Polyphemus (Avatar): teal profundo com bandas de nuvem claras,
-    // turbulencia leve por cima pra as bandas nao ficarem geometricas demais. Cor/banding
-    // era um azul-acinzentado apagado com ruido manchado (sem bandas) antes desta mudanca.
-    render_lit_sphere(planet_pos, g_sky_cfg.planet_radius, sun_dir, g_camera.position,
-                      0.10f, 0.40f, 0.44f, 0.98f,
-                      0.24f, 0.88f, 0.08f,
-                      0.012f, 0.10f, 24, 32,
-                      7.0f, 0.85f, 0.80f, 0.92f, 0.86f);
-    rlSetBlendMode(RL_BLEND_ADDITIVE);
-    render_billboard_disc(planet_pos, g_sky_cfg.planet_radius * 1.45f, 0.55f, 0.85f, 0.80f, 0.05f + night_alpha * 0.20f, 34);
-    rlSetBlendMode(RL_BLEND_ALPHA);
-    render_planet_ring(planet_pos, g_sky_cfg.planet_radius * 1.55f, g_sky_cfg.planet_radius * 2.55f,
-                       22.0f, 0.82f, 0.88f, 0.86f, 0.32f);
+    // ================= GIGANTE GASOSO ESTILO POLYPHEMUS (Avatar) =================
+    // O planeta era um disco de ~15 graus de arco (raio 160 a 1220 de distancia): visivel, mas nao
+    // dominante. Na referencia de Pandora o gigante OCUPA o ceu - e' o elemento que faz o lugar
+    // parecer outro mundo. Agora sao ~29 graus (raio 300 a 1150), mais quatro camadas que dao a
+    // leitura de corpo planetario de verdade em vez de bola pintada:
+    //
+    //   1) HALO DE ATMOSFERA - casca aditiva um pouco maior que o disco, em ciano-esverdeado. E' o
+    //      limbo iluminado por tras: sem ele o planeta tem borda de recorte, como adesivo.
+    //   2) BANDAS + TURBULENCIA - ja existia (band_freq no render_lit_sphere), agora com mais
+    //      contraste e frequencia maior, e uma segunda passada de bandas finas por cima.
+    //   3) GRANDE TEMPESTADE - oval anticiclonico tipo Grande Mancha, deslocado do centro e girando
+    //      com a orbita. E' o detalhe que o olho usa pra perceber que o planeta ROTACIONA.
+    //   4) CRESCENTE DO TERMINADOR - fio quente na borda virada pro sol. Define a direcao da luz e
+    //      amarra o planeta ao mesmo sol que ilumina o terreno.
+    float planet_ang_r = g_sky_cfg.planet_radius;
 
-    float moon_phase = sky_days * std::max(0.0f, g_sky_cfg.moon_orbit_speed) * 0.08f;
-    float moon2_phase = sky_days * std::max(0.0f, g_sky_cfg.moon2_orbit_speed) * 0.10f;
-    float moon_a1 = moon_phase * 2.0f * kPi + 1.1f;
-    float moon_a2 = moon2_phase * 2.0f * kPi + 2.7f;
-    Vec3 moon1_pos = body_from_spherical(1.7f + std::sin(moon_a1) * 0.75f,
-                                         0.38f + std::sin(moon_a1 * 0.83f) * 0.15f,
+    // Metade DISTANTE do anel, ANTES de tudo do planeta: o disco e o halo desenhados a seguir a
+    // cobrem onde se sobrepoem (o anel "sumindo por tras do planeta"), e ela continua visivel fora
+    // da silhueta. Ver a nota em render_planet_ring.
+    render_planet_ring(planet_pos, g_sky_cfg.planet_radius * 1.55f, g_sky_cfg.planet_radius * 2.55f,
+                       22.0f, 0.82f, 0.88f, 0.86f, 0.32f, g_camera.position, 1);
+
+    // (1) halo de atmosfera, por TRAS do disco (desenhado antes, sem depth mask)
+    rlSetBlendMode(RL_BLEND_ADDITIVE);
+    rlDisableDepthMask();
+    render_billboard_disc(planet_pos, planet_ang_r * 1.16f, 0.32f, 0.78f, 0.74f,
+                          0.16f + night_alpha * 0.20f, 44);
+    render_billboard_disc(planet_pos, planet_ang_r * 1.06f, 0.42f, 0.88f, 0.82f,
+                          0.10f + night_alpha * 0.14f, 44);
+    rlEnableDepthMask();
+    rlSetBlendMode(RL_BLEND_ALPHA);
+
+    // (2) corpo com bandas. lat/lon maiores (28x40) porque com o dobro do tamanho angular a
+    // facetacao do mesh antigo (24x32) ficava visivel na silhueta.
+    render_lit_sphere(planet_pos, planet_ang_r, sun_dir, g_camera.position,
+                      0.08f, 0.34f, 0.40f, 0.99f,
+                      0.20f, 0.94f, 0.10f,
+                      0.016f, 0.13f, 28, 40,
+                      9.0f, 1.05f, 0.86f, 0.95f, 0.90f);
+    // bandas finas por cima, meio transparentes: da a impressao de varias camadas de nuvem
+    render_lit_sphere(planet_pos, planet_ang_r * 1.002f, sun_dir, g_camera.position,
+                      0.16f, 0.52f, 0.56f, 0.34f,
+                      0.30f, 0.80f, 0.06f,
+                      0.030f, 0.16f, 20, 30,
+                      23.0f, 0.70f, 0.74f, 0.88f, 0.86f);
+
+    // (3) grande tempestade: oval achatado na horizontal, deslocado do centro do disco.
+    // Posicionado no plano da tela (right/up da camera) pra nao precisar de UV na esfera.
+    {
+        Vec3 to_cam = vec3_normalize(vec3_sub(g_camera.position, planet_pos));
+        Vec3 wup = {0.0f, 1.0f, 0.0f};
+        Vec3 pright = vec3_cross(wup, to_cam);
+        if (vec3_length(pright) < 0.001f) pright = {1.0f, 0.0f, 0.0f};
+        pright = vec3_normalize(pright);
+        Vec3 pup = vec3_normalize(vec3_cross(to_cam, pright));
+        // Gira devagar com a orbita: e' o que torna a rotacao do planeta perceptivel.
+        float spin = planet_orbit * 2.4f;
+        float sx = std::cos(spin) * 0.34f;
+        float sy = -0.16f + std::sin(spin * 0.5f) * 0.06f;
+        Vec3 storm = vec3_add(planet_pos,
+                        vec3_add(vec3_scale(pright, sx * planet_ang_r),
+                                 vec3_add(vec3_scale(pup, sy * planet_ang_r),
+                                          vec3_scale(to_cam, planet_ang_r * 0.06f))));
+        // So' aparece na parte iluminada - uma tempestade no lado noturno nao se ve.
+        float storm_lit = clamp01(vec3_dot(vec3_normalize(vec3_sub(storm, planet_pos)), sun_dir) * 1.4f + 0.35f);
+        if (storm_lit > 0.02f) {
+            // Achatado: 3 discos concentricos deslocados no eixo `pright` imitam um oval sem
+            // precisar de um primitivo de elipse.
+            for (int s = -1; s <= 1; ++s) {
+                Vec3 c = vec3_add(storm, vec3_scale(pright, (float)s * planet_ang_r * 0.085f));
+                render_billboard_disc(c, planet_ang_r * 0.115f,
+                                      0.86f, 0.52f, 0.34f, 0.30f * storm_lit, 22);
+            }
+            render_billboard_disc(storm, planet_ang_r * 0.062f,
+                                  0.95f, 0.70f, 0.48f, 0.26f * storm_lit, 20);
+        }
+    }
+
+    // (4) crescente do terminador: fio quente na borda virada pro sol.
+    {
+        Vec3 to_cam = vec3_normalize(vec3_sub(g_camera.position, planet_pos));
+        Vec3 limb = vec3_sub(sun_dir, vec3_scale(to_cam, vec3_dot(sun_dir, to_cam)));
+        if (vec3_length(limb) > 0.001f) {
+            limb = vec3_normalize(limb);
+            rlSetBlendMode(RL_BLEND_ADDITIVE);
+            rlDisableDepthMask();
+            for (int k = 0; k < 7; ++k) {
+                float t = (float)k / 6.0f;
+                Vec3 wup = {0.0f, 1.0f, 0.0f};
+                Vec3 tang = vec3_cross(limb, to_cam);
+                if (vec3_length(tang) < 0.001f) tang = wup;
+                tang = vec3_normalize(tang);
+                float off = (t - 0.5f) * 1.72f;
+                Vec3 c = vec3_add(planet_pos,
+                            vec3_add(vec3_scale(limb, planet_ang_r * 0.97f * std::cos(off * 0.9f)),
+                                     vec3_scale(tang, planet_ang_r * 0.97f * std::sin(off * 0.9f))));
+                c = vec3_add(c, vec3_scale(to_cam, planet_ang_r * 0.10f));
+                render_billboard_disc(c, planet_ang_r * 0.105f, 1.0f, 0.86f, 0.62f, 0.20f, 18);
+            }
+            rlEnableDepthMask();
+            rlSetBlendMode(RL_BLEND_ALPHA);
+        }
+    }
+    // Metade PROXIMA do anel: por cima do planeta, que e o certo - ela passa na frente dele.
+    render_planet_ring(planet_pos, g_sky_cfg.planet_radius * 1.55f, g_sky_cfg.planet_radius * 2.55f,
+                       22.0f, 0.82f, 0.88f, 0.86f, 0.32f, g_camera.position, 2);
+
+    // Orbita das luas: vem de sky_moon_state(), a mesma funcao que lighting.cpp le pra iluminar.
+    // Antes a orbita era calculada inline AQUI e a iluminacao nao a conhecia; agora e uma fonte so.
+    MoonState mstate = sky_moon_state();
+    Vec3 moon1_pos = body_from_spherical(mstate.az1, mstate.el1,
                                          g_sky_cfg.moon_distance,
                                          g_sky_cfg.moon_parallax);
-    Vec3 moon2_pos = body_from_spherical(2.5f + std::sin(moon_a2) * 0.92f,
-                                         0.46f + std::sin(moon_a2 * 0.71f) * 0.13f,
+    Vec3 moon2_pos = body_from_spherical(mstate.az2, mstate.el2,
                                          g_sky_cfg.moon2_distance,
                                          g_sky_cfg.moon2_parallax);
 
@@ -645,6 +829,18 @@ void render_alien_sky(float cam_x, float cam_y, float cam_z, float ground_y, flo
 
     render_cloud_layer(cam_x, cam_z, day_phase, atmos_factor);
     render_shooting_stars(cam_x, cam_y, cam_z, night_alpha);
+
+    // Montanhas distantes: desenhadas por ULTIMO entre as camadas de ceu.
+    //
+    // Elas ficavam aqui, logo depois do domo de gradiente. Como o ceu e' pintado de tras pra frente
+    // sem teste de profundidade, TUDO que vem depois (estrelas, nebulosa, sol, luas e o gigante
+    // gasoso) era pintado por CIMA da silhueta - o planeta aparecia na frente das montanhas, que e'
+    // o inverso do que a distancia manda. Ficava disfarcado enquanto o planeta era pequeno; com ele
+    // ocupando ~29 graus do ceu virou obvio.
+    //
+    // Montanha e' o elemento de ceu MAIS PROXIMO do jogador (e' relevo real no horizonte, nao corpo
+    // celeste), entao tem que ocluir todos os outros.
+    render_distant_mountains(cam_x, cam_z, ground_y, palette);
 
     rlEnableDepthTest();
 }

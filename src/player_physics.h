@@ -106,6 +106,11 @@ struct PhysicsRuntime {
     bool jump_was_held = false;
 
     bool stepped = false;
+    // Quanto SUBTRAIR da altura desenhada pra suavizar um degrau. Positivo = acabou de SUBIR
+    // (desenha mais baixo e sobe suave); negativo = acabou de DESCER (desenha mais alto e desce
+    // suave). A fisica muda pos_y na hora - obrigatorio, o substep seguinte precisa da altura real
+    // pra colidir - e so o render acompanha com atraso. Decai a zero em update_player_physics.
+    float step_visual_offset = 0.0f;
     bool hit_x = false;
     bool hit_z = false;
     bool sliding = false;

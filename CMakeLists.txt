@@ -55,6 +55,7 @@ add_executable(terraformer WIN32
   src/interiors.cpp
   src/base_exterior.cpp
   src/module_models.cpp
+  src/resource_geology.cpp
 )
 
 if(MSVC)

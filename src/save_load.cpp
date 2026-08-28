@@ -79,7 +79,7 @@ static constexpr float kEnergyMax = 500.0f;
 // jogo ("Continuar", ui_menu.cpp) nunca funcionou, e os blocos "if (version >= 6..10)" mais abaixo
 // eram codigo morto inalcancavel. Uma constante unica pros dois lados torna impossivel os limites
 // se separarem de novo.
-static constexpr uint32_t kSaveVersion = 11;
+static constexpr uint32_t kSaveVersion = 12;
 
 bool save_game(const char* path) {
     if (!g_world) return false;
@@ -244,6 +244,16 @@ bool save_game(const char* path) {
     f.write((const char*)&creature_kills_v, sizeof(creature_kills_v));
     uint8_t poi_found_v = poi_ever_found() ? 1 : 0;
     f.write((const char*)&poi_found_v, sizeof(poi_found_v));
+
+    // ---- v12: nivel do mar do mundo ----
+    // World::sea_level era atribuido SO' em World::gen() e nunca gravado, entao valia 0 depois de
+    // carregar um save. Dois efeitos reais disso: (1) water_surface_for (player_physics.cpp) usa
+    // sea_level pro teto da agua e ficava errado em qualquer save carregado; (2) a regra que separa
+    // gelo de corpo d'agua de gelo de geleira (water_is_source, world.cpp) depende dele - com 0,
+    // nenhum gelo seria fonte e cavar a beirada de um mar congelado deixaria o buraco seco.
+    // E' a mesma classe de bug dos g_shelter_door_x/y: global preenchido so' no world-gen.
+    int32_t sea_level_v = g_world ? (int32_t)g_world->sea_level : 0;
+    f.write((const char*)&sea_level_v, sizeof(sea_level_v));
 
     return (bool)f;
 }
@@ -637,6 +647,18 @@ bool load_game(const char* path) {
     } else {
         creature_stats_load(0);
         poi_discovery_load(false);
+    }
+
+    // ---- v12: nivel do mar (ver a nota no save) ----
+    if (version >= 12) {
+        int32_t sea_level_v = 0;
+        f.read((char*)&sea_level_v, sizeof(sea_level_v));
+        if (g_world) g_world->sea_level = (int)sea_level_v;
+    } else if (g_world && g_world->sea_level == 0) {
+        extern TerrainConfig g_terrain_cfg;
+        // Save antigo nao tem o campo. Cai no default do terrain_config, que e' de onde o world-gen
+        // tira o valor (sea_height) - bem melhor que 0, que desligaria as fontes de gelo.
+        g_world->sea_level = (int)g_terrain_cfg.sea_height;
     }
 
     return true;

@@ -124,6 +124,7 @@ static void write_default_physics_config(const std::string& path) {
 "  \"ground_tolerance\": 0.06,\n"
 "  \"step_height\": 2.0,\n"
 "  \"step_probe_distance\": 0.54,\n"
+"  \"step_down_snap\": 0.55,\n"
 "  \"slope_limit_normal_y\": 0.70,\n"
 "  \"slope_slide_accel\": 7.5,\n"
 "  \"slope_uphill_speed_mult\": 0.82,\n"
@@ -192,6 +193,7 @@ static void apply_physics_config_overrides(const std::string& text, PhysicsConfi
     setf("ground_tolerance", cfg.ground_tolerance);
     setf("step_height", cfg.step_height);
     setf("step_probe_distance", cfg.step_probe_distance);
+    setf("step_down_snap", cfg.step_down_snap);
     setf("slope_limit_normal_y", cfg.slope_limit_normal_y);
     setf("slope_slide_accel", cfg.slope_slide_accel);
     setf("slope_uphill_speed_mult", cfg.slope_uphill_speed_mult);
@@ -247,6 +249,7 @@ static void apply_physics_config_overrides(const std::string& text, PhysicsConfi
     cfg.jump_cancel_multiplier = std::max(1.0f, cfg.jump_cancel_multiplier);
     cfg.terminal_velocity = std::max(1.0f, cfg.terminal_velocity);
     cfg.step_height = std::clamp(cfg.step_height, 0.0f, 3.0f);
+    cfg.step_down_snap = std::clamp(cfg.step_down_snap, 0.0f, 1.5f);
     cfg.collider_height = std::clamp(cfg.collider_height, 1.0f, 2.5f);
     cfg.collider_width = std::clamp(cfg.collider_width, 0.3f, 1.2f);
     cfg.collider_depth = std::clamp(cfg.collider_depth, 0.3f, 1.2f);
@@ -394,8 +397,8 @@ static void write_default_sky_config(const std::string& path) {
 "  \"nebula_parallax\": 0.016,\n"
 "  \"cloud_alpha\": 0.20,\n"
 "  \"cloud_parallax\": 0.050,\n"
-"  \"planet_radius\": 210.0,\n"
-"  \"planet_distance\": 1220.0,\n"
+"  \"planet_radius\": 300.0,\n"
+"  \"planet_distance\": 1150.0,\n"
 "  \"planet_orbit_speed\": 0.060,\n"
 "  \"planet_parallax\": 0.028,\n"
 "  \"sun_radius\": 52.0,\n"
@@ -525,6 +528,9 @@ void write_default_camera_config(const std::string& path) {
 "  \"distance_lerp\": 0.14,\n"
 "  \"lift_lerp\": 0.15,\n"
 "  \"step_height_lerp\": 0.22,\n"
+"  \"pitch_sensitivity\": 0.85,\n"
+"  \"min_pitch\": -38.0,\n"
+"  \"max_pitch\": 89.0,\n"
 "  \"cave_depth_start\": 0.45,\n"
 "  \"cave_depth_end\": 2.60,\n"
 "  \"enclosed_start\": 0.28,\n"
@@ -570,6 +576,9 @@ void apply_camera_config_overrides(const std::string& text, CameraConfig& cfg) {
     setf("distance_lerp", cfg.distance_lerp);
     setf("lift_lerp", cfg.lift_lerp);
     setf("step_height_lerp", cfg.step_height_lerp);
+    setf("pitch_sensitivity", cfg.pitch_sensitivity);
+    setf("min_pitch", cfg.min_pitch);
+    setf("max_pitch", cfg.max_pitch);
 
     setf("cave_depth_start", cfg.cave_depth_start);
     setf("cave_depth_end", cfg.cave_depth_end);
@@ -611,6 +620,12 @@ void apply_camera_config_overrides(const std::string& text, CameraConfig& cfg) {
     cfg.distance_lerp = std::clamp(cfg.distance_lerp, 0.02f, 1.0f);
     cfg.lift_lerp = std::clamp(cfg.lift_lerp, 0.02f, 1.0f);
     cfg.step_height_lerp = std::clamp(cfg.step_height_lerp, 0.02f, 1.0f);
+    cfg.pitch_sensitivity = std::clamp(cfg.pitch_sensitivity, 0.10f, 2.0f);
+    // -80 e o piso pratico: abaixo disso a camera fica quase sob os pes e o corpo do jogador tapa
+    // a tela inteira. 89 no teto porque em 90 exato o vetor de view fica paralelo ao up e a
+    // matriz de camera degenera.
+    cfg.min_pitch = std::clamp(cfg.min_pitch, -80.0f, 0.0f);
+    cfg.max_pitch = std::clamp(cfg.max_pitch, 10.0f, 89.0f);
 
     cfg.cave_depth_start = std::clamp(cfg.cave_depth_start, 0.0f, 10.0f);
     cfg.cave_depth_end = std::clamp(cfg.cave_depth_end, cfg.cave_depth_start + 0.05f, 20.0f);

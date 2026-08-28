@@ -568,6 +568,36 @@ void update_mining_and_placement(float dt) {
                     int dig_units = std::max(1, (int)std::lround(kWorldBlockHeight / std::max(0.01f, kHeightScale)));
                     int16_t h = g_world->height_at(g_target_x, g_target_y);
                     int nh = std::max(0, (int)h - dig_units);
+
+                    // ---- ROMPIMENTO DE MARGEM ----
+                    // Se a escavacao deixa o tile EXATAMENTE na cota de uma agua vizinha (ou acima
+                    // dela), o enchimento nao acontece: a regra e `altura < nivel`, e uma margem no
+                    // nivel exato da agua nao transborda. Na pratica isso e' o bug relatado - "removi
+                    // a parede que segurava a agua e ela nao escorreu": a parede tinha 1 bloco acima
+                    // da linha d'agua, uma escavacao baixa exatamente 1 bloco (4 unidades de
+                    // heightmap), e o tile parava colado no nivel. Visualmente a parede sumiu e nada
+                    // acontecia; era preciso cavar o MESMO tile de novo, sem nenhuma pista disso.
+                    //
+                    // Medido no cenario controlado (parede no topo 44, agua em 40, poco seco em 32):
+                    //   escavacao 1 -> cota 40, sem agua, poco cheio: 0 tiles
+                    //   escavacao 2 -> rompe, poco cheio: 441 tiles
+                    //
+                    // Agora, quando a escavacao encosta na cota da agua, ela desce 1 unidade a mais e
+                    // rompe. So' se ha agua vizinha - cavar longe de agua nao muda em nada. E' 1/4 de
+                    // bloco extra, e agua no nivel exato da borda transbordar e o comportamento que
+                    // qualquer um espera.
+                    {
+                        const int nb4[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+                        int brim = -32768;
+                        for (int k = 0; k < 4; ++k) {
+                            int tx = g_target_x + nb4[k][0], tz = g_target_y + nb4[k][1];
+                            if (!g_world->in_bounds(tx, tz)) continue;
+                            if (g_world->get_ground(tx, tz) != Block::Water) continue;
+                            int lvl = (int)g_world->height_at(tx, tz);
+                            if (lvl > brim) brim = lvl;
+                        }
+                        if (brim > -32768 && nh >= brim) nh = std::max(0, brim - 1);
+                    }
                     g_world->set_height(g_target_x, g_target_y, (int16_t)nh);
 
                     // Mantem material de solo (ground-like) para permitir mineracao sequencial.

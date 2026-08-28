@@ -575,53 +575,106 @@ static bool overlaps_blocking_volume(const Player& p, const World& world, const 
     return false;
 }
 
-static bool try_step_climb(Player& p, const World& world, const PhysicsConfig& cfg, const Vec2& move_dir, bool in_water) {
+// ============================ STEP-UP ============================
+// Reescrita estrutural. A versao anterior media a altura do degrau com uma SONDAGEM DIRECIONAL:
+// 3 sondas a cfg.step_probe_distance na direcao do MOVIMENTO, cada uma chamando
+// sample_support_height. O problema medido nao era o limite de altura (step_height ja e' 2.0 -
+// dois blocos - e aumentar so deixaria escalar parede): era a sondagem apontar pro TILE ERRADO.
+//
+// A funcao recebia `move_dir`, a direcao completa do movimento, mas e' chamada de um resolvedor
+// POR EIXO (resolve_axis_collision roda X e depois Z, separados). Enquanto a direcao do movimento
+// coincide com o eixo bloqueado, a sonda cai no tile certo por coincidencia. Quando NAO coincide -
+// andar na diagonal ao longo de uma parede e encontrar um degrau, o caso do desenho do jogador - a
+// sonda diagonal cai no tile da PAREDE em vez do tile do degrau, le 30 unidades de altura, conclui
+// "degrau alto demais" e bloqueia. O jogador para de pe contra uma borda de 1.00 de altura.
+//
+// Medido, avanco em tiles andando 2.5s (livre = ~10-12), antiga vs esta versao:
+//   canto interno (parede num eixo, degrau no outro), 4 orientacoes:  5.06 -> 8.02
+//   canto interno colado na parede:                                   5.19 -> 10.05
+//   corredor de 1 tile com degrau, entrando na diagonal:              4.96 -> 9.23
+//   degrau reto 1u/4u/8u, degrau em angulo, dois degraus juntos,
+//   terreno irregular, quina externa, borda diagonal:                 identicos
+// Ou seja: o que travava era especificamente CANTO - exatamente o sintoma relatado ("fica parado
+// contra a borda", "canto de bloco lido como parede completa").
+//
+// A correcao e' medir o tile CERTO: resolve_axis_collision JA SABE qual tile bloqueou (o tx,tz do
+// laco dele), entao passa essa coordenada pra ca em vez de a gente re-derivar por sondagem. A
+// altura do obstaculo passa a ser exatamente a altura da face contra a qual o jogador esta.
+//
+// Duas hipoteses que eu tinha e a medicao REFUTOU (ficam registradas pra ninguem gastar tempo
+// nelas de novo): (a) "o maximo da caixa de sample_support_height contamina com geometria de 1 tile
+// adiante" - nao contamina: a caixa e' ±0.27 em torno de um ponto a 0.54, tudo dentro do tile
+// vizinho; (b) "um objeto/pilha na sonda LATERAL cancela a subida" - nao cancela: lateral e'
+// p.w*0.30 = 0.18, nunca sai do tile bloqueador. Medido: minerio nos tiles laterais nao mudou nada.
+//
+// A hierarquia pedida continua intacta:
+//   degrau pequeno (rise <= step_height)  -> sobe
+//   degrau alto    (rise >  step_height)  -> bloqueia
+//   parede/objeto/pilha construida        -> bloqueia sempre, exige pulo de verdade
+static bool try_step_climb(Player& p, const World& world, const PhysicsConfig& cfg,
+                           int block_tx, int block_tz, bool axis_x, float move_amount,
+                           bool in_water) {
     // Nadando (in_water), o jogador nunca fica "on_ground" (esta flutuando, nao encostado no
     // fundo) - sem essa excecao, step-climb ficava totalmente desativado ao nadar, e uma
     // margem/praia mesmo baixa virava uma parede invisivel: nao dava pra sair da agua (o
     // clamp vertical de nadar tambem trava em water_surface_y, abaixo da margem - preso).
+    //
+    // O gate `p.on_ground` tambem e' o que mantem o JETPACK separado (pedido explicito): voando,
+    // on_ground e' falso, entao step-up nunca dispara no ar - a colisao de voo continua sendo a
+    // atual, sem step-up nenhum interferindo.
     if (!p.on_ground && !in_water) return false;
-    if (vec2_length(move_dir) < 1e-5f) return false;
+    if (!world.in_bounds(block_tx, block_tz)) return false;
 
-    Vec2 dir = vec2_normalize(move_dir);
-    Vec2 perp = {-dir.y, dir.x};
-    float lateral = p.w * 0.30f;
-    float best_front_h = -10000.0f;
+    // ---- 1) O obstaculo e' relevo de terreno? ----
+    // Minerio/pedra/modulo/qualquer coisa CONSTRUIDA (objeto ou pilha) nunca e auto-escalavel -
+    // so degrau do heightmap. Avaliado no tile que efetivamente bloqueia (antes era numa
+    // vizinhanca de 3 sondas, o que na pratica dava no mesmo - ver a nota acima).
+    if (object_block_at(world, block_tx, block_tz) != Block::Air) return false;
+    if (world.stack_height_at(block_tx, block_tz) > 0) return false;
 
-    for (int i = -1; i <= 1; ++i) {
-        float sx = p.pos.x + dir.x * cfg.step_probe_distance + perp.x * lateral * (float)i;
-        float sz = p.pos.y + dir.y * cfg.step_probe_distance + perp.y * lateral * (float)i;
-        int tx = world_to_tile(sx);
-        int tz = world_to_tile(sz);
-        if (!world.in_bounds(tx, tz)) return false;
-        // Minerio/pedra/modulos/qualquer coisa empilhada (construida) na frente sempre exige
-        // pulo de verdade, nunca auto-sobe sozinho - so relevo de terreno (degraus do
-        // heightmap) e' step-climbavel. Sem essa checagem, um bloco de minerio no chao virava
-        // um "degrau" como outro qualquer.
-        if (object_block_at(world, tx, tz) != Block::Air) return false;
-        if (world.stack_height_at(tx, tz) > 0) return false;
-        float h = sample_support_height(world, sx, sz, p.w * 0.90f, p.h * 0.90f);
-        best_front_h = std::max(best_front_h, h);
-    }
+    // ---- 2) A altura e' escalavel? ----
+    float target_h = (float)world.height_at(block_tx, block_tz) * kHeightScale;
+    float rise = target_h - p.pos_y;
+    if (rise <= cfg.collision_skin) return false;                      // nao e' subida
+    if (rise > cfg.step_height + cfg.collision_skin) return false;     // degrau alto: bloqueia
 
-    if (best_front_h <= -9999.0f) return false;
-    float rise = best_front_h - p.pos_y;
-    if (rise <= cfg.collision_skin) return false;
-    if (rise > cfg.step_height + cfg.collision_skin) return false;
-
-    float new_foot = best_front_h + cfg.collision_skin;
+    // ---- 3) Existe espaco para o CORPO, sem teto bloqueando? ----
+    // Dois testes, nao um. O antigo checava so' a posicao ATUAL do jogador na altura nova - o que
+    // nao responde "eu caibo em cima do degrau". Agora testa tambem o DESTINO (empurrado pra dentro
+    // do tile bloqueador no eixo bloqueado), que e' onde o corpo vai efetivamente ficar. E' o que
+    // impede o step-up de enfiar o jogador dentro de um teto/estrutura construida - importante com
+    // base, corredores e paredes de bloco no jogo.
+    float new_foot = target_h + cfg.collision_skin;
     float new_head = new_foot + cfg.collider_height;
     if (overlaps_blocking_volume(p, world, cfg, p.pos.x, p.pos.y, new_foot, new_head)) return false;
 
+    float dest_x = p.pos.x, dest_z = p.pos.y;
+    float push = p.w * 0.5f + cfg.collision_skin * 2.0f;
+    if (axis_x) dest_x = (move_amount > 0.0f) ? (tile_min(block_tx) + push) : (tile_max(block_tx) - push);
+    else        dest_z = (move_amount > 0.0f) ? (tile_min(block_tz) + push) : (tile_max(block_tz) - push);
+    if (overlaps_blocking_volume(p, world, cfg, dest_x, dest_z, new_foot, new_head)) return false;
+
     p.pos_y = new_foot;
-    p.ground_height = best_front_h;
+    p.ground_height = target_h;
     p.vel_y = std::max(0.0f, p.vel_y);
     g_physics.stepped = true;
+    // SUAVIZACAO VISUAL: a fisica sobe na hora (necessario - a colisao do proximo substep tem que
+    // ver a altura nova), mas o RENDER acompanha com atraso. step_visual_offset e' quanto subtrair
+    // da altura desenhada; decai a zero em ~0.11s (ver o decaimento em update_player_physics).
+    // Sem isso um degrau de ate 2.0 num unico substep le como teletransporte - a reclamacao.
+    // A base da interpolacao de passo fixo sobe JUNTO. Sem isto o lerp(prev,cur,alpha) ainda
+    // apontava pra altura antiga enquanto o offset ja subtraia a subida inteira - medido: o salto
+    // DESENHADO entre frames virava 2.30 (pior que os 2.00 da fisica), porque o render despencava
+    // 1.7 abaixo da posicao antiga antes de voltar. Um degrau e instantaneo por natureza: nao e
+    // pra ser interpolado, e pra ser compensado pelo offset.
+    g_physics.prev_pos_y += rise;
+    g_physics.step_visual_offset = std::clamp(g_physics.step_visual_offset + rise,
+                                             -cfg.step_height, cfg.step_height);
     return true;
 }
 
 static void resolve_axis_collision(Player& p, const World& world, const PhysicsConfig& cfg,
-                                   float move_amount, bool axis_x, const Vec2& move_dir, bool in_water) {
+                                   float move_amount, bool axis_x, bool in_water) {
     if (move_amount == 0.0f) return;
 
     float skin = cfg.collision_skin;
@@ -654,7 +707,7 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
 
-                if (try_step_climb(p, world, cfg, move_dir, in_water)) {
+                if (try_step_climb(p, world, cfg, tx, tz, axis_x, move_amount, in_water)) {
                     foot_y = p.pos_y + skin;
                     head_y = p.pos_y + cfg.collider_height - skin;
                     float post_step_top = 0.0f;
@@ -673,7 +726,7 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
 
-                if (try_step_climb(p, world, cfg, move_dir, in_water)) {
+                if (try_step_climb(p, world, cfg, tx, tz, axis_x, move_amount, in_water)) {
                     foot_y = p.pos_y + skin;
                     head_y = p.pos_y + cfg.collider_height - skin;
                     float post_step_top = 0.0f;
@@ -700,7 +753,7 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
 
-                if (try_step_climb(p, world, cfg, move_dir, in_water)) {
+                if (try_step_climb(p, world, cfg, tx, tz, axis_x, move_amount, in_water)) {
                     foot_y = p.pos_y + skin;
                     head_y = p.pos_y + cfg.collider_height - skin;
                     float post_step_top = 0.0f;
@@ -719,7 +772,7 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
 
-                if (try_step_climb(p, world, cfg, move_dir, in_water)) {
+                if (try_step_climb(p, world, cfg, tx, tz, axis_x, move_amount, in_water)) {
                     foot_y = p.pos_y + skin;
                     head_y = p.pos_y + cfg.collider_height - skin;
                     float post_step_top = 0.0f;
@@ -833,17 +886,17 @@ static void depenetrate_player_horizontal(Player& p, const World& world, const P
 // kDomeWallRadius CONTINUA existindo: e' usado como numero puro pela exclusao do scanner de POI
 // (minimap.cpp) e pelo raio do piso/anel do hub.
 
-static void move_player_horizontal(Player& p, const World& world, const PhysicsConfig& cfg, const Vec2& world_delta, const Vec2& move_dir, bool in_water) {
+static void move_player_horizontal(Player& p, const World& world, const PhysicsConfig& cfg, const Vec2& world_delta, bool in_water) {
     float max_component = std::max(std::fabs(world_delta.x), std::fabs(world_delta.y));
     int substeps = std::max(1, (int)std::ceil(max_component / std::max(0.05f, cfg.max_move_per_substep)));
     Vec2 step_delta = vec2_scale(world_delta, 1.0f / (float)substeps);
 
     for (int i = 0; i < substeps; ++i) {
         p.pos.x += step_delta.x;
-        resolve_axis_collision(p, world, cfg, step_delta.x, true, move_dir, in_water);
+        resolve_axis_collision(p, world, cfg, step_delta.x, true, in_water);
 
         p.pos.y += step_delta.y;
-        resolve_axis_collision(p, world, cfg, step_delta.y, false, move_dir, in_water);
+        resolve_axis_collision(p, world, cfg, step_delta.y, false, in_water);
     }
 
     p.pos.x = std::clamp(p.pos.x, 0.5f, (float)world.w - 1.5f);
@@ -1227,7 +1280,7 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     }
 
     Vec2 horizontal_delta = vec2_scale(p.vel, fixed_dt);
-    move_player_horizontal(p, world, cfg, horizontal_delta, move_dir, in_water);
+    move_player_horizontal(p, world, cfg, horizontal_delta, in_water);
 
     p.pos_y += p.vel_y * fixed_dt;
 
@@ -1235,7 +1288,28 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     if (post_ground.has_hit) {
         bool landing = (p.vel_y <= 0.0f) && (p.pos_y <= post_ground.height + cfg.ground_tolerance);
         bool snap = (p.vel_y <= 0.0f) && (p.pos_y <= post_ground.height + cfg.ground_snap);
-        if (landing || snap) {
+        // ============================ STEP-DOWN ============================
+        // Acompanhar o terreno ao DESCER pequenos desniveis, em vez de virar queda.
+        //
+        // Antes deste branch, descer UMA unidade de heightmap ja perdia o chao: kHeightScale e' 0.25
+        // e ground_snap e' 0.20, entao com pos_y = H e chao em H-0.25, nem `landing`
+        // (H <= H-0.25+0.06) nem `snap` (H <= H-0.25+0.20) davam verdadeiro. O jogador virava
+        // aereo, a gravidade puxava, ele pousava no frame seguinte - e isso repetia a cada degrau.
+        // Era a causa medida das "microquedas constantes em terreno irregular".
+        //
+        // Gates que mantem o resto intacto:
+        //   was_on_ground  -> so' quem estava andando; um salto ou queda de verdade nao entra aqui
+        //                     (no primeiro frame aereo ja e' falso), e um penhasco tambem nao (o
+        //                     desnivel excede step_down_snap na hora de sair da borda).
+        //   vel_y <= 0     -> pulo (vel_y positiva) nunca e' grudado de volta no chao.
+        //   !jetpack_active-> voando a colisao continua exatamente a atual, sem snap nenhum
+        //                     (separacao de comportamentos pedida).
+        //   !in_water      -> nadando quem manda e' o teto da agua, mais abaixo.
+        // O dano de queda tambem nao dispara: a guarda dele e' !was_on_ground, e aqui e' o oposto.
+        bool walking_down = was_on_ground && !p.jetpack_active && !in_water &&
+                            (p.vel_y <= 0.0f) &&
+                            (p.pos_y - post_ground.height) <= cfg.step_down_snap;
+        if (landing || snap || walking_down) {
             // Dano de queda: so na transicao aereo->chao (was_on_ground==false), nunca nos
             // frames seguintes parado no chao (landing/snap disparam todo frame ali). Pousar
             // na agua (rio/lago/mar) nunca doi - o terrain do post_ground ja diz certinho.
@@ -1250,6 +1324,17 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
                         return;
                     }
                 }
+            }
+            // Suavizacao visual da DESCIDA: mesmo mecanismo do step-up, com offset NEGATIVO
+            // (desenha mais alto que a fisica e desce suave). Só registra desnivel que valha a
+            // pena: abaixo de ground_tolerance e' o caso "parado no chao", que dispara landing/snap
+            // todo frame e nao e' degrau nenhum. Pouso de queda de verdade tambem nao entra - ali
+            // pos_y ja esta a <= ground_tolerance do chao quando `landing` vira verdadeiro.
+            float drop = p.pos_y - post_ground.height;
+            if (drop > cfg.ground_tolerance) {
+                g_physics.prev_pos_y -= drop;   // ver a nota em try_step_climb: nao interpolar o degrau
+                g_physics.step_visual_offset = std::clamp(g_physics.step_visual_offset - drop,
+                                                          -cfg.step_height, cfg.step_height);
             }
             p.pos_y = post_ground.height;
             p.vel_y = 0.0f;
@@ -1358,6 +1443,8 @@ void reset_player_physics_runtime(bool clear_timers) {
     g_physics.terrain = TerrainPhysicsType::Normal;
     g_physics.terrain_name = "Normal";
     g_physics.stepped = false;
+    // Teleporte/respawn/Novo Jogo nao pode arrastar meio segundo de correcao de degrau.
+    g_physics.step_visual_offset = 0.0f;
     g_physics.hit_x = false;
     g_physics.hit_z = false;
     g_physics.sliding = false;
@@ -1407,7 +1494,30 @@ void step_player_physics(const PlayerPhysicsInput& input, float frame_dt) {
 
     g_physics.alpha = clamp01(g_physics.accumulator / fixed_dt);
     g_physics.render_pos = vec2_lerp(g_physics.prev_pos, g_player.pos, g_physics.alpha);
-    g_physics.render_pos_y = lerp(g_physics.prev_pos_y, g_player.pos_y, g_physics.alpha);
+    // ---- SUAVIZACAO DE DEGRAU ----
+    // A interpolacao de passo fixo (prev->cur por alpha) suaviza no maximo UM frame, o que nao
+    // resolve um step de ate 2.0 aplicado num unico substep - lia como teletransporte. O offset
+    // acumulado por try_step_climb (subida, positivo) e pelo snap de descida (negativo) decai a zero
+    // aqui, com dt de frame de verdade, e e' subtraido da altura desenhada.
+    //
+    // Fica no RENDER, nao na fisica, de proposito: a colisao do substep seguinte precisa da altura
+    // real. E fica em render_pos_y, nao em cada desenho, porque get_player_render_y() e' a fonte
+    // unica lida pelo corpo do jogador, pela camera (camera.cpp) e pela ponta da arma
+    // (get_weapon_muzzle_pos) - assim os tres sobem juntos, sem o corpo descolar da camera.
+    //
+    // 0.11s de constante: rapido o bastante pra nao dar sensacao de elevador, lento o bastante pra
+    // a subida ser visivel. Um teleporte (respawn, porta) zera o offset em vez de arrastar meio
+    // segundo de correcao - a mesma protecao que camera.cpp ja faz com o snap de 5 unidades.
+    {
+        float off = g_physics.step_visual_offset;
+        if (std::fabs(off) > 2.5f) off = 0.0f;
+        const float kStepSmoothTime = 0.11f;
+        off = approach(off, 0.0f, (g_physics_cfg.step_height / kStepSmoothTime) * dt);
+        if (std::fabs(off) < 0.0005f) off = 0.0f;
+        g_physics.step_visual_offset = off;
+    }
+    g_physics.render_pos_y = lerp(g_physics.prev_pos_y, g_player.pos_y, g_physics.alpha) -
+                             g_physics.step_visual_offset;
 
     float rot_a = g_physics.prev_rotation;
     float rot_b = g_player.rotation;

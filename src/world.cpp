@@ -1,7 +1,8 @@
 #include "world.h"
 
 #include "math_core.h"   // clamp01, smoothstep01, kHeightScale
-#include "noise.h"       // init_permutation, perlin, fbm, ridged_fbm, lerp
+#include "noise.h"
+#include "resource_geology.h"       // GeoContext, pick_resource, ice_suitability (distribuicao geologica)
 #include "config_types.h" // TerrainConfig, MiningConfig (types of the extern globals below)
 #include "game_state.h"  // rng_next_u32, rng_next_f01, set_toast
 #include "render_primitives.h"  // render_plane_3d/render_glow_disc_3d (efeitos de agua/vapor)
@@ -83,6 +84,10 @@ void World::gen() {
     // quando o piso da cratera ficava perto/abaixo do nivel do mar, era pintado de AGUA -
     // o vulcao virava um pontinho de lava cercado de agua achatada.
     static constexpr float kVolcanoLavaRadius = 9.0f;
+    // Raio de INFLUENCIA vulcanica (bem maior que o disco de lava): alimenta GeoContext::volcanic,
+    // que puxa metal nativo e crosta de basalto pro entorno do cone. E' o que faz "regiao
+    // vulcanica" ser uma regiao de verdade, e nao apenas o circulo de lava do pico.
+    static constexpr float kVolcanoInfluence = 34.0f;
     // Chamines vulcanicas pequenas (pedido do jogador: "coloque lava e pequenas chamines
     // vulcanicas em certos biomas") - diferentes dos vulcoes grandes acima (raio 42,
     // erguem o terreno): sao so' um pontinho de lava (raio ~1.5) cravado num bioma rochoso,
@@ -456,12 +461,49 @@ void World::gen() {
     // a agua do nivel do mar ja funciona hoje, entao nao precisa de nenhuma mudanca de save.
     std::vector<uint8_t> river_map(cell_count, 0);
     {
+        // ================= POR QUE O TRACADO FOI REESCRITO =================
+        // A versao anterior CARVAVA o 3x3 em volta da posicao atual ANTES de procurar o declive, e
+        // o carvamento rebaixava todos os 8 vizinhos ao mesmo valor. Consequencia: a busca de
+        // steepest-descent nao tinha mais gradiente nenhum pra ler, o empate era decidido pela ORDEM
+        // DO ARRAY, e kNx8[0] e' (+1, 0). Pior que empate: o laco 3x3 rebaixava o proprio centro no
+        // meio da varredura, entao os 4 ultimos vizinhos (entre eles +X) ficavam 0.024 abaixo
+        // enquanto os 4 primeiros ficavam 0.012 - +X ficava ARTIFICIALMENTE o mais baixo.
+        //
+        // Medido no mundo de seed 1337, antes da correcao:
+        //   rio 0: 26 passos, 100.0% para LESTE, deslocamento (+25, +0)
+        //   rio 1: 23 passos, 100.0% para LESTE, deslocamento (+22, +0)
+        // Ou seja: valas perfeitamente retas correndo pro leste, com parede regular dos dois lados.
+        // Era isso que aparecia em jogo como "que formacao doida e essa".
+        //
+        // A correcao separa as duas coisas que estavam misturadas:
+        //   ROTEAR  le route_h, um retrato do relevo ANTES de qualquer carvamento de rio. E' a
+        //           topografia de verdade, com o gradiente que a erosao produziu.
+        //   CARVAR  escreve em heights. Nao influencia mais a decisao de para onde ir.
+        std::vector<float> route_h = heights;
+
+        // Marca por rio, pra o canal nao se morder: rotear no relevo original faria o rio descer de
+        // volta pelo proprio leito (que o carvamento deixou mais baixo que tudo em volta) e oscilar
+        // entre dois tiles pra sempre. Um byte por celula, sem limpar entre rios - cada rio usa um
+        // selo diferente. 255 rios distintos por mundo bastam com folga (river_seed_count = 16).
+        std::vector<uint8_t> river_visit(cell_count, 0);
+        uint8_t river_stamp = 0;
+
         struct RiverSeed { int x, y; float score; };
         std::vector<RiverSeed> candidates;
         for (int y = 2; y < h - 2; ++y) {
             for (int x = 2; x < w - 2; ++x) {
                 size_t i = index_of(x, y);
-                if (biome_map[i] != 2 || heights[i] < 0.55f) continue;
+                // MESMO criterio de nascente que o Passo 3 ja usa pros vulcoes (ridge + altura,
+                // NAO biome_map==2) - e pelo mesmo motivo, que aquele bloco ja documenta: o bioma
+                // Montanha e' uma classificacao por "quem venceu" entre 4 pesos independentes e
+                // cobre so' ~0.18% do mapa, nao o mesmo criterio de elevacao que deixa o relevo
+                // visualmente montanhoso.
+                //
+                // Medido aqui, mundo 1337: com `biome_map != 2` sobravam 13 candidatos e o
+                // espacamento minimo de 150 derrubava pra 2 rios - os DOIS no mesmo macico, com o
+                // resto do mapa de 3072x1536 sem rio nenhum. river_seed_count = 16 nunca era
+                // honrado. E' o mesmo buraco que ja tinha deixado 2 dos 7 vulcoes de pe.
+                if (ridge_map[i] <= 0.60f || heights[i] <= 0.55f) continue;
                 float hc = heights[i];
                 bool is_max = true;
                 for (int dy = -1; dy <= 1 && is_max; ++dy) {
@@ -493,7 +535,12 @@ void World::gen() {
         // Preenche um "lago" limitado (BFS num raio pequeno, sem watershed de mapa inteiro)
         // quando um rio para num poco sem saida - nivela tudo que ficou abaixo da borda de
         // saida mais baixa encontrada.
-        auto flood_fill_lake = [&](int sx, int sy) {
+        //
+        // Agora tambem DEVOLVE o ponto de transbordo (out_rim_x/y): rotear na topografia real faz o
+        // rio parar no primeiro poco raso, e sem continuar pela borda de saida cada rio viraria um
+        // toco de poucos tiles. Com a continuacao, o resultado e uma cadeia rio -> lago -> rio, que
+        // e' como um sistema fluvial de verdade atravessa terreno acidentado.
+        auto flood_fill_lake = [&](int sx, int sy, int* out_rim_x, int* out_rim_y) -> bool {
             const int R = 60;
             int gx0 = std::max(1, sx - R), gx1 = std::min(w - 2, sx + R);
             int gy0 = std::max(1, sy - R), gy1 = std::min(h - 2, sy + R);
@@ -508,10 +555,20 @@ void World::gen() {
             visited[local_idx(sx, sy)] = 1;
             float sink_h = heights[index_of(sx, sy)];
             float rim_height = 2.0f;
+            // Tolerancia de enchimento e teto de tiles. Os valores antigos (sink_h + 0.05 e 2500
+            // tiles) eram praticamente CODIGO MORTO: com o tracado reto pro leste o rio chegava ao
+            // mar em 26 passos e nunca caia aqui. Com o tracado meandrante o lago passou a ser
+            // comum, e a tolerancia antiga alagou o mapa - medido: 130.610 tiles, 2.77% do planeta,
+            // mares interiores em vez de pocas. 0.05 normalizado sao ~7.9 unidades de heightmap
+            // (~2 de mundo) de profundidade de enchente; 0.008 sao ~1.3 unidades, o que da uma
+            // poca rasa de verdade.
+            const float kLakeFillTolerance = 0.008f;
+            const size_t kLakeMaxTiles = 400;
+            int rim_x = -1, rim_y = -1;
             const int kNx4[4] = {1, -1, 0, 0};
             const int kNy4[4] = {0, 0, 1, -1};
             size_t qi = 0;
-            while (qi < queue.size() && filled.size() < 2500) {
+            while (qi < queue.size() && filled.size() < kLakeMaxTiles) {
                 auto [px, py] = queue[qi++];
                 filled.push_back({px, py});
                 for (int k = 0; k < 4; ++k) {
@@ -521,10 +578,13 @@ void World::gen() {
                     if (visited[li]) continue;
                     visited[li] = 1;
                     float nh = heights[index_of(nx2, ny2)];
-                    if (nh <= sink_h + 0.05f) {
+                    if (nh <= sink_h + kLakeFillTolerance) {
                         queue.push_back({nx2, ny2});
-                    } else {
-                        rim_height = std::min(rim_height, nh);
+                    } else if (nh < rim_height) {
+                        // Borda MAIS BAIXA em volta do lago = por onde ele transborda.
+                        rim_height = nh;
+                        rim_x = nx2;
+                        rim_y = ny2;
                     }
                 }
             }
@@ -540,48 +600,219 @@ void World::gen() {
                 size_t i = index_of(p.first, p.second);
                 river_map[i] = 1;
                 heights[i] = lake_hn;
+                // Sela o lago pra ESTE rio: sem isso o roteamento sairia da borda de transbordo e
+                // desceria direto de volta pra dentro do lago, fechando um ciclo que so o teto de
+                // passos interromperia.
+                river_visit[i] = river_stamp;
             }
+            if (out_rim_x) *out_rim_x = rim_x;
+            if (out_rim_y) *out_rim_y = rim_y;
+            return rim_x >= 0;
         };
 
         const int kNx8[8] = {1, -1, 0, 0, 1, 1, -1, -1};
         const int kNy8[8] = {0, 0, 1, -1, 1, -1, 1, -1};
         float sea_hn = (float)(sea_h - min_h_i) / (float)(max_h_i - min_h_i);
+        // Profundidade do canal abaixo do relevo natural. Fixa, NAO cumulativa: a versao anterior
+        // fazia bed = bed_anterior - 0.012 a cada passo, uma escada que afundava sem parar. Com
+        // rios de 26 passos aquilo nunca aparecia, mas com o traçado meandrante de agora um rio
+        // passa de centenas de passos e o leito furaria o fundo da faixa de altura. Cortando sempre
+        // em relacao a route_h[ci], o canal acompanha a inclinacao natural do terreno.
+        const float kRiverCarveDepth = 0.012f;
+        // Degrau de poca: quanto o relevo precisa cair antes de o leito descer. Em unidades
+        // normalizadas; com a faixa de heightmap medida em 158 unidades, 0.019 equivale a ~3
+        // unidades de heightmap (0.75 de mundo). Menor que isso vira escadinha de novo; muito
+        // maior faz pocas fundas demais na descida.
+        const float kPoolStep = 0.019f;
+        // Rota do rio em curso. Reaproveitados entre rios (clear por rio) pra nao realocar 16x.
+        std::vector<int> path_x, path_y;
+        // Quanto o rio tolera de SUBIDA pra atravessar fundo plano ou poco de 1 tile (ver a nota no
+        // passo 1 do laco). Pequeno de proposito: acima disso ele para e vira lago, que e o
+        // comportamento certo numa bacia de verdade.
+        const float kRouteFlatTolerance = 0.0045f;
+        // Teto de lagos por rio. Duas funcoes: rede de seguranca (sem ele um terreno patologico faz
+        // centenas de BFS de lago e a geracao do mundo trava - visto numa medicao: 3973 lagos em
+        // 4000 passos) e calibragem do alcance do rio, ja que quase todo rio termina aqui.
+        // Medido no mundo 1337, 15 rios:
+        //   teto  5 -> 0.151% do mapa em agua de rio/lago, 1 rio chega ao mar
+        //   teto 12 -> 0.250% do mapa em agua de rio/lago, 3 rios chegam ao mar
+        // 12 pelo alcance maior: 0.25% ainda e' irrisorio, e ter foz de rio importa pra leitura do
+        // planeta (um rio que sempre morre num lago nao le como rio).
+        const int kMaxLakesPerRiver = 12;
 
         for (const auto& seed : seeds) {
             int cx = seed.x, cy = seed.y;
+            river_stamp = (uint8_t)(1 + (river_stamp % 255));
+            int lakes_made = 0;
+            // Rota registrada deste rio (carvada depois, em faixas planas - ver o passo de
+            // carvamento no fim do laco). Limpa por rio pra nao acumular.
+            path_x.clear();
+            path_y.clear();
             for (int step = 0; step < 4000; ++step) {
                 size_t ci = index_of(cx, cy);
+
+                // ---- 1) ESCOLHE A DIRECAO PRIMEIRO, no relevo natural (route_h) ----
+                // Antes o carvamento vinha antes e apagava o gradiente. Aqui route_h nunca e
+                // escrito, entao a decisao le a topografia de verdade e o rio meandra.
+                //
+                // Pega o vizinho mais BAIXO entre os nao visitados e aceita se ele nao estiver
+                // ACIMA do atual por mais que uma tolerancia pequena. O descenso ESTRITO
+                // (nh < route_h[ci]) nao serve: um heightmap com erosao tem milhares de pocos de 1
+                // tile e fundos de vale planos, e o descenso estrito trava em cada um - medido, com
+                // descenso estrito os dois rios do mundo 1337 fizeram 7 e 20 lagos e nenhum chegou
+                // ao mar, virando fileiras de pocas em vez de rios.
+                //
+                // Como os tiles visitados sao excluidos, o rio sempre progride pra terreno novo e a
+                // terminacao esta garantida (mar, beco sem saida, ou o teto de passos) - a
+                // tolerancia nao abre a porta pra oscilar entre dois tiles.
+                int best_nx = -1, best_ny = -1;
+                float best_h = 3.0f;
+                for (int k = 0; k < 8; ++k) {
+                    int nx2 = cx + kNx8[k], ny2 = cy + kNy8[k];
+                    if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
+                    size_t ni = index_of(nx2, ny2);
+                    if (river_visit[ni] == river_stamp) continue;   // nao volta pelo proprio leito
+                    float nh = route_h[ni];
+                    if (nh < best_h) { best_h = nh; best_nx = nx2; best_ny = ny2; }
+                }
+                if (best_nx >= 0 && best_h > route_h[ci] + kRouteFlatTolerance) {
+                    best_nx = -1;   // so' subida de verdade a frente: e' um poco, vira lago
+                    best_ny = -1;
+                }
+
+                // ---- 2) SO' registra o caminho; o carvamento vem DEPOIS, em faixas planas ----
+                // Carvar aqui, tile a tile, era a causa da "agua em degraus": cada tile do canal
+                // ficava na sua propria cota descendente e todos viravam Agua conectada. Medido no
+                // mundo 1337: 36 de 143 corpos d'agua com degrau, o pior com 64 cotas distintas ao
+                // longo de 2.836 tiles e 111 unidades de desnivel INTERNO.
+                //
+                // Duas tentativas antes desta falharam, e o motivo de cada uma vale registrar:
+                //   - nivelar com `min(heights[ni], bed)` nao nivela nada: o tile a jusante ja esta
+                //     mais baixo que o leito da poca, o min mantem a cota dele e o degrau volta;
+                //   - marcar UM passo como soleira seca nao separa as pocas: o carvamento e 3x3 e o
+                //     passo anda 1 tile, entao a soleira e' inteiramente coberta pela sobreposicao
+                //     do passo anterior. Medido: 36 -> 41 componentes com degrau, ou seja pior.
+                //
+                // Registrar a rota primeiro permite o que nenhuma das duas conseguia: saber a cota
+                // MINIMA de cada trecho ANTES de carvar, e assentar o trecho inteiro nela.
+                path_x.push_back(cx);
+                path_y.push_back(cy);
+                // O selo de "ja passei" continua sendo aplicado AQUI, no 3x3, porque o roteamento do
+                // proximo passo depende dele pra nao voltar pelo proprio leito. Ja o river_map e a
+                // altura ficam pro passo de carvamento em faixas, depois do laco.
                 for (int oy = -1; oy <= 1; ++oy) {
                     for (int ox = -1; ox <= 1; ++ox) {
                         int nx2 = cx + ox, ny2 = cy + oy;
                         if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
-                        size_t ni = index_of(nx2, ny2);
-                        river_map[ni] = 1;
-                        heights[ni] = clamp01(std::min(heights[ni], heights[ci]) - 0.012f);
+                        river_visit[index_of(nx2, ny2)] = river_stamp;
                     }
                 }
 
-                if (heights[ci] <= sea_hn) break; // chegou ao mar
-
-                int best_nx = -1, best_ny = -1;
-                float best_h = heights[ci];
-                for (int k = 0; k < 8; ++k) {
-                    int nx2 = cx + kNx8[k], ny2 = cy + kNy8[k];
-                    if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
-                    float nh = heights[index_of(nx2, ny2)];
-                    if (nh < best_h) { best_h = nh; best_nx = nx2; best_ny = ny2; }
-                }
+                // Chegou ao mar: testa o relevo NATURAL, ja que o leito nao e mais carvado aqui.
+                if (route_h[ci] - kRiverCarveDepth <= sea_hn) break;
 
                 if (best_nx < 0) {
-                    flood_fill_lake(cx, cy); // poco sem saida - vira lago, encerra o rio
-                    break;
+                    // Poco sem saida: enche de lago e CONTINUA pelo transbordo, em vez de encerrar
+                    // o rio ali. Sem outra saida (bacia fechada de verdade), o rio termina no lago.
+                    int rim_x = -1, rim_y = -1;
+                    if (!flood_fill_lake(cx, cy, &rim_x, &rim_y)) break;
+                    if (++lakes_made >= kMaxLakesPerRiver) break;
+                    cx = rim_x;
+                    cy = rim_y;
+                    continue;
                 }
                 cx = best_nx;
                 cy = best_ny;
             }
+            // ---- CARVAMENTO EM FAIXAS PLANAS ----
+            // Percorre a rota registrada e a divide em TRECHOS. Um trecho termina quando o relevo
+            // natural ja caiu kPoolStep abaixo do inicio dele. Cada trecho e' assentado numa cota
+            // UNICA: a MENOR cota natural do trecho, menos a profundidade do canal.
+            //
+            // Usar o minimo do trecho e' o que evita os dois erros possiveis:
+            //   - assentar na cota do INICIO faria o leito ficar acima do terreno a jusante, e a
+            //     agua sairia flutuando sobre o chao como um aqueduto;
+            //   - assentar tile a tile e' o bug original (uma cota por tile).
+            // Como o nivel e' o minimo, ele esta no terreno ou abaixo dele em TODO o trecho, entao a
+            // agua fica contida - e plana, que era o pedido: "nao pode ter degrau na agua".
+            //
+            // Aqui a altura e' ATRIBUIDA, nao `min`-ada: dentro de um trecho o objetivo e' justamente
+            // uniformizar a cota. Fora dos tiles do canal nada e' tocado.
+            {
+                size_t bi = 0;
+                while (bi < path_x.size()) {
+                    float ref = route_h[index_of(path_x[bi], path_y[bi])];
+                    float low = ref;
+                    size_t bj = bi;
+                    while (bj < path_x.size()) {
+                        float hh = route_h[index_of(path_x[bj], path_y[bj])];
+                        if (hh < ref - kPoolStep) break;   // caiu um degrau: fecha o trecho
+                        if (hh < low) low = hh;
+                        ++bj;
+                    }
+                    if (bj == bi) ++bj;   // trecho de 1 tile (descida muito ingreme)
+                    float level = clamp01(low - kRiverCarveDepth);
+                    // SOLEIRA SECA no comeco de cada trecho (menos o primeiro): os 3 primeiros
+                    // passos sao carvados mas NAO entram em river_map, virando um sill de rocha.
+                    // Tres, nao um: o carvamento e 3x3 e o passo anda 1 tile, entao uma soleira de
+                    // 1 passo era inteiramente coberta pela sobreposicao dos vizinhos - foi a
+                    // tentativa anterior, e a medicao mostrou 36 -> 41 componentes com degrau.
+                    // Com 3 passos a lacuna e' real e os dois espelhos ficam desconectados, o que
+                    // e' o que garante "cada corpo d'agua tem UMA cota".
+                    size_t sill_end = (bi == 0) ? bi : std::min(bj, bi + 3);
+                    for (size_t k = bi; k < bj; ++k) {
+                        int px2 = path_x[k], py2 = path_y[k];
+                        bool is_sill = (k < sill_end);
+                        for (int oy = -1; oy <= 1; ++oy) {
+                            for (int ox = -1; ox <= 1; ++ox) {
+                                int nx2 = px2 + ox, ny2 = py2 + oy;
+                                if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
+                                size_t ni = index_of(nx2, ny2);
+                                if (!is_sill) river_map[ni] = 1;
+                                heights[ni] = level;
+                            }
+                        }
+                    }
+                    bi = bj;
+                }
+            }
         }
     }
 
+
+    // ---- EROSAO DOS DEGRAUS RESTANTES ----
+    // Garantia final da regra "nao pode ter degrau na agua". Depois de tudo carvado, se dois tiles
+    // VIZINHOS de agua diferem mais que um degrau, o mais ALTO sai do river_map e vira margem seca.
+    // Isso corta a conexao no ponto exato do desnivel, entao o que sobra sao espelhos planos com
+    // barranco entre eles - em vez de um corpo d'agua unico com parede dentro.
+    //
+    // Existe porque nem as faixas planas nem as soleiras alcancam todos os casos: sobram encontros
+    // entre um trecho de rio e um lago vizinho nivelado em outra cota. Medido antes desta passada:
+    // maior degrau entre tiles vizinhos de agua = 14 unidades de heightmap (3.5 de mundo).
+    //
+    // Iterativo porque remover um tile pode expor outro degrau atras dele. Poucas passadas bastam:
+    // cada uma recua a margem em 1 tile, e os degraus residuais sao finos.
+    {
+        const float kStepTol = 0.010f;   // ~1.6 unidades de heightmap
+        const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+        std::vector<size_t> drop;
+        for (int iter = 0; iter < 6; ++iter) {
+            drop.clear();
+            for (int y = 1; y < h - 1; ++y) {
+                for (int x = 1; x < w - 1; ++x) {
+                    size_t i = index_of(x, y);
+                    if (!river_map[i]) continue;
+                    for (int k = 0; k < 4; ++k) {
+                        size_t ni = index_of(x + nx4[k], y + nz4[k]);
+                        if (!river_map[ni]) continue;
+                        if (heights[i] - heights[ni] > kStepTol) { drop.push_back(i); break; }
+                    }
+                }
+            }
+            if (drop.empty()) break;
+            for (size_t i : drop) river_map[i] = 0;
+        }
+    }
     // === Passo 3.6: rios de lava escorrendo vulcao abaixo ("vulcao derramando lava" -
     // pedido do jogador) - mesma tecnica de steepest-descent dos rios acima (precisa rodar
     // depois da erosao/suavizacao, senao o canal fica borrado de volta), so' que a partir da
@@ -715,17 +946,33 @@ void World::gen() {
                 // causando paredes quase-zero (z-fighting/piscando) entre tiles de agua
                 // vizinhos com alturas quase iguais.
                 if (!river_map[i]) th = (int16_t)sea_h;
-            } else if (biome == 4 || (int)th >= snow_h || temp < 0.25f) {
-                float snow_var = fbm((float)x * 0.045f + 7600.0f, (float)y * 0.045f + 7600.0f, 2);
-                g = (snow_var > 0.56f) ? Block::Ice : Block::Snow;
+            } else if (ice_suitability(hn, temp) > kIceThreshold) {
+                // GELO/NEVE POR CURVA DE ALTITUDE x FRIO (ice_suitability, resource_geology.h).
+                // A condicao antiga era um OR - "biome == 4 || th >= snow_h || temp < 0.25" - e o
+                // terceiro termo bastava sozinho. Como temp e' fbm com latitude, existem manchas
+                // frias em altitude BAIXA, e era dali que vinha "gelo aparecendo aleatoriamente em
+                // planicies". Agora e' produto de altitude por frio: frio sem altitude da zero.
+                //
+                // Dentro da regiao congelada, GELO forma as manchas e NEVE cobre o resto. A escala
+                // 0.030 (era 0.045) faz formacoes maiores - "grandes formacoes em regioes frias".
+                float snow_var = fbm((float)x * 0.030f + 7600.0f, (float)y * 0.030f + 7600.0f, 3);
+                // Quanto mais adequado (mais alto e mais frio), mais GELO e menos neve: o pico e'
+                // gelo macico, a borda da regiao e' neve.
+                float ice_bias = ice_suitability(hn, temp);
+                g = (snow_var > 0.62f - ice_bias * 0.22f) ? Block::Ice : Block::Snow;
             } else if (biome == 1 && moisture > 0.66f) {
                 g = Block::Dirt; // vale mais umido
-            } else if (moisture < 0.30f && temp > 0.52f) {
-                g = Block::Sand;
-            } else if (biome == 3 && moisture < 0.36f) {
-                g = Block::Sand;
             } else {
-                g = Block::Dirt;
+                // AREIA POR CAMPO DE ARIDEZ. Antes era "umidade < 0.30 E temp > 0.52" (ou plato
+                // seco): um teste por tile, entao tile seco isolado no meio da terra virava areia e
+                // o mapa ficava salpicado. Agora a aridez do tile e' MODULADA por um campo de escala
+                // baixa (0.028 = manchas grandes), o que agrupa a areia em desertos reconheciveis
+                // com borda irregular - "areas claramente mais arenosas", nao pontos.
+                float arid_field = fbm((float)x * 0.028f + 8800.0f, (float)y * 0.028f + 8800.0f, 3);
+                float dryness = clamp01((0.46f - moisture) / 0.40f) * clamp01((temp - 0.26f) / 0.30f);
+                if (biome == 3) dryness = std::min(1.0f, dryness + 0.18f);   // plato desertifica mais
+                if (dryness * (0.45f + 0.55f * arid_field) > 0.115f) g = Block::Sand;
+                else g = Block::Dirt;
             }
 
             set_height(x, y, th);
@@ -765,60 +1012,59 @@ void World::gen() {
                 continue;
             }
 
-            float ore1 = fbm(fx * 0.11f + 200.0f, fy * 0.11f + 200.0f, 3);
-            float ore2 = fbm(fx * 0.09f + 300.0f, fy * 0.09f + 300.0f, 3);
-            float ore3 = fbm(fx * 0.14f + 400.0f, fy * 0.14f + 400.0f, 2);
-            // FERRO GANHOU CAMPO DE RUIDO PROPRIO. Antes ferro e carvao liam o MESMO ore1 (ferro
-            // > 0.88, carvao > 0.85 no else-if logo abaixo), entao ferro era so' a casquinha do topo
-            // de cada mancha de carvao - sempre embrulhado em carvao, e raro. Medido no mapa real
-            // 3072x1536: ferro 0.224% da terra contra carvao 4.468% - CARVAO/FERRO = 20x. No raio
-            // 110 em volta da base o jogador via 87 tiles de ferro e 1470 de carvao. E ferro e' de
-            // longe o recurso mais exigido da campanha (30+40+50+25+60+60+60+100 nos modulos + 20
-            // por refino ~= 445), enquanto carvao e' pedido em UM lugar (Fabrica de CO2, 50).
-            // Campos separados fazem ferro e carvao ocuparem regioes independentes do mapa.
-            float ore_iron = fbm(fx * 0.13f + 700.0f, fy * 0.13f + 700.0f, 3);
-            // Metal tambem: era "ore2 > 0.93 && ore3 > 0.93", a INTERSECAO de duas caudas -
-            // medido, 16 tiles no mapa INTEIRO (0.000%). Metal e' exigido pelos upgrades de modulo,
-            // pelos upgrades da arma e pelo reparo do traje, entao 16 tiles era um defeito, nao
-            // raridade de design. Campo proprio com limiar unico.
-            float ore_metal = fbm(fx * 0.16f + 1100.0f, fy * 0.16f + 1100.0f, 3);
-            // Campos de cristal bioluminescente: ruido de baixa frequencia (era minerio
-            // esparso via ore3>0.91) vira uma zona contigua e reconhecivel no bioma gelado,
-            // em vez de "specks" isolados - ore3 continua intocado (ainda alimenta o limiar
-            // de Metal abaixo).
-            float crystal_field = fbm(fx * 0.020f + 900.0f, fy * 0.020f + 900.0f, 3);
+            // ================= MINERIO POR DISTRIBUICAO GEOLOGICA =================
+            // Antes: 5 campos fbm independentes numa cadeia if/else, gateados so' por altura acima
+            // do mar. Os mapas ambientais do Passo 1 (altitude, temperatura, umidade, cordilheira,
+            // vale, bioma) eram calculados, usados no Passo 5 pra escolher o solo, e DESCARTADOS
+            // aqui - o minerio nao sabia se estava num pico congelado ou num vale seco.
+            //
+            // Agora monta o contexto ambiental do tile e deixa resource_geology.cpp decidir. Duas
+            // consequencias praticas: cada recurso tem ambiente preferencial (ferro em rocha, carvao
+            // em vale, cristal no alto e frio, componentes no seco), e mexer numa regra NAO
+            // redistribui as outras - a escolha e' por maior margem, nao pela ordem da lista.
+            {
+                GeoContext gc{};
+                gc.alt = heights[index_of(x, y)];
+                gc.temp = temp_map[index_of(x, y)];
+                gc.moist = moist_map[index_of(x, y)];
+                gc.ridge = ridge_map[index_of(x, y)];
+                gc.valley = valley_map[index_of(x, y)];
+                gc.slope = slope;
+                gc.biome = (int)biome_map[index_of(x, y)];
+                gc.wx = fx;
+                gc.wy = fy;
+                // Proximidade vulcanica: 1 no cone, caindo ate 0 em kVolcanoInfluence. Metal e
+                // basalto usam isto - "regiao vulcanica" passa a ser um fator de verdade, nao so'
+                // o disco de lava.
+                gc.volcanic = 0.0f;
+                for (const auto& vc : volcano_centers) {
+                    float vdx = (float)(x - vc.first), vdy = (float)(y - vc.second);
+                    float d = std::sqrt(vdx * vdx + vdy * vdy);
+                    gc.volcanic = std::max(gc.volcanic, clamp01(1.0f - d / kVolcanoInfluence));
+                }
+                for (const auto& vc : vent_centers) {
+                    float vdx = (float)(x - vc.first), vdy = (float)(y - vc.second);
+                    float d = std::sqrt(vdx * vdx + vdy * vdy);
+                    gc.volcanic = std::max(gc.volcanic, clamp01(1.0f - d / (kVolcanoInfluence * 0.30f)));
+                }
 
-            // 0.79 (nao 0.76): 0.76 media 3.37% da terra, o que punha ferro como 2o objeto mais comum do
-            // mapa e levava o total de objetos no terreno de 13.2% pra 17% - poluicao visual e custo de
-            // render sem ganho (a campanha exige ~445 de ferro; 0.79 ainda da ~800 tiles so' no raio 110
-            // da base, contra os 87 de antes).
-            if (ore_iron > 0.79f && (int)th > sea_h + 1) {
-                set(x, y, Block::Iron);
-            } else if (ore1 > 0.90f && (int)th > sea_h + 1) {
-                // 0.85 -> 0.90: com ferro fora do ore1, o carvao herdaria a cauda inteira e ficaria
-                // ainda MAIS abundante do que os 4.47% de que o jogador reclamou.
-                set(x, y, Block::Coal);
-            // 0.89 -> 0.80. Medido depois de dar campo proprio ao ferro: cobre ficou em 0.125% da terra
-            // contra 1.649% do ferro (13x), e no raio 110 da base eram 52 tiles de cobre para uma
-            // demanda de campanha de ~270 (10+25+20+15+15+40+30+40+60 nos modulos + 15 no craft da
-            // arma). Ou seja, ao consertar o ferro eu transformei o COBRE no gargalo - pior do que o
-            // ferro era. Cobre e' o 3o desta cadeia else-if, entao ferro e carvao consomem tiles antes
-            // dele e o valor efetivo fica abaixo do que a varredura do campo sugere.
-            } else if (ore2 > 0.80f && (int)th > sea_h + 2) {
-                set(x, y, Block::Copper);
-            // 0.58 -> 0.61: o cristal esta DEPOIS do carvao nesta cadeia, entao subir o limiar do carvao
-            // fez tiles cairem pra ca - medido, cristal saltou de 3.63% pra 6.38% da terra sem eu ter
-            // tocado no campo dele. Este limiar devolve o cristal ao patamar que ele tinha (0.65 corrigia
-            // demais: media 1.94%, abaixo do original).
-
-            } else if (crystal_field > 0.61f && (g == Block::Snow || (int)th > snow_h - 2)) {
-                set(x, y, Block::Crystal);
-            } else if (ore_metal > 0.86f && (int)th > sea_h + 2) {
-                set(x, y, Block::Metal);
-            } else if (fissure < 0.008f && (int)th > sea_h + 3) {
-                // 0.014 -> 0.008: esta era a SEGUNDA fonte de carvao (fendas escuras), e duas fontes
-                // independentes eram metade do motivo de "carvao tem de mais".
-                set(x, y, Block::Coal); // fendas escuras
+                Block ore = pick_resource(gc);
+                if (ore != Block::Air && (int)th > sea_h + 1) {
+                    set(x, y, ore);
+                } else if (fissure < 0.008f && (int)th > sea_h + 3) {
+                    // FENDAS ESCURAS: a segunda fonte de carvao, preservada por identidade visual
+                    // (pedido: "as manchas/fendas escuras devem ajudar o jogador a reconhecer a
+                    // presenca de carvao"). Fica FORA da tabela porque nao e' um campo de deposito -
+                    // e' uma feicao geometrica do relevo que ja existia no Passo 1 (fissure_cut).
+                    set(x, y, Block::Coal);
+                } else if (gc.volcanic > 0.28f && rock_n > 0.42f && (int)th > sea_h + 2) {
+                    // BASALTO em volta das regioes vulcanicas. Antes basalto so' existia quando lava
+                    // esfriava na agua; agora o entorno do vulcao tem crosta basaltica, que rende
+                    // Pedra ao ser quebrada (drop_item_for_block, preservado) - a "regiao vulcanica
+                    // -> maior presenca de basalto -> pedra disponivel" pedida.
+                    set_ground(x, y, Block::Basalt);
+                    set(x, y, Block::Basalt);
+                }
             }
 
             // NENHUMA MATERIA ORGANICA NO PLANETA ANTES DA TERRAFORMACAO (pedido do jogador: "nao
@@ -1141,7 +1387,26 @@ void terraform_step(World& world, int cx, int cy) {
             g_surface_dirty = true;
         } else if (g == Block::Grass && g_phase >= TerraPhase::Habitable &&
             g_oxygen >= 45.0f && g_water_res >= 35.0f) {
-            if ((rng_next_u32() % 100u) < 2u) {
+            // FLORA POR AMBIENTE E POR FASE. Antes era 2% fixo em qualquer tile de grama: arvore
+            // nascia igual num vale umido e numa encosta arida, e a fase Terraformado nao adensava
+            // nada. Agora a chance vem de umidade + temperatura + um campo de bosque, e a fase
+            // multiplica - e' o "Habitavel -> flora comeca / Terraformado -> flora abundante"
+            // pedido. Madeira e Organico continuam vindo exclusivamente daqui.
+            float fx = (float)x, fy = (float)y;
+            // Campo de bosque (escala baixa = manchas grandes): agrupa as arvores em bosques em vez
+            // de espalhar unidades soltas pelo mapa.
+            float grove = fbm(fx * 0.024f + 6100.0f, fy * 0.024f + 6100.0f, 3);
+            // Umidade e temperatura amenas favorecem; extremos nao. Reusa os mesmos ruidos do
+            // Passo 1 (mesmas escalas e offsets), entao o bosque cai onde o terreno E umido de
+            // verdade, nao num campo novo desalinhado do resto do mundo.
+            float moist = fbm(fx * g_terrain_cfg.moisture_scale + 1300.0f,
+                              fy * g_terrain_cfg.moisture_scale + 1300.0f, 4);
+            float temp = fbm(fx * g_terrain_cfg.temp_scale + 900.0f,
+                             fy * g_terrain_cfg.temp_scale + 900.0f, 4);
+            float env = clamp01((moist - 0.34f) / 0.36f) * clamp01(1.0f - std::fabs(temp - 0.58f) / 0.34f);
+            float phase_mult = (g_phase >= TerraPhase::Terraformed) ? 2.6f : 1.0f;
+            float chance = env * clamp01((grove - 0.42f) / 0.38f) * 5.0f * phase_mult;
+            if (chance > 0.0f && (float)(rng_next_u32() % 1000u) < chance * 10.0f) {
                 try_spawn_tree(world, x, y);
                 g_surface_dirty = true;
             }
@@ -1249,15 +1514,47 @@ struct LavaQuenchCell {
 std::vector<WaterFlowCell> g_water_flow;
 size_t g_water_head = 0;
 std::vector<LavaQuenchCell> g_lava_quench;
+
+// ---- Resfriamento de lava sem fonte (ver lava_cool_enqueue em world.h) ----
+struct LavaCoolCell { int x, z; };
+std::vector<LavaCoolCell> g_lava_cooling;
+size_t g_lava_cool_head = 0;
+float g_lava_cool_timer = 0.0f;
+// 2.4s por ANEL de borda (nao por tile - ver o bloco de resfriamento em update_water_flow). Um
+// nucleo de meteoro de raio 2.6 (~21 tiles) tem ~3 aneis, entao solidifica por completo em ~7s.
+// Antes era 1.1s POR TILE = ~23s pro mesmo nucleo, um bloco de cada vez. Devagar de proposito: da
+// tempo de ver a crosta fechando pro centro e de COLETAR a lava antes que endureca
+// (is_mineable(Lava) continua valendo).
+constexpr float kLavaCoolTick = 2.4f;
+
 float g_water_flow_timer = 0.0f;
 float g_lava_quench_timer = 0.0f;
 
 constexpr size_t kWaterFlowMaxQueue = 8192;   // teto de memoria
-// 1 tile por tick de 0.09s (~11 tiles/s). Era 18 por 0.07s (~257/s): um buraco de poucos tiles
-// enchia num piscar e nao dava pra VER a agua entrando - reclamacao do jogador ("faz isso muito
-// rapido sem efeito de que esta preenchendo"). O que da a leitura de fluido e' o ritmo, nao o efeito.
-constexpr int    kWaterFlowPerTick  = 1;
+// 0.09s por CAMADA da frente (~11 tiles de profundidade por segundo). Era 18 tiles por 0.07s
+// (~257/s) e um buraco de poucos tiles enchia num piscar - reclamacao antiga do jogador ("faz isso
+// muito rapido sem efeito de que esta preenchendo"). O que da a leitura de fluido e o RITMO de
+// avanco, e ele continua igual: o que mudou (ver fluid_pop_front) e que a camada agora tem a
+// largura da frente exposta em vez de um tile so.
 constexpr float  kWaterFlowTick     = 0.09f;
+// ---- ORCAMENTO POR EVENTO DE AGUA (mesmo padrao e mesma razao do kLavaSpillBudget) ----
+// Sem teto, um unico evento de agua podia inundar o mapa. Medido neste mundo (seed 1337): semeando
+// fluxo num tile seco vizinho de GELO DE GELEIRA, a bacia alcancavel tinha em media 177.310 tiles,
+// 164 de 185 pontos amostrados passavam de 10.000, e o pior batia no teto de medicao de 200.000.
+// Foi o bug relatado: "agua esta dominando tudo" depois de um meteoro cair perto da agua e do gelo.
+//
+// A causa de fundo e' que o enchimento assume uma invariante do world-gen - "toda bacia e' nivelada,
+// entao o terreno em volta de um corpo d'agua esta na cota dele ou acima, e o enchimento para
+// sozinho". Isso vale pra mar/lago (medido: exposicao ZERO) e pra leito de rio (que e' escavado
+// ABAIXO do terreno em volta), mas NAO vale pra agua/gelo que a regra de bioma pousa numa ENCOSTA:
+// ali o corpo esta acima de meio continente e vira reservatorio infinito.
+//
+// Um orcamento nao depende de identificar todos os casos - e' o que torna isto robusto em vez de
+// remendo. Volume por evento e' finito: um buraco cavado gasta poucos tiles, e a cratera de meteoro
+// mais generosa possivel (raio de borda 10.5) tem ~346 tiles. 1200 da 3.5x de folga sobre o maior
+// caso legitimo e mata qualquer estouro.
+constexpr int kWaterSpillBudget = 1200;
+int g_water_spill_left = 0;   // tiles restantes no evento ATUAL
 // Lava apaga BEM mais devagar que a agua enche: e' o momento dramatico, precisa ser visto tile a tile.
 constexpr float  kLavaQuenchTick    = 0.40f;
 
@@ -1302,23 +1599,85 @@ bool water_flow_blocked(const World& world, int x, int z) {
 bool water_flow_is_liquid(Block b) {
     return b == Block::Water || b == Block::Ice || b == Block::Lava;
 }
+// Este tile pode alimentar um enchimento de agua?
+//
+// Agua liquida: sempre. Gelo: SO' se estiver no nivel do mar ou abaixo.
+//
+// A distincao existe porque o world-gen coloca gelo por DOIS caminhos diferentes, com fisica
+// diferente (World::gen, Passo 5):
+//   1) `river_map[i] || th <= sea_h`  -> o tile E' um corpo d'agua (mar, lago, rio) que ficou
+//      congelado por temperatura. Tem agua liquida embaixo da tampa, e o corpo foi NIVELADO pela
+//      geracao, entao o terreno em volta esta na cota dele ou acima.
+//   2) `ice_suitability(hn, temp)`    -> geleira/calota pousada numa MONTANHA por altitude x frio.
+//      Nao tem agua embaixo, e nao e' nivelada: fica acima de meio continente.
+//
+// Medido neste mundo (seed 1337, sea_level = 20), varrendo tiles de gelo com vizinho seco mais
+// baixo e medindo a bacia alcancavel:
+//   gelo de corpo d'agua (cota <= 20):  ZERO pontos com vizinho seco mais baixo  -> exposicao nula
+//   gelo de geleira      (cota 21..160): bacia MEDIA de 177.310 tiles, pior batendo em 200.000
+// E planura local nao serve de criterio: gelo de geleira localmente plano tem bacia media de
+// 176.773 tiles, praticamente a mesma coisa.
+//
+// Sem esta separacao, um meteoro caindo perto de agua e gelo semeava enchimento em ~346 tiles de
+// cratera, um deles encostava numa geleira, e o mapa inundava - o bug relatado.
+bool water_is_source(const World& world, int x, int y) {
+    if (!world.in_bounds(x, y)) return false;
+    Block g = world.get_ground(x, y);
+    if (g == Block::Water) return true;
+    if (g != Block::Ice) return false;
+    return (int)world.height_at(x, y) <= world.sea_level;
+}
+
 void water_flow_enqueue(int x, int z, int16_t level) {
     if (g_water_flow.size() - g_water_head >= kWaterFlowMaxQueue) return;
     g_water_flow.push_back({x, z, level});
 }
 
-// Consumo FIFO das filas de fluido. Com LIFO (pop_back) o fluido andava em PROFUNDIDADE: saia vagando
-// por um ramo so' e as outras frentes ficavam soterradas no fundo da pilha. Medido: um canal de 4
-// tiles ao lado da lava ficava com 0 tiles cheios depois de 6 ticks, enquanto a lava se espalhava por
-// 6 tiles em OUTRA direcao. Fluido avanca em todas as frentes ao mesmo tempo - isso e' fila, nao
-// pilha. O cursor `head` evita erase() no comeco do vetor; quando drena, limpa tudo de uma vez.
+
+// ============= FRENTE DE PROPAGACAO (mecanismo compartilhado por agua e lava) =============
+// A fila JA era FIFO/BFS - a ORDEM sempre esteve certa. O que estava errado era o CONSUMO: uma
+// celula por tick (kWaterFlowPerTick = 1 na agua, `break` explicito na lava e no apagamento). Com
+// uma abertura de 5 tiles de agua, os 5 tiles expostos estavam na fila lado a lado e enchiam UM por
+// 0.09s, em fileira. E' o sintoma relatado - e era decisao minha de uma rodada anterior, feita pra
+// desacelerar a animacao. Desacelerar o RITMO nao precisava custar o PARALELISMO.
+//
+// fluid_pop_front() consome so' ate `front_end`, o tamanho que a fila tinha quando o tick comecou.
+// Tudo que esses tiles enfileirarem vai pra depois de front_end e entra na geracao SEGUINTE, no
+// proximo tick. Isso e' BFS por camadas: a frente inteira avanca junta, N bordas expostas comecam
+// simultaneamente, e a velocidade de AVANCO da frente (1 tile de profundidade por tick) fica
+// independente da LARGURA dela.
+//
+// Consequencias que caem de graca e atendem o pedido:
+//   - varias frentes coexistem (sao apenas mais celulas na mesma geracao);
+//   - duas frentes chegando no mesmo tile nao processam em dobro: a revalidacao no momento do pop
+//     descarta o segundo (era o que ja dispensava um set de visitados);
+//   - chunk nao interrompe nada: a fila guarda coordenada global do mundo, nao ha chunk aqui.
+//
+// Agua e lava compartilham este mecanismo e mantem propriedades PROPRIAS (ritmo do tick, regras de
+// entrada, orcamento de vazamento): o que se compartilha e' o AVANCO DA FRENTE, nao um tipo comum
+// de fluido - uma hierarquia de classes aqui seria peso sem ganho, ja que o unico comportamento
+// realmente igual e' esse laco de tres linhas.
 template <typename T>
-bool fluid_pop(std::vector<T>& q, size_t& head, T& out) {
-    if (head >= q.size()) { q.clear(); head = 0; return false; }
+bool fluid_pop_front(std::vector<T>& q, size_t& head, size_t front_end, T& out) {
+    if (head >= front_end || head >= q.size()) return false;
     out = q[head++];
-    if (head >= q.size()) { q.clear(); head = 0; }
     return true;
 }
+
+// Chamar ao fim de um tick: se a fila drenou, libera a memoria de uma vez (o cursor `head` evita
+// erase() no comeco do vetor durante o tick).
+template <typename T>
+void fluid_compact(std::vector<T>& q, size_t& head) {
+    if (head >= q.size()) { q.clear(); head = 0; }
+}
+
+// Teto de tiles processados por tick. Nao e' o ritmo (quem define ritmo e o intervalo do tick) - e'
+// so' rede de seguranca contra um pico de custo num frame quando uma bacia enorme e aberta de uma
+// vez. O excedente NAO e' descartado: fica na fila e sai no tick seguinte.
+constexpr int kWaterFrontMax = 192;
+constexpr int kLavaFrontMax  = 96;
+constexpr int kQuenchFrontMax = 64;
+constexpr int kCoolRingMax   = 256;
 
 // Fila de espalhamento da LAVA. Mesma mecanica da agua, ritmo MUITO mais lento: lava e' espessa.
 // `head` = cota da FONTE do derramamento. E' o teto absoluto de acumulo: liquido nao sobe acima da
@@ -1380,11 +1739,28 @@ void lava_quench_enqueue_around(const World& world, int x, int z) {
 void water_flood_from(World& world, int x, int y) {
     if (!world.in_bounds(x, y)) return;
     const int nx4b[4] = {1, -1, 0, 0}, nz4b[4] = {0, 0, 1, -1};
+
+    // Fila vazia = EVENTO NOVO: recarrega o orcamento (ver kWaterSpillBudget). Se ja ha um evento em
+    // curso, ele continua com o que sobrou - senao cavar repetidamente recarregaria a cada golpe e o
+    // limite nao limitaria nada. Mesmo raciocinio, e mesmo codigo, do lava_flood_from.
+    // Uma cratera de meteoro semeia ~346 tiles num unico frame: todos entram no MESMO evento, o que
+    // e' o que se quer (um impacto, um volume).
+    if (g_water_flow.size() <= g_water_head) g_water_spill_left = kWaterSpillBudget;
+
     // SEMENTE EM CIMA DE AGUA: o tile em si e' a fonte, entao espalha pros VIZINHOS. Sem isto,
     // semear a partir de um tile que ja e' agua nao fazia nada (a revalidacao o descartava por ja
     // estar cheio) e nada mais era enfileirado - a agua nao saia do lugar. Isso importa porque quem
     // cava semeia o tile cavado E os 4 vizinhos, e vizinho de buraco costuma ser justamente agua.
-    if (world.get_ground(x, y) == Block::Water) {
+    //
+    // GELO CONTA COMO FONTE, mas SO' ATE O NIVEL DO MAR (ver water_ice_is_source). Um mar/lago
+    // congelado e' agua com uma tampa de gelo - a agua esta ali embaixo, e cavar a beirada tem que
+    // encher. Ja o gelo que a regra de bioma pousa numa MONTANHA (ice_suitability, altitude x frio)
+    // nao tem agua nenhuma embaixo: e' geleira apoiada na encosta. Tratar aquilo como fonte era o
+    // bug de "agua dominando tudo" - medido: bacia media de 177.310 tiles por ponto.
+    //
+    // O tile de gelo NAO e' convertido: a tampa continua sendo gelo (e mineravel, dando +25 de
+    // agua), e so' o buraco vira agua - o que le exatamente como "o gelo derreteu onde eu cavei".
+    if (water_is_source(world, x, y)) {
         lava_quench_enqueue_around(world, x, y);
         int16_t lvl = world.height_at(x, y);
         for (int k = 0; k < 4; ++k) {
@@ -1404,8 +1780,7 @@ void water_flood_from(World& world, int x, int y) {
     int16_t level = 0;
     for (int k = 0; k < 4; ++k) {
         int tx = x + nx4[k], tz = y + nz4[k];
-        if (!world.in_bounds(tx, tz)) continue;
-        if (world.get_ground(tx, tz) != Block::Water) continue;
+        if (!water_is_source(world, tx, tz)) continue;
         int16_t h = world.height_at(tx, tz);
         if (!found || h > level) { level = h; found = true; }
     }
@@ -1460,21 +1835,35 @@ void update_water_flow(World& world, float dt) {
         }
     }
 
-    // ---- LAVA APAGANDO: 1 tile por kLavaQuenchTick ----
+    // ---- LAVA APAGANDO: A LINHA DE CONTATO INTEIRA POR kLavaQuenchTick ----
+    // Antes: `break` no fim = 1 tile por 0.40s, e a fila era consumida por pop_back (LIFO). Duas
+    // coisas erradas juntas: apagava em fileira, e o LIFO fazia a reacao vagar em profundidade por
+    // um ramo da margem em vez de avancar por toda a linha de contato. Agora a geracao atual inteira
+    // apaga no mesmo passo, em ordem de chegada - uma frente de lava encontrando um lago endurece
+    // ao longo de TODA a margem simultaneamente, que e o que a fisica manda.
     if (!g_lava_quench.empty()) {
         g_lava_quench_timer += dt;
         if (g_lava_quench_timer >= kLavaQuenchTick) {
             g_lava_quench_timer = 0.0f;
-            while (!g_lava_quench.empty()) {
-                LavaQuenchCell c = g_lava_quench.back();
-                g_lava_quench.pop_back();
+            size_t quench_front_end = g_lava_quench.size();
+            size_t qhead = 0;
+            int quenched = 0;
+            while (quenched < kQuenchFrontMax && qhead < quench_front_end && qhead < g_lava_quench.size()) {
+                LavaQuenchCell c = g_lava_quench[qhead++];
                 if (!world.in_bounds(c.x, c.z)) continue;
                 if (world.get_ground(c.x, c.z) != Block::Lava) continue;   // revalidacao
                 // Tem que continuar encostada em agua - senao a fila apagaria lava que ficou longe.
-                // A agua tambem precisa estar na MESMA FAIXA DE ALTURA: dois tiles vizinhos podem ter
-                // cotas muito diferentes, e agua num lago 10 unidades abaixo nao toca a lava que corre
-                // na encosta acima. Sem esta condicao, um rio de lava descendo a serra seria apagado
-                // inteiro por um lago no pe dela.
+                //
+                // A comparacao de altura e' ASSIMETRICA de proposito, e isso importa. A versao
+                // anterior usava |h - lava_h| > 2, ou seja rejeitava tambem agua ACIMA da lava - e
+                // era exatamente o caso do fundo de cratera: lava no fundo (cota 13) com a agua
+                // enchendo o anel em volta (cota 17), diferenca 4, apagamento REJEITADO. Sintoma
+                // reportado: "a parte com lava nao foi preenchida e apagada".
+                //
+                // Fisicamente: agua acima da lava DESPENCA sobre ela e apaga, em qualquer desnivel.
+                // Agua abaixo nao a alcanca. A guarda que motivou o teste original continua valendo
+                // com a regra assimetrica: um rio de lava correndo a meia encosta (cota 40) NAO e'
+                // apagado por um lago no pe da serra (cota 20), porque ali a agua esta ABAIXO.
                 bool touches_water = false;
                 int16_t wlvl = 0;
                 int16_t lava_h = world.height_at(c.x, c.z);
@@ -1484,7 +1873,7 @@ void update_water_flow(World& world, float dt) {
                     if (!world.in_bounds(tx, tz)) continue;
                     if (world.get_ground(tx, tz) != Block::Water) continue;
                     int16_t h = world.height_at(tx, tz);
-                    if (std::abs((int)h - (int)lava_h) > 2) continue;   // fora da linha d'agua
+                    if ((int)h < (int)lava_h - 2) continue;   // agua BEM abaixo: nao alcanca a lava
                     touches_water = true;
                     wlvl = h;
                 }
@@ -1514,23 +1903,121 @@ void update_water_flow(World& world, float dt) {
                 spawn_water_fx((float)c.x, wy, (float)c.z, true);
                 play_steam_hiss_sound();
 
-                // A pedra nova NAO chama water_flood_from: ela e' terra agora, na cota onde a lava
-                // estava - a agua nao deve subir por cima dela (era isso que fazia a crosta
-                // desaparecer submersa). A cadeia continua pela linha de contato: cada tile de agua
-                // enfileira seus proprios vizinhos de lava.
+                // A crosta nova E' reoferecida a simulacao de agua. A versao anterior NAO fazia isso
+                // de proposito, com o raciocinio de que "a agua nao deve subir por cima da pedra" -
+                // e isso produzia os dois sintomas relatados numa cratera de meteoro com nucleo
+                // derretido: a propagacao da agua PARA em tile de lava (water_flow_is_liquid inclui
+                // Lava), entao o primeiro anel de lava endurecia e a frente de agua morria ali -
+                // "nao preencheu por completo" E "a parte com lava nao foi preenchida e apagada".
+                //
+                // Reoferecer resolve os dois de uma vez, e o caso que motivou a decisao antiga
+                // continua correto de graca: o proprio teste de cota decide. Se a crosta ficou NA
+                // OU ACIMA da linha d'agua (lava escorrendo pra dentro de um lago, margem), a agua
+                // recusa e a pedra fica visivel como praia. Se ficou ABAIXO (fundo de cratera), ela
+                // submerge - que e' o que a fisica manda e o que o jogador espera ver.
+                water_flood_from(world, c.x, c.z);
                 lava_quench_enqueue_around(world, c.x, c.z);
-                break;   // 1 tile por tick: o efeito precisa ser visto acontecendo
+                quenched++;
             }
+            // Remove a geracao consumida; o que os tiles desta camada enfileiraram (esta depois de
+            // quench_front_end) sobra pro proximo tick, que e a camada seguinte da frente.
+            if (qhead > 0) g_lava_quench.erase(g_lava_quench.begin(), g_lava_quench.begin() + (long)qhead);
+            // UMA vez por tick, nao por tile: rebuild_surface_cache e O(w*h) = 1.18M iteracoes.
+            if (quenched > 0) world.rebuild_surface_cache();
         }
     }
 
-    // ---- LAVA ESCORRENDO / ACUMULANDO: 1 acao por kLavaFlowTick ----
+
+    // ---- LAVA ESFRIANDO SEM FONTE: UM ANEL DE BORDA INTEIRO POR TICK ----
+    // Poca finita (nucleo de meteoro) solidificando. Reescrito: a versao anterior varria a fila
+    // linearmente e convertia o PRIMEIRO tile de borda que encontrasse - um tile por 1.1s. Duas
+    // consequencias, as duas reclamadas: (1) parecia uma fila animada, um bloco de cada vez;
+    // (2) o padrao visual dependia da ORDEM DO ARRAY, porque entre varios tiles de borda igualmente
+    // validos ganhava o de menor indice - ou seja, a ordem de memoria decidia o fenomeno fisico.
+    //
+    // Agora cada tick calcula a BORDA EXPOSTA de verdade - todo tile de lava da fila com ao menos um
+    // vizinho-4 que nao e' lava (ou fora do mapa) - e converte o ANEL COMPLETO de uma vez. Removido
+    // o anel, a geometria expoe sozinha o anel de dentro, que e' o proximo tick. E' distancia
+    // topologica ate a borda, calculada de forma INCREMENTAL: nao ha campo de distancia global nem
+    // varredura do mundo, so' os poucos tiles que ainda estao na fila.
+    //
+    //   tick 1: 🔥🔥🔥🔥🔥      tick 2: ❄️❄️❄️❄️❄️      tick 3: ❄️❄️❄️❄️❄️
+    //           🔥🔥🔥🔥🔥              ❄️🔥🔥🔥❄️              ❄️❄️❄️❄️❄️
+    //           🔥🔥🔥🔥🔥              ❄️🔥🔥🔥❄️              ❄️❄️🔥❄️❄️
+    //
+    // Como o anel inteiro muda no mesmo instante, a ordem DENTRO do anel deixa de ser observavel -
+    // a dependencia da ordem de armazenamento desaparece por construcao, nao por sorteio.
+    //
+    // Numero de tiles convertidos por tick VARIA (e' o perimetro atual), que era o pedido: 16, 8,
+    // 4, 1... conforme a frente fecha pro centro.
+    if (g_lava_cooling.size() > g_lava_cool_head) {
+        g_lava_cool_timer += dt;
+        if (g_lava_cool_timer >= kLavaCoolTick) {
+            g_lava_cool_timer = 0.0f;
+            const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+
+            // Passo 1: separa a fila em BORDA (converte agora) e INTERIOR (fica pro proximo anel).
+            // Escreve o interior compactado de volta na propria fila - sem alocar vetor novo.
+            std::vector<LavaCoolCell> ring;
+            size_t write = 0;
+            for (size_t i = g_lava_cool_head; i < g_lava_cooling.size(); ++i) {
+                const LavaCoolCell q = g_lava_cooling[i];
+                if (!world.in_bounds(q.x, q.z)) continue;
+                if (world.get_ground(q.x, q.z) != Block::Lava) continue;   // ja virou pedra/agua
+                bool edge = false;
+                for (int k = 0; k < 4 && !edge; ++k) {
+                    int tx = q.x + nx4[k], tz = q.z + nz4[k];
+                    if (!world.in_bounds(tx, tz)) { edge = true; break; }
+                    if (world.get_ground(tx, tz) != Block::Lava) edge = true;
+                }
+                if (edge && (int)ring.size() < kCoolRingMax) ring.push_back(q);
+                else                                        g_lava_cooling[write++] = q;
+            }
+            g_lava_cool_head = 0;
+            g_lava_cooling.resize(write);
+
+            if (ring.empty()) {
+                // Nenhuma borda e ainda ha tiles: so' acontece se a poca ficou totalmente cercada de
+                // lava que NAO esta na fila (lava vulcanica encostando no nucleo). Solidifica o que
+                // sobrou em vez de deixar a fila presa pra sempre.
+                for (const LavaCoolCell& q : g_lava_cooling) ring.push_back(q);
+                g_lava_cooling.clear();
+            }
+
+            for (const LavaCoolCell& c : ring) {
+                if (world.get_ground(c.x, c.z) != Block::Lava) continue;
+                world.set_ground(c.x, c.z, Block::Basalt);
+                if (world.get(c.x, c.z) == Block::Lava) world.set(c.x, c.z, Block::Basalt);
+                g_surface_dirty = true;
+                // Brasa apagando, SEM chiado de vapor: esfriar no ar nao e' apagar na agua.
+                spawn_lava_fx((float)c.x, (float)world.height_at(c.x, c.z) * kHeightScale, (float)c.z);
+            }
+            // UMA vez por anel, nao por tile: rebuild_surface_cache e O(w*h) = 1.18M iteracoes.
+            if (!ring.empty()) world.rebuild_surface_cache();
+            if (g_lava_cooling.empty()) g_lava_cool_head = 0;
+        }
+    }
+    // ---- LAVA ESCORRENDO / ACUMULANDO: A FRENTE INTEIRA POR kLavaFlowTick ----
+    // Antes: `break` no fim do laco = 1 acao por 0.42s. Agora processa a geracao atual da fila
+    // inteira (ver fluid_pop_front), entao uma frente de lava larga desce em toda a largura em vez
+    // de um filete alternando de tile. O ritmo de 0.42s por camada (4.7x mais lento que a agua)
+    // nao mudou - lava continua lendo como fluido espesso.
+    //
+    // Efeito colateral desejado no modo ACUMULAR: uma poca de N tiles sobe UMA cota por tick como
+    // SUPERFICIE, em vez de tile a tile. Fisicamente e o certo (a superficie de um liquido sobe
+    // inteira) e visualmente acaba com o "pilar de lava" alternando dentro do buraco.
+    //
+    // Isto e a PROPAGACAO da lava. O RESFRIAMENTO dela e outro processo, com fila propria, ritmo
+    // proprio e geometria propria (bloco acima) - os dois nao se misturam.
     if (g_lava_flow.size() > g_lava_head) {
         g_lava_flow_timer += dt;
         if (g_lava_flow_timer >= kLavaFlowTick) {
             g_lava_flow_timer = 0.0f;
+            size_t lava_front_end = g_lava_flow.size();
+            int lava_acted = 0;
             LavaFlowCell c;
-            while (fluid_pop(g_lava_flow, g_lava_head, c)) {
+            while (lava_acted < kLavaFrontMax &&
+                   fluid_pop_front(g_lava_flow, g_lava_head, lava_front_end, c)) {
                 // ORCAMENTO TOTAL do vazamento, nao por profundidade. Com limite por celula a lava
                 // enchia TUDO que estivesse a N tiles de distancia: medido, 200 tiles em 200 ticks
                 // numa planicie rebaixada, sem parar. Um teto de ACOES TOTAIS por derramamento e' o
@@ -1607,8 +2094,8 @@ void update_water_flow(World& world, float dt) {
                     g_surface_dirty = true;
                     spawn_lava_fx((float)c.x, (float)(h + 1) * kHeightScale, (float)c.z);
                     lava_flow_enqueue(c.x, c.z, (int16_t)(h + 1), c.head, (int16_t)(c.budget - 1), true);
-                    world.rebuild_surface_cache();
-                    break;   // 1 acao por tick
+                    lava_acted++;
+                    continue;
                 }
 
                 // ================= MODO ESPALHAR =================
@@ -1664,26 +2151,37 @@ void update_water_flow(World& world, float dt) {
                     if (spread == 0)
                         lava_flow_enqueue(c.x, c.z, here, c.head, (int16_t)(c.budget - 1), true);
                 }
-                world.rebuild_surface_cache();
-                break;   // 1 acao por tick
+                lava_acted++;
             }
+            fluid_compact(g_lava_flow, g_lava_head);
+            // UMA vez por tick, nao por tile: rebuild_surface_cache e O(w*h) = 1.18M iteracoes.
+            if (lava_acted > 0) world.rebuild_surface_cache();
         }
     }
 
-    // ---- AGUA ENCHENDO ----
+    // ---- AGUA ENCHENDO: A FRENTE INTEIRA POR TICK ----
+    // Antes: kWaterFlowPerTick = 1, ou seja `while (processed < 1)` - um tile por 0.09s, em fileira.
+    // Agora processa toda a GERACAO atual da fila (ver fluid_pop_front): os 5 tiles expostos de uma
+    // abertura de 5 enchem no MESMO passo, e o que eles enfileirarem forma a proxima camada. O ritmo
+    // (0.09s por camada) nao mudou - o que mudou e' que a camada nao e' mais de um tile so'.
     if (g_water_flow.size() <= g_water_head) return;
     g_water_flow_timer += dt;
     if (g_water_flow_timer < kWaterFlowTick) return;
     g_water_flow_timer = 0.0f;
 
     const int nx4[4] = {1, -1, 0, 0}, nz4[4] = {0, 0, 1, -1};
+    size_t front_end = g_water_flow.size();
     int processed = 0;
-    while (processed < kWaterFlowPerTick) {
-        WaterFlowCell c;
-        if (!fluid_pop(g_water_flow, g_water_head, c)) break;
+    WaterFlowCell c;
+    while (processed < kWaterFrontMax && fluid_pop_front(g_water_flow, g_water_head, front_end, c)) {
+        // ORCAMENTO DO EVENTO (ver kWaterSpillBudget): esgotado, descarta a fila e para. Sem isto um
+        // unico evento podia inundar o mapa - medido, bacia media de 177.310 tiles a partir de gelo
+        // de geleira. Descartar a fila (nao so' parar de encher) e' o que encerra o evento de vez.
+        if (g_water_spill_left <= 0) { g_water_flow.clear(); g_water_head = 0; break; }
         if (!world.in_bounds(c.x, c.z)) continue;
 
-        // REVALIDACAO (e' o que torna duplicatas na fila inofensivas).
+        // REVALIDACAO (e' o que torna duplicatas na fila inofensivas - e o que faz duas frentes
+        // chegando no mesmo tile nao processarem em dobro).
         if (water_flow_is_liquid(world.get_ground(c.x, c.z))) continue;   // ja encheu
         if (water_flow_blocked(world, c.x, c.z)) continue;
         if (world.height_at(c.x, c.z) >= c.level) continue;               // acima da linha d'agua
@@ -1694,6 +2192,7 @@ void update_water_flow(World& world, float dt) {
         world.set(c.x, c.z, Block::Water);
         g_surface_dirty = true;
         processed++;
+        g_water_spill_left--;
 
         spawn_water_fx((float)c.x, (float)c.level * kHeightScale, (float)c.z, false);
         // Encheu encostando em lava? Entao a lava vai apagar.
@@ -1711,6 +2210,10 @@ void update_water_flow(World& world, float dt) {
             water_flow_enqueue(tx, tz, c.level);
         }
     }
+    fluid_compact(g_water_flow, g_water_head);
+    // UMA vez por tick, nao por tile: rebuild_surface_cache e O(w*h) = 1.18M iteracoes no mapa
+    // 1536x768. Com o processamento em frente sao dezenas de tiles por tick, e chamar por tile
+    // custaria dezenas de milhoes de iteracoes num unico frame.
     if (processed > 0) world.rebuild_surface_cache();
 }
 
@@ -1783,4 +2286,12 @@ void render_water_fx() {
         }
     }
     rlSetTexture(rlGetTextureIdDefault());
+}
+
+// Ver comentario da declaracao em world.h.
+void lava_cool_enqueue(World& world, int x, int z) {
+    if (!world.in_bounds(x, z)) return;
+    if (world.get_ground(x, z) != Block::Lava) return;
+    if (g_lava_cooling.size() - g_lava_cool_head >= kWaterFlowMaxQueue) return;
+    g_lava_cooling.push_back({x, z});
 }

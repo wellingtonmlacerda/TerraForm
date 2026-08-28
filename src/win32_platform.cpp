@@ -95,7 +95,11 @@ static void process_input_events() {
         // Rotacionar camera (mouse direita = camera gira direita) - mesma matematica de
         // sensitivity de antes.
         g_camera.yaw += delta.x * g_camera.sensitivity;
-        g_camera.pitch -= delta.y * g_camera.sensitivity * 0.5f;
+        extern CameraConfig g_camera_cfg;
+        // Sensibilidade vertical vem do config (g_camera_cfg.pitch_sensitivity) em vez do literal 0.5
+        // que estava escondido aqui - metade da horizontal, o que somado ao auto-recentrar da
+        // camera fazia o olhar vertical parecer que nao funcionava.
+        g_camera.pitch -= delta.y * g_camera.sensitivity * g_camera_cfg.pitch_sensitivity;
 
         g_camera.pitch = std::clamp(g_camera.pitch, g_camera.min_pitch, g_camera.max_pitch);
 

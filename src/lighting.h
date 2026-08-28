@@ -57,7 +57,16 @@ struct LightingSettings {
     float bloom_threshold = 0.75f;
     float shadow_softness = 0.6f;
     int shadow_samples = 8;          // Passos do raymarching
-    float ambient_min = 0.06f;       // Luz ambiente minima (noite)
+    float ambient_min = 0.06f;       // Luz ambiente minima (piso absoluto, usado pela curva do sol)
+    // ---- NOITE ----
+    // compute_daylight() e max(0, sin(...)), ou seja EXATAMENTE zero durante metade do ciclo. Com
+    // isso o ambiente noturno era ambient_min (0.06) fixo, multiplicado pela cor noturna fria
+    // (luminancia ~0.44) = ~0.026 no lightmap. Terreno preto, sem gradiente, sem nada. Os tres
+    // campos abaixo dao a noite uma curva PROPRIA em vez de deixa-la ser o resto de zero da curva
+    // do sol - continua sendo um termo ambiente, nao um "acende tudo".
+    float night_ambient = 0.19f;     // piso da noite fechada, SEM lua nenhuma
+    float moon_light = 0.24f;        // quanto a lua soma no ambiente quando esta alta (x sky_moonlight)
+    float moon_directional = 0.34f;  // intensidade da fonte lunar deslocada (lado iluminado + sombra)
     float ambient_max = 0.92f;       // Luz ambiente maxima (dia)
     float contrast = 1.18f;          // Era 1.12 - mais contraste/profundidade visual
     float exposure = 1.05f;

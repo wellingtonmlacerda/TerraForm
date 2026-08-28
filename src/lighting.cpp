@@ -10,6 +10,7 @@
 #include "base_interior.h"       // kBaseLamps/base_interior_ambient (luminarias + ambiente interno)
 #include "base_exterior.h"       // kBaseFloods (holofotes externos da base)
 #include "interiors.h"           // interior_at/interior_district_center (luminarias por ambiente)
+#include "sky.h"                 // sky_moonlight/sky_moonlight_azimuth (a Lua ilumina o chao)
 
 #include <algorithm>
 #include <cmath>
@@ -160,18 +161,32 @@ static Light2D get_module_light(const Module& mod) {
 
 // Calcular luz ambiente baseada no ciclo dia/noite
 static float compute_ambient_light() {
-    // Usa compute_daylight() (math_core.cpp) - a MESMA formula que posiciona o sol de
-    // verdade em render_alien_sky() (sky.cpp). Antes esse arquivo reimplementava sua
-    // propria curva (sin(day_phase*pi), so positiva o ciclo INTEIRO) em vez de reaproveitar
-    // a de verdade (sin(day_phase*2*pi - pi/2), zero por metade do ciclo) - as duas
-    // discordavam sobre quando e "dia" (bug real, mesmo nao sendo a causa principal das
-    // manchas escuras reportadas - essas vem do AO por profundidade/inclinacao logo
-    // abaixo, independente de hora do dia de proposito).
+    // NOTA: usa a mesma curva de daylight que o resto do jogo (compute_daylight, math_core.cpp)
+    // em vez de reaproveitar a curva antiga (sin(day_phase*pi), so positiva o ciclo INTEIRO) -
+    // as duas discordavam e o terreno clareava em horario errado.
     float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
     float daylight = compute_daylight(day_phase);
 
-    // Interpolar entre luz minima (noite) e maxima (dia)
+    // Luz ambiente: interpola entre minimo (noite) e maximo (dia)
     float ambient = lerp(g_lighting.ambient_min, g_lighting.ambient_max, daylight);
+
+    // ================= AMBIENTE NOTURNO + LUZ DA LUA =================
+    // compute_daylight() = max(0, sin(...)) e' EXATAMENTE zero em metade do ciclo. Consequencia
+    // medida: durante toda a noite o lerp acima devolvia ambient_min (0.06) constante, e
+    // multiplicado pela cor noturna (0.35,0.4,0.65) o lightmap ficava em ~0.02-0.04 - terreno
+    // preto, sem relevo, sem gradiente, e a Lua no ceu sem nenhum efeito no chao. Era a causa exata
+    // do "mesmo com a Lua visivel o ambiente fica praticamente preto".
+    //
+    // A correcao nao e' subir ambient_min (isso clarearia o crepusculo tambem, onde a curva do sol
+    // ainda manda). E' dar a noite uma CURVA PROPRIA e combinar as duas pelo maximo:
+    //   - night_ambient: o piso de uma noite fechada, sem lua. A noite continua noite.
+    //   - moon_light * sky_moonlight(): a contribuicao da Lua, tirada da MESMA orbita que sky.cpp
+    //     usa pra desenha-la (sky_moon_state) - luz e imagem nunca divergem.
+    //   - x night_alpha: some suavemente no amanhecer, quando a curva do sol assume.
+    // max(), nao soma: ao meio-dia o termo noturno nao pode somar em cima do sol e estourar.
+    float night = compute_night_alpha(day_phase);
+    float moonlit = g_lighting.night_ambient + g_lighting.moon_light * sky_moonlight();
+    ambient = std::max(ambient, moonlit * night);
 
     // Terraformacao aumenta luz ambiente levemente
     ambient += clamp01(g_atmosphere / 100.0f) * 0.08f;
@@ -202,8 +217,17 @@ static void get_natural_light_color(float& r, float& g, float& b) {
         g = lerp(0.45f, 0.65f, t);
         b = lerp(0.55f, 0.35f, t);
     } else {
-        // Noite: azul/roxo frio
-        r = 0.35f; g = 0.4f; b = 0.65f;
+        // NOITE: azul-roxo frio, clareado pela LUA na medida em que ela esta alta.
+        // A cor fixa antiga (0.35,0.4,0.65) tem luminancia 0.44 e, multiplicada por um ambiente de
+        // 0.06, dava ~0.026 no lightmap - preto. Nao bastava subir o ambiente: a COR tambem
+        // precisava ser luz de lua (prata frio) em vez de penumbra roxa, senao o terreno ganha
+        // brilho mas continua com aparencia de borrao azul sem leitura de material.
+        // Fica FRIA nos dois extremos - o contraste com o branco-quente do meio-dia e o que
+        // mantem "a noite ainda parece noite".
+        float m = sky_moonlight();
+        r = lerp(0.30f, 0.66f, m);
+        g = lerp(0.36f, 0.72f, m);
+        b = lerp(0.58f, 0.90f, m);
     }
 }
 
@@ -229,6 +253,47 @@ static void collect_lights() {
         player_light.flicker_speed = 12.0f;
         player_light.is_emissive = false;
         g_lights.push_back(player_light);
+    }
+
+    // ================= LUZ DIRECIONAL DA LUA =================
+    // O pipeline deste motor NAO tem luz direcional: a luz natural e um termo AMBIENTE global
+    // (compute_ambient_light) e so as Light2D pontuais tem posicao, atenuacao e sombra
+    // (compute_shadow). Uma luz direcional de verdade exigiria normal por pixel no lightmap, que
+    // nao existe. Entao a Lua entra pelo caminho que o motor JA tem: uma fonte pontual grande,
+    // deslocada na direcao real do azimute lunar (sky_moonlight_azimuth, a mesma orbita que o ceu
+    // desenha), a ~26 tiles do jogador.
+    //
+    // O resultado e o efeito pedido sem sistema novo: o lado do terreno virado pra Lua fica mais
+    // claro, o lado oposto fica em penumbra, e compute_shadow projeta sombra suave de relevo e
+    // estrutura na direcao certa. Custo: ~radius^2*pi pixels com um traco de <= shadow_samples (8)
+    // passos cada - da ordem de 30k iteracoes, contra os 9216 pixels do lightmap ja varridos pelo
+    // ambiente. E paga so de noite (o gate de intensidade abaixo).
+    //
+    // Nao ilumina interiores atravessando parede: compute_shadow raymarcha o mundo, entao a parede
+    // de bloco da base barra o traco - e, mais decisivo, base_interior_ambient() ja define o
+    // ambiente de dentro como ABSOLUTO e o lightmap e clampado em 1.0, entao la nao ha o que
+    // clarear.
+    {
+        float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
+        float night = compute_night_alpha(day_phase);
+        float moon = sky_moonlight();
+        float strength = g_lighting.moon_directional * moon * night;
+        if (strength > 0.01f) {
+            float az = sky_moonlight_azimuth();
+            Light2D moon_light;
+            moon_light.x = rpos.x + std::cos(az) * 26.0f;
+            moon_light.y = rpos.y + std::sin(az) * 26.0f;
+            moon_light.height = rpy + 40.0f;   // alta: a sombra sai longa e rasante, como luar
+            moon_light.radius = 46.0f;
+            moon_light.intensity = strength;
+            moon_light.r = 0.62f;
+            moon_light.g = 0.70f;
+            moon_light.b = 0.92f;              // prata frio, nao branco
+            moon_light.falloff = 1.15f;        // quase linear: e' um corpo distante, nao uma lampada
+            moon_light.flicker = false;        // luar nao tremula
+            moon_light.is_emissive = false;
+            g_lights.push_back(moon_light);
+        }
     }
 
     // Luz do jetpack se ativo
@@ -734,3 +799,4 @@ static float compute_vignette(float screen_x, float screen_y, float screen_w, fl
     float vignette = 1.0f - smoothstep(g_lighting.vignette_radius - 0.2f, 1.0f, dist) * g_lighting.vignette_intensity;
     return vignette;
 }
+

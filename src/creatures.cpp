@@ -29,6 +29,7 @@ extern float g_day_time;
 extern TerraPhase g_phase;
 
 std::vector<Creature> g_creatures;
+std::vector<CreatureProjectile> g_creature_projectiles;
 
 float g_player_hit_timer = 0.0f;
 float g_player_hit_dir_x = 0.0f, g_player_hit_dir_z = 0.0f;
@@ -49,6 +50,9 @@ constexpr float kNightSpawnGate = 0.15f; // abaixo disso (quase dia pleno), nao 
 // por tipo de inimigo, mais abaixo) - eram constantes UNICAS compartilhadas por todas as criaturas,
 // o que era metade do motivo de "todos os inimigos sao praticamente iguais".
 constexpr float kDespawnDist = 150.0f;
+// Teto de projeteis em voo. Com 7 criaturas e recargas de 2.6-4.5s o normal fica muito abaixo
+// disso; e rede de seguranca, nao ritmo.
+constexpr size_t kMaxCreatureProjectiles = 48;
 constexpr float kRespawnGraceSeconds = 5.0f;
 
 // Alcance/raio de acerto/dano/cadencia/duracao do traco agora vivem em kWeaponTiers (mais abaixo),
@@ -145,7 +149,10 @@ const EnemyArchetype kArchetypes[kEnemyTypeCount] = {
     { "CRAWLER",
       /*hp*/ 20, /*def*/ 0, /*dmg*/ 3, /*range*/ 1.0f, /*atk_cd*/ 0.9f, /*windup*/ 0.15f,
       /*flinch*/ 1.0f,
+      // Sem ataque a distancia: e o bicho que CHEGA em cima, rapido e barato.
+      /*ranged*/ 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
       /*wander*/ 2.0f, /*chase*/ 5.4f, /*detect*/ 16.0f, /*keep*/ 0.0f,
+      /*accel*/ 16.0f, /*turn*/ 7.0f,
       /*scale*/ 0.72f,
       0.30f,0.62f,0.34f,  0.44f,0.80f,0.46f,  0.22f,0.44f,0.26f,
       0.58f,0.88f,0.56f,  0.90f,1.00f,0.70f,
@@ -156,7 +163,12 @@ const EnemyArchetype kArchetypes[kEnemyTypeCount] = {
     { "STALKER",
       /*hp*/ 55, /*def*/ 2, /*dmg*/ 7, /*range*/ 1.4f, /*atk_cd*/ 1.5f, /*windup*/ 0.35f,
       /*flinch*/ 0.7f,
+      // DARDO: reto (gravidade 0), rapido, alcance longo. Dano 5 (MENOR que o golpe de 7 - o
+      // preco de atacar de longe), recarga 2.6s e telegrafe de 0.45s. Ele mantem 4.5 de distancia
+      // e agora tem com que atingir dali: virou fustigador em vez de enfeite.
+      /*ranged*/ 5, 15.0f, 2.5f, 2.6f, 0.45f, 16.0f, 0.0f, 0.16f,
       /*wander*/ 1.4f, /*chase*/ 3.9f, /*detect*/ 20.0f, /*keep*/ 4.5f,
+      /*accel*/ 9.0f, /*turn*/ 4.2f,
       /*scale*/ 1.05f,
       0.46f,0.24f,0.66f,  0.66f,0.40f,0.86f,  0.30f,0.16f,0.46f,
       0.78f,0.56f,0.94f,  0.95f,0.72f,1.00f,
@@ -167,7 +179,13 @@ const EnemyArchetype kArchetypes[kEnemyTypeCount] = {
     { "BRUTE",
       /*hp*/ 150, /*def*/ 5, /*dmg*/ 16, /*range*/ 1.9f, /*atk_cd*/ 2.6f, /*windup*/ 0.80f,
       /*flinch*/ 0.12f,
+      // LOB: arco balistico (gravidade 9), lento, telegrafe LONGO de 1.1s. Dano 12, recarga 4.5s.
+      // Responde ao problema oposto ao do Stalker: o Brute e lento (2.1 contra 4.8 do jogador),
+      // entao bastava andar pra longe e ele ficava inofensivo. Agora manter distancia custa - mas o
+      // arco e lento e anunciado, da pra desviar andando de lado.
+      /*ranged*/ 12, 19.0f, 4.5f, 4.5f, 1.10f, 11.0f, 9.0f, 0.34f,
       /*wander*/ 0.8f, /*chase*/ 2.1f, /*detect*/ 13.0f, /*keep*/ 0.0f,
+      /*accel*/ 2.6f, /*turn*/ 1.4f,
       /*scale*/ 1.55f,
       0.60f,0.30f,0.18f,  0.72f,0.42f,0.24f,  0.40f,0.20f,0.12f,
       0.86f,0.62f,0.34f,  1.00f,0.62f,0.20f,
@@ -178,7 +196,10 @@ const EnemyArchetype kArchetypes[kEnemyTypeCount] = {
     { "ALPHA",
       /*hp*/ 240, /*def*/ 7, /*dmg*/ 22, /*range*/ 2.2f, /*atk_cd*/ 1.8f, /*windup*/ 0.55f,
       /*flinch*/ 0.06f,
+      // Sem ataque a distancia: o elite e corpo-a-corpo puro, rapido e devastador de perto.
+      /*ranged*/ 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
       /*wander*/ 1.6f, /*chase*/ 4.3f, /*detect*/ 24.0f, /*keep*/ 0.0f,
+      /*accel*/ 5.5f, /*turn*/ 2.6f,
       /*scale*/ 1.85f,
       0.14f,0.16f,0.22f,  0.20f,0.22f,0.30f,  0.10f,0.11f,0.16f,
       0.95f,0.80f,0.30f,  1.00f,0.85f,0.35f,
@@ -243,12 +264,27 @@ float creature_ground_y(const World& world, float x, float z) {
 // quando ele tem Mk III. Progressao dos dois lados em vez de um lado esmagando o outro.
 EnemyType pick_spawn_type() {
     // Pesos por fase (Crawler, Stalker, Brute, Alpha). Soma qualquer - normalizada no sorteio.
+    //
+    // A tabela anterior era { 100, 0, 0, 0 } em Congelado: SO' Crawler, o tipo mais fraco. A ideia
+    // era "a fauna acompanha a terraformacao", mas na pratica Congelado e' onde o jogo INTEIRO
+    // comeca e onde o jogador passa as primeiras horas - e ali ele nunca via nada alem do bicho
+    // mais fraco. Foi o que o jogador relatou. Portao total por fase estava errado; o certo e'
+    // MISTURA com proporcao deslizante.
+    //
+    // Agora toda fase tem variedade desde o inicio, e o que muda e' a PROPORCAO: Crawler cai de 60%
+    // pra 18%, Brute sobe de 8% pra 36%, e o Alpha so' entra a partir de Degelo (ele e' elite, com
+    // 240 HP e defesa 7 - contra a Mk I seriam 80 tiros, nao e' encontro de inicio de jogo).
+    //
+    // O Brute em Congelado (8%) e' de proposito um encontro de FUGIR, nao de matar: 150 HP e defesa
+    // 5 contra a Mk I dao 5 de dano por tiro, ou seja 30 tiros / 10 segundos de fogo continuo. Mas
+    // a velocidade dele e' 2.1 contra 4.8 do jogador, entao da pra deixar atras andando. E' uma
+    // aparicao que ensina "nem tudo se resolve atirando" sem bloquear o progresso.
     static const int kWeights[5][kEnemyTypeCount] = {
-        /* Frozen      */ { 100,   0,   0,  0 },
-        /* Warming     */ {  70,  30,   0,  0 },
-        /* Thawing     */ {  50,  45,   5,  0 },
-        /* Habitable   */ {  30,  40,  28,  2 },
-        /* Terraformed */ {  18,  32,  38, 12 },
+        /* Frozen      */ { 60, 32,  8,  0 },
+        /* Warming     */ { 46, 34, 18,  2 },
+        /* Thawing     */ { 36, 33, 25,  6 },
+        /* Habitable   */ { 26, 30, 32, 12 },
+        /* Terraformed */ { 18, 26, 36, 20 },
     };
     int ph = std::clamp((int)g_phase, 0, 4);
     int total = 0;
@@ -319,6 +355,22 @@ void update_creatures(float dt) {
     g_laser_trace_timer = std::max(0.0f, g_laser_trace_timer - dt);
     g_respawn_grace = std::max(0.0f, g_respawn_grace - dt);
     g_muzzle_flash_timer = std::max(0.0f, g_muzzle_flash_timer - dt);
+    // Feedback de dano no jogador: a cunha direcional + o "-N" somem sozinhos. Sem este
+    // decremento o indicador ficava CONGELADO na tela para sempre (bug reportado: "esses valores
+    // -10 e -3 estao travados no ar e nunca somem").
+    g_player_hit_timer = std::max(0.0f, g_player_hit_timer - dt);
+
+    // Numeros de dano flutuantes: sobem e expiram. Sem este laco eles nunca saiam da tela E o
+    // vetor enchia ate kMaxDamageNumbers, ponto em que PARAVA de mostrar numero novo - o mesmo
+    // defeito produzia os dois sintomas.
+    for (size_t di = 0; di < g_damage_numbers.size();) {
+        g_damage_numbers[di].timer -= dt;
+        if (g_damage_numbers[di].timer <= 0.0f) {
+            g_damage_numbers.erase(g_damage_numbers.begin() + (long)di);
+        } else {
+            ++di;
+        }
+    }
 
     for (auto it = g_impact_flashes.begin(); it != g_impact_flashes.end();) {
         it->timer -= dt;
@@ -376,6 +428,14 @@ void update_creatures(float dt) {
             continue;
         }
 
+        // Troca de lado do strafe a cada ~2.5s (Stalker). Fica aqui, num cronometro proprio, e nao
+        // derivado de anim_timer no calculo do alvo.
+        c.strafe_timer -= dt;
+        if (c.strafe_timer <= 0.0f) {
+            c.strafe_side = -c.strafe_side;
+            c.strafe_timer = 2.0f + rng_next_f01() * 1.5f;
+        }
+
         // Cronometros de reacao/HUD.
         if (c.flinch > 0.0f) c.flinch = std::max(0.0f, c.flinch - dt);
         if (c.hp_bar_timer > 0.0f) c.hp_bar_timer = std::max(0.0f, c.hp_bar_timer - dt);
@@ -400,7 +460,9 @@ void update_creatures(float dt) {
                 // Reposiciona: recua na diagonal (afasta + tangencia), o que le como flanqueio.
                 float nx = -dx / dist, nz = -dz / dist;
                 float tanx = -nz, tanz = nx;
-                float side = ((int)(c.anim_timer * 0.35f) % 2 == 0) ? 1.0f : -1.0f;
+                // Lado guardado na criatura e trocado por cronometro - derivar de anim_timer a cada
+                // frame fazia o alvo saltar de lado no meio do passo e o Stalker tremia no lugar.
+                float side = c.strafe_side;
                 tx_move = c.x + (nx * 0.7f + tanx * side * 0.7f) * 4.0f;
                 tz_move = c.z + (nz * 0.7f + tanz * side * 0.7f) * 4.0f;
             } else {
@@ -423,18 +485,151 @@ void update_creatures(float dt) {
         // Recuo do impacto tambem freia (proporcional a flinch_scale: quase nada num Brute).
         if (c.flinch > 0.0f) move_mul *= (1.0f - a.flinch_scale * 0.75f);
 
+        // ================= MOVIMENTO COM INERCIA E GIRO SUAVE =================
+        // Antes: posicao integrada direto do vetor pro alvo, com yaw atribuido por atan2 no mesmo
+        // frame. Resultado: velocidade instantanea (0 -> maxima -> 0 sem transicao), giro em L
+        // (virava 180 graus num frame) e altura colada no terreno (pulinho a cada degrau de tile).
+        // Era isso que lia como "movimento estranho".
+        //
+        // Agora ha 3 suavizacoes, todas parametrizadas por arquetipo (peso vem de numeros, nao de
+        // codigo separado): aceleracao pra velocidade, taxa de giro pro yaw, e lerp pra altura.
+        float des_vx = 0.0f, des_vz = 0.0f;
         float mdx = tx_move - c.x;
         float mdz = tz_move - c.z;
         float mdist = std::sqrt(mdx * mdx + mdz * mdz);
         if (mdist > 0.05f) {
-            // Encara sempre o jogador quando perseguindo (mesmo recuando), senao anda de costas.
-            if (c.state == Creature::State::Chasing) c.yaw = std::atan2(dz, dx);
-            else                                     c.yaw = std::atan2(mdz, mdx);
-            float step = std::min(mdist, speed * move_mul * dt);
-            c.x += (mdx / mdist) * step;
-            c.z += (mdz / mdist) * step;
+            // Chegando perto do alvo de perambulacao, desacelera em vez de parar seco.
+            float approach = (c.state == Creature::State::Wandering)
+                           ? clamp01(mdist / 1.5f) : 1.0f;
+            des_vx = (mdx / mdist) * speed * move_mul * approach;
+            des_vz = (mdz / mdist) * speed * move_mul * approach;
         }
-        c.y = creature_ground_y(*g_world, c.x, c.z);
+        // Aproxima a velocidade atual da desejada. O Brute (accel 2.6) leva ~0.8s pra atingir a
+        // velocidade de perseguicao; o Crawler (16.0) chega quase na hora.
+        float ak = std::min(1.0f, a.accel * dt);
+        c.vel_x += (des_vx - c.vel_x) * ak;
+        c.vel_z += (des_vz - c.vel_z) * ak;
+        c.x += c.vel_x * dt;
+        c.z += c.vel_z * dt;
+
+        // ---- GIRO LIMITADO POR TAXA ----
+        // Encara o jogador quando perseguindo, a direcao do movimento quando perambulando. O giro
+        // caminha ate o alvo a turn_rate rad/s, entao o Brute (1.4) leva mais de 2s pra dar meia
+        // volta - e' o que faz ele parecer pesado em vez de um cursor girando.
+        float want_yaw;
+        if (c.state == Creature::State::Chasing) want_yaw = std::atan2(dz, dx);
+        else if (std::fabs(c.vel_x) + std::fabs(c.vel_z) > 0.05f) want_yaw = std::atan2(c.vel_z, c.vel_x);
+        else want_yaw = c.yaw;
+        float dyaw = want_yaw - c.yaw;
+        while (dyaw > kPi)  dyaw -= 2.0f * kPi;   // caminho mais curto
+        while (dyaw < -kPi) dyaw += 2.0f * kPi;
+        float max_turn = a.turn_rate * dt;
+        float applied = std::clamp(dyaw, -max_turn, max_turn);
+        c.yaw += applied;
+        c.last_yaw_rate = applied / std::max(0.0001f, dt);
+
+        // ---- MARCHA E INCLINACAO ----
+        // Fase da marcha por DISTANCIA percorrida (nao por tempo): stride = passada em unidades de
+        // mundo por ciclo completo, escalada pelo porte do bicho. speed/stride da ciclos por
+        // segundo, entao o pe acompanha o chao e nao patina. Parado, a fase para.
+        float speed_now = std::sqrt(c.vel_x * c.vel_x + c.vel_z * c.vel_z);
+        // PASSADA: derivada da capacidade de velocidade do bicho, nao so' do porte. Com stride
+        // proporcional apenas a escala, o Crawler (chase 5.4, escala pequena) dava 12.1 ciclos por
+        // segundo correndo - 5 frames por ciclo a 60fps, o que le como VIBRACAO, nao corrida. Foi a
+        // medicao que pegou isso antes de virar bug visual.
+        //
+        // Dividindo a velocidade de perseguicao por uma cadencia-alvo, todo tipo corre com a mesma
+        // legibilidade (~3 ciclos/s) e vaga em ~1.1, e a passada continua CONSTANTE por tipo - que
+        // e' o que impede o pe de patinar. O piso por escala protege um tipo futuro que seja lento.
+        constexpr float kTargetCadence = 3.0f;   // ciclos por segundo na velocidade de perseguicao
+        float stride = std::max(0.55f * a.scale, a.chase_speed / kTargetCadence);
+        c.gait_phase += (speed_now / std::max(0.15f, stride)) * dt;
+        if (c.gait_phase > 1000.0f) c.gait_phase -= 1000.0f;   // nao deixa crescer sem limite
+
+        // ACELERACAO -> inclinacao pra frente. Projeta a variacao de velocidade no eixo FRENTE do
+        // bicho: acelerando ele mergulha o corpo pra frente, freando joga pra tras. E' o sinal de
+        // peso que faltava - antes o corpo ficava sempre perpendicular ao chao.
+        float acc_x = (c.vel_x - c.prev_vel_x) / std::max(0.0001f, dt);
+        float acc_z = (c.vel_z - c.prev_vel_z) / std::max(0.0001f, dt);
+        c.prev_vel_x = c.vel_x;
+        c.prev_vel_z = c.vel_z;
+        float fx = std::cos(c.yaw), fz = std::sin(c.yaw);
+        float acc_fwd = acc_x * fx + acc_z * fz;
+        // Alvo de inclinacao: pela aceleracao mais um mergulho constante proporcional a velocidade
+        // (corpo de bicho correndo fica baixo e pra frente). Limitado pra nao virar cambalhota.
+        float want_pitch = std::clamp(acc_fwd * 0.016f + (speed_now / std::max(0.5f, a.chase_speed)) * 0.10f,
+                                      -0.30f, 0.34f);
+        // Os pesados inclinam menos (massa) - reusa flinch_scale, que ja e' a "leveza" do arquetipo.
+        want_pitch *= (0.45f + 0.55f * a.flinch_scale);
+        c.lean_pitch += (want_pitch - c.lean_pitch) * std::min(1.0f, 6.0f * dt);
+
+        // GIRO -> inclinacao lateral. Calculada no bloco de giro logo abaixo (yaw_rate), aplicada
+        // aqui no frame seguinte - um frame de atraso e' invisivel e evita reordenar o bloco.
+        float want_roll = std::clamp(-c.last_yaw_rate * 0.085f, -0.26f, 0.26f);
+        want_roll *= (0.45f + 0.55f * a.flinch_scale);
+        c.lean_roll += (want_roll - c.lean_roll) * std::min(1.0f, 7.0f * dt);
+
+        // ---- ALTURA SUAVIZADA ----
+        float ground = creature_ground_y(*g_world, c.x, c.z);
+        if (!c.y_init) { c.smooth_y = ground; c.y_init = true; }
+        // Sobe rapido (nao afunda em degrau) e desce um pouco mais devagar (nao "cai" de repente).
+        float yk = (ground > c.smooth_y) ? std::min(1.0f, 14.0f * dt) : std::min(1.0f, 8.0f * dt);
+        c.smooth_y += (ground - c.smooth_y) * yk;
+        c.y = c.smooth_y;
+
+
+        // ================= ATAQUE A DISTANCIA =================
+        // Uma rotina so' pros dois tipos que atiram. O que muda entre o dardo do Stalker e o lob do
+        // Brute sao NUMEROS da tabela (velocidade, gravidade, dano, recarga, telegrafe) - nao ha
+        // "atirar do Stalker" e "atirar do Brute" em codigo separado.
+        if (a.ranged_damage > 0) {
+            if (c.ranged_cd > 0.0f) c.ranged_cd = std::max(0.0f, c.ranged_cd - dt);
+
+            if (c.ranged_windup_t > 0.0f) {
+                c.ranged_windup_t = std::max(0.0f, c.ranged_windup_t - dt);
+                if (c.ranged_windup_t <= 0.0f) {
+                    // DISPARA na posicao ATUAL do jogador, sem prever movimento: e' isso que torna
+                    // o tiro desviavel - quem andar durante o voo do projetil escapa.
+                    float px = g_player.pos.x, pz = g_player.pos.y;
+                    float mz_y = c.y + 0.75f * a.scale;                  // altura do bocal
+                    float tgt_y = g_player.pos_y + 0.90f;                // torso do jogador
+                    float ddx = px - c.x, ddz = pz - c.z;
+                    float hd = std::sqrt(std::max(0.0001f, ddx * ddx + ddz * ddz));
+                    float sp = std::max(1.0f, a.projectile_speed);
+                    float tof = hd / sp;                                  // tempo de voo horizontal
+                    // Solucao balistica EXATA pra esta velocidade horizontal. Com gravidade 0 isso
+                    // degenera em vy = dy/t, ou seja tiro reto - uma formula so' pros dois casos.
+                    float vy = ((tgt_y - mz_y) + 0.5f * a.projectile_gravity * tof * tof) / tof;
+                    if (g_creature_projectiles.size() < kMaxCreatureProjectiles) {
+                        CreatureProjectile p{};
+                        p.x = c.x + (ddx / hd) * 0.45f * a.scale;
+                        p.y = mz_y;
+                        p.z = c.z + (ddz / hd) * 0.45f * a.scale;
+                        p.vx = (ddx / hd) * sp;
+                        p.vz = (ddz / hd) * sp;
+                        p.vy = vy;
+                        p.gravity = a.projectile_gravity;
+                        p.radius = a.projectile_radius;
+                        p.damage = a.ranged_damage;
+                        p.life = tof * 2.4f + 1.0f;   // folga pra errar sem ficar eterno
+                        p.r = a.eye_r; p.g = a.eye_g; p.b = a.eye_b;
+                        p.spin = rng_next_f01() * 6.2831853f;
+                        g_creature_projectiles.push_back(p);
+                    }
+                    play_creature_attack_hit_sound(a.sound_pitch * 1.15f);
+                    c.ranged_cd = a.ranged_cooldown;
+                }
+            } else if (!graced && c.state == Creature::State::Chasing && c.ranged_cd <= 0.0f &&
+                       c.windup <= 0.0f) {
+                float d = std::sqrt(std::max(0.0001f, dist2));
+                if (d >= a.ranged_min_range && d <= a.ranged_range) {
+                    // Telegrafe: som + pausa antes do tiro, mesma ideia do golpe corpo-a-corpo. E' o
+                    // que da chance de reagir - sem isso o dano vem do nada, de longe.
+                    c.ranged_windup_t = a.ranged_windup;
+                    play_creature_windup_sound(a.sound_pitch * 0.9f);
+                }
+            }
+        }
 
         // ================= ATAQUE COM TELEGRAFE =================
         // Antes o dano de contato saia INSTANTANEO ao entrar no raio: o jogador levava dano sem ter
@@ -475,6 +670,62 @@ void update_creatures(float dt) {
 
         ++i;
     }
+
+    // ================= PROJETEIS EM VOO =================
+    // Integra, aplica gravidade, testa acerto no jogador e no terreno. O terreno bloquear e' o que
+    // faz cobertura funcionar: atirar atraves de um morro simplesmente desperdica o tiro, sem
+    // precisar de teste de linha de visao na hora de disparar.
+    for (size_t i = 0; i < g_creature_projectiles.size();) {
+        CreatureProjectile& p = g_creature_projectiles[i];
+        p.vy -= p.gravity * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.z += p.vz * dt;
+        p.life -= dt;
+        p.spin += dt * 9.0f;
+
+        bool gone = (p.life <= 0.0f);
+
+        // Acerto no jogador: cilindro em volta do torso, generoso o bastante pra o tiro nao
+        // atravessar de raspao, apertado o bastante pra andar de lado escapar.
+        if (!gone) {
+            float ddx = p.x - g_player.pos.x, ddz = p.z - g_player.pos.y;
+            float ddy = p.y - (g_player.pos_y + 0.90f);
+            float hit_r = p.radius + 0.55f;
+            if (ddx * ddx + ddz * ddz <= hit_r * hit_r && std::fabs(ddy) <= 1.05f) {
+                g_player.hp -= p.damage;
+                play_creature_attack_hit_sound(1.0f);
+                // Mesmo feedback do golpe corpo-a-corpo: flash direcional no HUD, nao so' o numero
+                // de HP caindo. Reusa g_player_hit_*.
+                float dl = std::sqrt(std::max(0.0001f, ddx * ddx + ddz * ddz));
+                g_player_hit_dir_x = ddx / dl;
+                g_player_hit_dir_z = ddz / dl;
+                g_player_hit_timer = kPlayerHitFlashSeconds;
+                g_player_hit_amount = p.damage;
+                g_screen_flash_red = std::max(g_screen_flash_red, 0.20f);
+                if (g_player.hp <= 0) {
+                    g_player.hp = 0;
+                    respawn_player_at_base("Tiro de criatura");
+                }
+                gone = true;
+            }
+        }
+        // Acerto no terreno.
+        if (!gone && g_world) {
+            int tx = world_to_tile(p.x), tz = world_to_tile(p.z);
+            if (!g_world->in_bounds(tx, tz)) gone = true;
+            else if (p.y <= creature_ground_y(*g_world, p.x, p.z)) gone = true;
+        }
+
+        if (gone) {
+            // Estouro no ponto de impacto - reusa o flash de impacto que o laser ja usa.
+            g_impact_flashes.push_back({{p.x, p.y, p.z}, {p.x, p.y, p.z}, kImpactFlashDuration * 0.6f});
+            g_creature_projectiles[i] = g_creature_projectiles.back();
+            g_creature_projectiles.pop_back();
+        } else {
+            ++i;
+        }
+    }
 }
 
 void render_creatures() {
@@ -486,10 +737,21 @@ void render_creatures() {
 
     for (const Creature& c : g_creatures) {
         const EnemyArchetype& a = archetype_of(c);
-        float pulse = 0.74f + 0.26f * std::sin(c.anim_timer * 3.0f + (float)(int)c.type);
+        // ---- MARCHA ----
+        // `step` vem de gait_phase (regida por DISTANCIA percorrida, ver update_creatures), nao mais
+        // de anim_timer*6*gait. Consequencias diretas no que o jogador ve:
+        //   - parado, step congela: o bicho para de marchar no lugar;
+        //   - correndo, a cadencia acompanha a velocidade: o pe nao patina no chao.
         bool chasing = (c.state == Creature::State::Chasing);
-        float gait = chasing ? 1.7f : 1.0f;
-        float step = std::sin(c.anim_timer * 6.0f * gait);
+        float step = std::sin(c.gait_phase * 2.0f * kPi);
+        // Fracao da velocidade maxima: escala amplitude de passo, bob e balanco do corpo. Parado da
+        // 0 e tudo desliga menos a respiracao.
+        float spd_frac = clamp01(std::sqrt(c.vel_x * c.vel_x + c.vel_z * c.vel_z) /
+                                 std::max(0.5f, a.chase_speed));
+        // RESPIRACAO no lugar: pequena, lenta, sempre presente. Sem ela um bicho parado fica uma
+        // estatua absoluta - o oposto do problema da marcha no lugar, mas igualmente morto.
+        float breath = std::sin(c.anim_timer * 1.6f + (float)(int)c.type) * 0.012f * (1.0f - spd_frac);
+        float pulse = 0.74f + 0.26f * std::sin(c.anim_timer * 3.0f + (float)(int)c.type);
         float S = a.scale;
 
         // Reacao ao dano: piscada branca + recuo. flinch_scale da tabela controla o quanto - um
@@ -499,13 +761,19 @@ void render_creatures() {
         float hit_flash = fl * 0.8f;
         float knock = fl * a.flinch_scale * 0.22f;
 
-        // Bob: os pesados sobem e descem menos (inercia), os leves mais.
-        float bob_amp = (a.scale > 1.4f) ? 0.02f : 0.05f;
-        float bob = std::sin(c.anim_timer * (a.scale > 1.4f ? 2.4f : 4.2f)) * bob_amp;
+        // Bob: amplitude proporcional a VELOCIDADE (parado nao balanca) e regida pela marcha, nao
+        // por um seno solto no tempo. Os pesados sobem e descem menos (inercia). A respiracao entra
+        // por cima pra o bicho parado nao virar estatua.
+        float bob_amp = ((a.scale > 1.4f) ? 0.030f : 0.065f) * spd_frac;
+        float bob = std::fabs(std::sin(c.gait_phase * 2.0f * kPi)) * bob_amp + breath;
 
         float fwd_x = std::cos(c.yaw), fwd_z = std::sin(c.yaw);
         float box_yaw = std::atan2(fwd_x, fwd_z);
         float sd_x = fwd_z, sd_z = -fwd_x;
+        // Inclinacao combinada. render_box_tilted_3d aceita um pitch; combino mergulho (aceleracao)
+        // e rolagem (curva) num angulo unico - com pecas em caixa a diferenca entre os dois eixos
+        // nao le, e um valor so evita duplicar a geometria.
+        float lean = c.lean_pitch + c.lean_roll * 0.6f;
         float base_y = c.y + bob;
         float cx = c.x + c.flinch_dx * knock;
         float cz = c.z + c.flinch_dz * knock;
@@ -516,14 +784,17 @@ void render_creatures() {
         auto B = [&](float f, float u, float s, float sx, float sy, float sz,
                      float r, float g, float b) {
             float m = pulse;
-            render_box_oriented_3d(P(f * S, u * S, s * S), sx * S, sy * S, sz * S, box_yaw,
-                                   r * m + hit_flash, g * m + hit_flash, b * m + hit_flash, 1.0f);
+            // box TILTED (nao oriented): a inclinacao de aceleracao/curva (lean_pitch/lean_roll) e o
+            // que da peso ao movimento - sem ela o corpo fica sempre perpendicular ao chao, que e
+            // metade da leitura de "boneco duro".
+            render_box_tilted_3d(P(f * S, u * S, s * S), sx * S, sy * S, sz * S, box_yaw, lean,
+                                 r * m + hit_flash, g * m + hit_flash, b * m + hit_flash, 1.0f);
         };
         // Emissivo (olhos, nucleo): sem pulse, com a piscada.
         auto E = [&](float f, float u, float s, float sx, float sy, float sz,
                      float r, float g, float b) {
-            render_box_oriented_3d(P(f * S, u * S, s * S), sx * S, sy * S, sz * S, box_yaw,
-                                   r + hit_flash, g + hit_flash, b + hit_flash, 1.0f);
+            render_box_tilted_3d(P(f * S, u * S, s * S), sx * S, sy * S, sz * S, box_yaw, lean,
+                                 r + hit_flash, g + hit_flash, b + hit_flash, 1.0f);
         };
 
         // Marca no chao: mais forte no elite.
@@ -646,10 +917,14 @@ void render_creatures() {
                 float along = (per_side == 1) ? 0.0f
                             : (-body_len + (float)idx * (2.0f * body_len / (float)(per_side - 1)));
                 float phase = ((i % 2 == 0) == (idx % 2 == 0)) ? step : -step;
-                float lift = std::max(0.0f, phase) * 0.05f;
-                B(along, hip_y + lift * 0.5f, spread * (float)side,
+                // Amplitudes ANTES: avanco 0.04 e levantada 0.05 - 4 e 5 cm num bicho de escala 1,
+                // praticamente invisivel, o que fazia as pernas parecerem pinos rigidos. Agora sao
+                // 0.17 e 0.13, e escalam com a velocidade (spd_frac): parado a perna nao mexe.
+                float swing = phase * 0.17f * spd_frac;
+                float lift = std::max(0.0f, phase) * 0.13f * spd_frac;
+                B(along + swing * 0.45f, hip_y + lift * 0.5f, spread * (float)side,
                   0.07f, leg_len, 0.07f, a.limb_r, a.limb_g, a.limb_b);
-                B(along + phase * 0.04f, hip_y - leg_len * 0.55f + lift, spread * 1.12f * (float)side,
+                B(along + swing, hip_y - leg_len * 0.55f + lift, spread * 1.12f * (float)side,
                   0.06f, leg_len * 0.55f, 0.06f, a.limb_r * 0.82f, a.limb_g * 0.82f, a.limb_b * 0.82f);
             }
         }
@@ -767,6 +1042,39 @@ void render_creatures() {
             float sz = f.pos.z + std::sin(ang) * spread;
             float sy = f.pos.y + spread * 0.6f;
             render_cube_3d(sx, sy, sz, 0.05f + 0.05f * t, 1.0f, 0.80f, 0.35f, t, false);
+        }
+    }
+
+    // ================= PROJETEIS =================
+    // Corpo pequeno solido + brilho aditivo + rastro. O rastro e' o que torna o tiro LEGIVEL: um
+    // ponto voando some no cenario, um risco curto na direcao do voo mostra de onde vem e pra onde
+    // vai, que e' a informacao necessaria pra desviar.
+    if (!g_creature_projectiles.empty()) {
+        for (const CreatureProjectile& p : g_creature_projectiles) {
+            float sp = std::sqrt(p.vx * p.vx + p.vy * p.vy + p.vz * p.vz);
+            // Rastro: alguns pontos ao longo da trajetoria RECENTE (integracao pra tras), cada um
+            // menor e mais apagado. Reproduz a gravidade, entao o lob do Brute deixa risco curvo.
+            const int kTrail = 6;
+            rlSetBlendMode(RL_BLEND_ADDITIVE);
+            rlDisableDepthMask();
+            for (int k = 1; k <= kTrail; ++k) {
+                float t = (float)k * 0.030f;
+                float tx = p.x - p.vx * t;
+                float tz = p.z - p.vz * t;
+                float ty = p.y - p.vy * t - 0.5f * p.gravity * t * t * -1.0f;
+                float f = 1.0f - (float)k / (float)(kTrail + 1);
+                render_glow_disc_3d({tx, ty, tz}, p.radius * (0.9f * f + 0.25f),
+                                    p.r, p.g, p.b, 0.30f * f, 8);
+            }
+            render_glow_disc_3d({p.x, p.y, p.z}, p.radius * 2.2f, p.r, p.g, p.b, 0.55f, 12);
+            rlEnableDepthMask();
+            rlSetBlendMode(RL_BLEND_ALPHA);
+            // Nucleo solido: gira, pra ler como objeto e nao como luz.
+            render_box_oriented_3d({p.x, p.y, p.z}, p.radius * 1.5f, p.radius * 1.5f, p.radius * 2.6f,
+                                   std::atan2(p.vx, p.vz) + p.spin * 0.15f,
+                                   std::min(1.0f, p.r + 0.35f), std::min(1.0f, p.g + 0.35f),
+                                   std::min(1.0f, p.b + 0.35f), 1.0f);
+            (void)sp;
         }
     }
 }
@@ -943,6 +1251,9 @@ void reset_creature_state() {
     for (int i = 0; i < kEnemyTypeCount; ++i) g_kills_by_type[i] = 0;
     g_damage_numbers.clear();
     g_creatures.clear();
+    // Projeteis em voo tambem: sem isto um tiro disparado antes do Novo Jogo chegaria no jogador
+    // novo, no mapa novo - o mesmo footgun de estado que nao e resetado.
+    g_creature_projectiles.clear();
 }
 
 void creature_stats_load(int kills) {
@@ -984,62 +1295,133 @@ int creature_under_aim() {
     return best;
 }
 
+// ============= PAINEL DE AMEACAS (canto da tela) =============
+// A versao anterior desenhava uma barra flutuante SOBRE A CABECA de cada criatura, projetando a
+// posicao do mundo pra tela. Dois problemas: (1) era chamada antes de render_hud, que e' quem troca
+// a projecao pra ortho 2D - entao as barras saiam desenhadas com a projecao PERSPECTIVA ainda ativa
+// e "nao apareciam corretamente"; (2) mesmo corrigida a ordem, barra sobre a cabeca se perde atras
+// de terreno, sai da tela quando a criatura esta fora do enquadramento e fica ilegivel de longe.
+//
+// Agora e' uma LISTA FIXA no canto: uma linha por criatura que esta efetivamente em combate
+// (perseguindo ou levou dano recentemente). Sempre no mesmo lugar, sempre legivel, e responde a
+// pergunta que importa - "quem esta me atacando e quanto falta pra cada um morrer".
 void render_creature_hud(int win_w, int win_h) {
-    if (g_creatures.empty() && g_damage_numbers.empty()) return;
+    // ---- coleta as ameacas ativas ----
+    // Ordena por fracao de vida (mais ferido primeiro): quem esta perto de morrer sobe na lista,
+    // que e' a informacao acionavel - termina esse antes de trocar de alvo.
+    struct Threat { int idx; float frac; float dist2; };
+    Threat list[16];
+    int n = 0;
+    for (int i = 0; i < (int)g_creatures.size() && n < 16; ++i) {
+        const Creature& c = g_creatures[(size_t)i];
+        bool in_combat = (c.state == Creature::State::Chasing) || (c.hp_bar_timer > 0.0f);
+        if (!in_combat) continue;
+        float ddx = c.x - g_player.pos.x, ddz = c.z - g_player.pos.y;
+        list[n].idx = i;
+        list[n].frac = (float)c.hp / (float)std::max(1, c.max_hp);
+        list[n].dist2 = ddx * ddx + ddz * ddz;
+        ++n;
+    }
+    // Insertion sort (n <= 16): elite primeiro, depois mais ferido, depois mais perto.
+    for (int i = 1; i < n; ++i) {
+        Threat k = list[i];
+        bool k_elite = enemy_archetype(g_creatures[(size_t)k.idx].type).elite;
+        int j = i - 1;
+        while (j >= 0) {
+            bool j_elite = enemy_archetype(g_creatures[(size_t)list[j].idx].type).elite;
+            bool swap = (k_elite && !j_elite) ||
+                        (k_elite == j_elite && k.frac < list[j].frac) ||
+                        (k_elite == j_elite && k.frac == list[j].frac && k.dist2 < list[j].dist2);
+            if (!swap) break;
+            list[j + 1] = list[j];
+            --j;
+        }
+        list[j + 1] = k;
+    }
+
     int aimed = creature_under_aim();
 
-    // ---- BARRAS DE VIDA ----
-    for (int i = 0; i < (int)g_creatures.size(); ++i) {
-        const Creature& c = g_creatures[(size_t)i];
-        bool show = (i == aimed) || (c.hp_bar_timer > 0.0f);
-        if (!show) continue;
-        const EnemyArchetype& a = archetype_of(c);
+    // ---- painel ----
+    // Canto DIREITO, logo abaixo do painel de fase. O minimapa saiu daqui pro canto inferior
+    // esquerdo, entao esta faixa ficou livre - e o lado direito e' onde o jogador ja olha por
+    // status, nao por acao.
+    if (n > 0) {
+        const float row_h = 26.0f;
+        const float pw = 196.0f;
+        float px = (float)win_w - pw - 20.0f;
+        float py = hud_right_panel_bottom_y() + 14.0f;
+        float ph = 22.0f + (float)n * row_h;
 
-        // Projeta o topo da criatura pra tela. Atras da camera ou fora dela: nao desenha.
-        Vec3 head = {c.x, c.y + (1.15f * a.scale) + 0.25f, c.z};
-        float spx, spy;
-        if (!world_to_screen(head, win_w, win_h, spx, spy)) continue;   // atras da camera
-        if (spx < -200.0f || spy < -200.0f || spx > (float)win_w + 200.0f || spy > (float)win_h + 200.0f) continue;
+        // Fundo + borda de alerta (vermelha quando ha elite na lista).
+        bool any_elite = false;
+        for (int i = 0; i < n; ++i)
+            if (enemy_archetype(g_creatures[(size_t)list[i].idx].type).elite) any_elite = true;
+        render_quad(px - 6.0f, py - 6.0f, pw + 12.0f, ph + 12.0f, 0.05f, 0.05f, 0.07f, 0.80f);
+        render_quad(px - 6.0f, py - 6.0f, pw + 12.0f, 1.0f,
+                    any_elite ? 1.0f : 0.92f, any_elite ? 0.82f : 0.38f, any_elite ? 0.30f : 0.30f, 0.85f);
 
-        // HIERARQUIA DE TAMANHO (pedido): comum pequena, pesado normal, elite destacada.
-        float bw = a.elite ? 92.0f : (a.scale > 1.4f ? 76.0f : 56.0f);
-        float bh = a.elite ? 7.0f : (a.scale > 1.4f ? 6.0f : 4.0f);
-        // Some suavemente no fim do tempo de exibicao.
-        float fade = (i == aimed) ? 1.0f : clamp01(c.hp_bar_timer / 0.6f);
-        float pct = clamp01((float)c.hp / (float)std::max(1, c.max_hp));
-        float bx = spx - bw * 0.5f, by = spy;
+        char hdr[48];
+        snprintf(hdr, sizeof(hdr), "AMEACAS  %d", n);
+        draw_text(px, py + 12.0f, hdr, 0.92f, 0.45f, 0.40f, 0.95f);
 
-        // Trilha + preenchimento. Cor pela FRACAO de vida (verde -> ambar -> vermelho): o jogador
-        // percebe "esta quase morrendo" sem ler numero.
-        render_quad(bx - 1.0f, by - 1.0f, bw + 2.0f, bh + 2.0f, 0.0f, 0.0f, 0.0f, 0.62f * fade);
-        render_quad(bx, by, bw, bh, 0.14f, 0.14f, 0.18f, 0.85f * fade);
-        float hr = (pct > 0.5f) ? (1.0f - (pct - 0.5f) * 1.4f) : 1.0f;
-        float hg = (pct > 0.35f) ? 0.85f : 0.30f;
-        render_quad(bx, by, bw * pct, bh, hr, hg, 0.28f, 0.92f * fade);
-        // Elite: moldura dourada.
-        if (a.elite) {
-            render_quad(bx - 2.0f, by - 2.0f, bw + 4.0f, 1.0f, 1.0f, 0.82f, 0.30f, 0.85f * fade);
-            render_quad(bx - 2.0f, by + bh + 1.0f, bw + 4.0f, 1.0f, 1.0f, 0.82f, 0.30f, 0.85f * fade);
-        }
+        float y = py + 24.0f;
+        for (int i = 0; i < n; ++i) {
+            const Creature& c = g_creatures[(size_t)list[i].idx];
+            const EnemyArchetype& a = enemy_archetype(c.type);
+            bool is_aimed = (list[i].idx == aimed);
+            float frac = clamp01(list[i].frac);
+            float dist = std::sqrt(list[i].dist2);
 
-        // Nome do tipo + numeros SO' pra quem esta sob a mira - manter isso em todos os bichos
-        // encheria a tela de texto.
-        if (i == aimed) {
-            std::string label = a.name;
-            if (a.defense >= 5) label += "  [BLINDADO]";
-            else if (a.elite) label += "  [ELITE]";
-            float lw = estimate_text_w_px(label);
-            draw_text(spx - lw * 0.5f, by - 6.0f, label,
-                      a.elite ? 1.0f : 0.92f, a.elite ? 0.85f : 0.94f, a.elite ? 0.35f : 0.97f, 0.95f);
-            char hp[48];
-            snprintf(hp, sizeof(hp), "%d / %d", c.hp, c.max_hp);
-            float hw = estimate_text_w_px(hp);
-            draw_text(spx - hw * 0.5f, by + bh + 13.0f, hp, 0.72f, 0.76f, 0.84f, 0.90f);
+            // Realce da linha do alvo atualmente sob a mira - liga a lista ao que o tiro vai acertar.
+            if (is_aimed) {
+                render_quad(px - 4.0f, y - 11.0f, pw + 8.0f, row_h - 2.0f, 0.16f, 0.24f, 0.34f, 0.85f);
+                render_quad(px - 4.0f, y - 11.0f, 2.0f, row_h - 2.0f, 0.40f, 0.82f, 1.0f, 0.95f);
+            }
+
+            // Marca de tipo: quadradinho na cor do corpo (a cor volta a ser complemento, nao a
+            // identidade - quem identifica e' o nome + a silhueta no mundo).
+            render_quad(px, y - 8.0f, 7.0f, 7.0f, a.body_r, a.body_g, a.body_b, 0.95f);
+            if (a.elite) {
+                render_quad(px - 1.0f, y - 9.0f, 9.0f, 1.0f, 1.0f, 0.82f, 0.30f, 0.95f);
+                render_quad(px - 1.0f, y - 1.0f, 9.0f, 1.0f, 1.0f, 0.82f, 0.30f, 0.95f);
+            }
+
+            // Nome + distancia.
+            draw_text(px + 12.0f, y, a.name,
+                      a.elite ? 1.0f : 0.90f, a.elite ? 0.85f : 0.92f, a.elite ? 0.40f : 0.95f, 0.95f);
+            char dtxt[24];
+            snprintf(dtxt, sizeof(dtxt), "%.0fm", dist);
+            float dw = estimate_text_w_px(dtxt);
+            draw_text(px + pw - dw, y, dtxt, 0.55f, 0.58f, 0.66f, 0.90f);
+
+            // Barra proporcional. Largura maior no elite (hierarquia pedida: comum pequena,
+            // pesado normal, elite destacada).
+            float bw = a.elite ? pw : (a.scale > 1.4f ? pw * 0.88f : pw * 0.76f);
+            float bh = a.elite ? 6.0f : (a.scale > 1.4f ? 5.0f : 4.0f);
+            float by = y + 5.0f;
+            render_quad(px, by, bw, bh, 0.13f, 0.13f, 0.17f, 0.92f);
+            float hr = (frac > 0.5f) ? (1.0f - (frac - 0.5f) * 1.4f) : 1.0f;
+            float hg = (frac > 0.35f) ? 0.85f : 0.28f;
+            render_quad(px, by, bw * frac, bh, hr, hg, 0.26f, 0.95f);
+            // Marcas de 25% - da leitura de proporcao sem ler numero.
+            for (int q = 1; q < 4; ++q)
+                render_quad(px + bw * 0.25f * (float)q, by, 1.0f, bh, 0.05f, 0.05f, 0.07f, 0.9f);
+
+            // Numeros + aviso de blindagem, so' na linha mirada (o resto fica limpo).
+            if (is_aimed) {
+                char hp[56];
+                snprintf(hp, sizeof(hp), "%d / %d%s", c.hp, c.max_hp,
+                         a.defense >= 5 ? "  BLINDADO" : "");
+                draw_text(px + 12.0f, by + bh + 11.0f, hp, 0.72f, 0.78f, 0.86f, 0.92f);
+                y += 12.0f;
+            }
+            y += row_h;
         }
     }
 
     // ---- NUMEROS DE DANO ----
-    // Sobem e somem em 0.85s. Pequenos de proposito: o pedido foi nao poluir a tela.
+    // Continuam no mundo (sobem do ponto do impacto), agora desenhados no passe 2D correto. Sao
+    // pequenos e vivem 0.85s: o pedido foi nao poluir a tela.
     for (const DamageNumber& d : g_damage_numbers) {
         float t = 1.0f - clamp01(d.timer / kDamageNumberLife);
         Vec3 p = {d.x, d.y + t * 0.85f, d.z};
@@ -1055,11 +1437,6 @@ void render_creature_hud(int win_w, int win_h) {
         else           draw_text(spx - w * 0.5f, spy, buf, 1.0f, 0.95f, 0.90f, alpha);
     }
 }
-
-// TESTE TEMPORARIO (REMOVER)
-int weapon_damage_for_test() { return cur_tier().damage; }
-float weapon_cooldown_for_test() { return cur_tier().fire_cooldown; }
-EnemyType pick_spawn_type_for_test() { return pick_spawn_type(); }
 
 // Ver comentario da declaracao em creatures.h. Fora do namespace anonimo: e' API publica (o HUD e
 // as missoes leem atributos por tipo).

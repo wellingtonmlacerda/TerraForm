@@ -396,34 +396,6 @@ void generate_base(World& world) {
     // propria garantia, nao uma lista de excecoes.
 
     base_interior_stamp_furniture(world);
-    // ===== INSTRUMENTACAO TEMPORARIA (REMOVER) - inspecao visual =====
-    {
-        int cx0 = g_base_x, cz0 = surface + 34;
-        int16_t h0 = world.height_at(cx0, cz0);
-        for (int dz = -32; dz <= 32; ++dz)
-            for (int dx = -32; dx <= 32; ++dx) {
-                int tx = cx0 + dx, tz = cz0 + dz;
-                if (!world.in_bounds(tx, tz)) continue;
-                world.set_height(tx, tz, h0);
-                world.set_ground(tx, tz, Block::Sand);
-                world.set(tx, tz, Block::Air);
-            }
-        // Um de cada tipo em arco na frente do spawn.
-        for (int i = 0; i < kEnemyTypeCount; ++i) {
-            Creature c;
-            float a = -0.6f + (float)i * 0.40f;
-            // 26 tiles: alem do maior detect_range (Alpha, 24), entao nao perseguem e ficam posando.
-            c.x = (float)cx0 + std::cos(a) * 26.0f;
-            c.z = (float)cz0 + std::sin(a) * 26.0f;
-            c.y = (float)h0 * kHeightScale;
-            c.type = (EnemyType)i;
-            const EnemyArchetype& ar = enemy_archetype(c.type);
-            c.hp = ar.max_hp; c.max_hp = ar.max_hp;
-            c.yaw = 3.14159f * 1.5f;
-            c.wander_target_x = c.x; c.wander_target_z = c.z;
-            g_creatures.push_back(c);
-        }
-    }
     world.rebuild_surface_cache();
 }
 
